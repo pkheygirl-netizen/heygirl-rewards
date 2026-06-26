@@ -1,4 +1,4 @@
-"use strict";var __LOYALTY_WIDGET__=(()=>{var o=`
+"use strict";var __LOYALTY_WIDGET__=(()=>{var d=`
 /* ---- Reset ---- */
 .hg-widget * { box-sizing: border-box; margin: 0; padding: 0; font-family: inherit; }
 
@@ -110,4 +110,39 @@
   margin: 12px 0; padding: 12px; background: #fdf0f8;
   border: 1px solid #f7e8f2; border-radius: 8px; font-size: 13px;
 }
-`;var s="/apps/loyalty";async function a(){try{let t=await fetch(`${s}/customer`);return t.ok?await t.json():null}catch{return null}}(function(){"use strict";function t(){if(document.getElementById("hg-styles"))return;let e=document.createElement("style");e.id="hg-styles",e.textContent=o,document.head.appendChild(e)}function i(){let e=window.location.pathname;return e==="/pages/rewards"?"rewards":e.startsWith("/products/")?"product":e==="/cart"?"cart":"other"}async function n(){try{t();let e=i(),r=await a();if(!r)return;e!=="rewards"&&void 0,r.nudgeSettings&&void 0,e==="product"&&void 0,e==="cart"&&void 0,e==="rewards"&&void 0}catch{}}function p(e){}window.__hgOpenHub=null,document.readyState==="loading"?document.addEventListener("DOMContentLoaded",n):n()})();})();
+`;var u="/apps/loyalty";async function p(){try{let r=await fetch(`${u}/customer`);return r.ok?await r.json():null}catch{return null}}var l={silver:"\u25C8 Silver",gold:"\u2605 Gold",diamond:"\u25C6 Diamond"};function c(r){if(document.getElementById("hg-launcher"))return;let e=document.createElement("button");if(e.id="hg-launcher",e.className="hg-loading",!r.loggedIn||!r.member)e.innerHTML='<span class="hg-icon">\u{1F381}</span><span>Join &amp; Earn</span>',e.addEventListener("click",()=>{window.location.href="/account/register"});else{let{tier:n,balance:i}=r.member;e.className="",e.innerHTML=`
+      <span class="hg-icon">\u25C8</span>
+      <span class="hg-badge">${l[n]??n}</span>
+      <span>${i.toLocaleString()} pts</span>
+    `,e.addEventListener("click",h)}document.body.appendChild(e),setTimeout(()=>e.classList.remove("hg-loading"),1500)}function h(){let r=document.getElementById("hg-panel");r&&r.classList.toggle("hg-open")}function g(r){if(document.getElementById("hg-panel")||!r.loggedIn||!r.member)return;let{member:e}=r,n=document.createElement("div");n.id="hg-panel",n.className="hg-widget";let i=Math.min(100,Math.floor(e.lifetimeSpend/5e4*100)),t=Math.min(100,Math.floor(e.lifetimeSpend/1e5*100)),o=e.referralSlug?`heygirl.pk?ref=${e.referralSlug}`:"";n.innerHTML=`
+    <div class="hg-panel-header">
+      <div class="hg-name">Hi, ${e.firstName??"there"}!</div>
+      <span class="hg-tier">${l[e.tier]??e.tier}</span>
+      <div class="hg-balance">${e.balance.toLocaleString()} pts</div>
+    </div>
+    <div class="hg-panel-body">
+      <div class="hg-progress-label">
+        <span>Silver \u2192 Gold</span><span>${i}%</span>
+      </div>
+      <div class="hg-progress-track">
+        <div class="hg-progress-fill" style="width:${i}%"></div>
+      </div>
+      <div class="hg-progress-label">
+        <span>Gold \u2192 Diamond</span><span>${t}%</span>
+      </div>
+      <div class="hg-progress-track">
+        <div class="hg-progress-fill" style="width:${t}%"></div>
+      </div>
+      ${e.activeCodes.length>0?`
+        <div style="margin-bottom:8px;font-size:13px;color:#e91e8c;font-weight:600;">
+          \u{1F389} You have ${e.activeCodes.length} active reward${e.activeCodes.length>1?"s":""}!
+        </div>`:""}
+      <button class="hg-btn hg-btn-primary" id="hg-redeem-btn">Redeem Points</button>
+      <button class="hg-btn hg-btn-secondary" id="hg-hub-btn">View Full Dashboard \u2192</button>
+      ${o?`
+        <div class="hg-referral-row">
+          <span class="hg-referral-link">${o}</span>
+          <button class="hg-copy-btn" id="hg-copy-ref">Copy</button>
+        </div>`:""}
+    </div>
+  `,document.body.appendChild(n),n.querySelector("#hg-hub-btn")?.addEventListener("click",()=>{let a=window.__hgOpenHub;typeof a=="function"?a():window.location.href="/pages/rewards",n.classList.remove("hg-open")}),n.querySelector("#hg-redeem-btn")?.addEventListener("click",()=>{let a=window.__hgOpenHub;typeof a=="function"&&a(0),n.classList.remove("hg-open")}),n.querySelector("#hg-copy-ref")?.addEventListener("click",a=>{let s=a.currentTarget;navigator.clipboard?.writeText(`https://${o}`).then(()=>{s.textContent="Copied!",setTimeout(()=>{s.textContent="Copy"},2e3)})}),document.addEventListener("click",a=>{let s=document.getElementById("hg-launcher");!n.contains(a.target)&&a.target!==s&&n.classList.remove("hg-open")})}(function(){"use strict";function r(){if(document.getElementById("hg-styles"))return;let t=document.createElement("style");t.id="hg-styles",t.textContent=d,document.head.appendChild(t)}function e(){let t=window.location.pathname;return t==="/pages/rewards"?"rewards":t.startsWith("/products/")?"product":t==="/cart"?"cart":"other"}async function n(){try{r();let t=e(),o=await p();if(!o)return;t!=="rewards"&&(c(o),g(o)),o.nudgeSettings&&void 0,t==="product"&&void 0,t==="cart"&&void 0,t==="rewards"&&void 0}catch{}}function i(t){}window.__hgOpenHub=null,document.readyState==="loading"?document.addEventListener("DOMContentLoaded",n):n()})();})();
