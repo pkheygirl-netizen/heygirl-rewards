@@ -26,6 +26,8 @@ export type Database = {
           nudge_tier_progress_enabled: boolean
           program_name: string
           purchase_points_rate: number
+          redemption_tiers: Json
+          referral_friend_discount_pkr: number
           referral_points: number
           review_points: number
           signup_points: number
@@ -53,6 +55,8 @@ export type Database = {
           nudge_tier_progress_enabled?: boolean
           program_name?: string
           purchase_points_rate?: number
+          redemption_tiers?: Json
+          referral_friend_discount_pkr?: number
           referral_points?: number
           review_points?: number
           signup_points?: number
@@ -80,6 +84,8 @@ export type Database = {
           nudge_tier_progress_enabled?: boolean
           program_name?: string
           purchase_points_rate?: number
+          redemption_tiers?: Json
+          referral_friend_discount_pkr?: number
           referral_points?: number
           review_points?: number
           signup_points?: number
@@ -133,11 +139,14 @@ export type Database = {
           code: string
           created_at: string
           discount_amount: number
+          discount_amount_pkr: number
           expires_at: string
           id: string
           member_id: string
           points_spent: number
           shopify_discount_code_id: string | null
+          shopify_order_id: string | null
+          shopify_price_rule_id: string | null
           status: string
           used_at: string | null
         }
@@ -145,11 +154,14 @@ export type Database = {
           code: string
           created_at?: string
           discount_amount: number
+          discount_amount_pkr?: number
           expires_at: string
           id?: string
           member_id: string
           points_spent: number
           shopify_discount_code_id?: string | null
+          shopify_order_id?: string | null
+          shopify_price_rule_id?: string | null
           status?: string
           used_at?: string | null
         }
@@ -157,11 +169,14 @@ export type Database = {
           code?: string
           created_at?: string
           discount_amount?: number
+          discount_amount_pkr?: number
           expires_at?: string
           id?: string
           member_id?: string
           points_spent?: number
           shopify_discount_code_id?: string | null
+          shopify_order_id?: string | null
+          shopify_price_rule_id?: string | null
           status?: string
           used_at?: string | null
         }
@@ -346,10 +361,13 @@ export type Database = {
           block_reason: string | null
           completed_at: string | null
           created_at: string
+          device_fingerprint_hash: string | null
+          fraud_flags: string[]
           id: string
           points_awarded: boolean
           referred_email: string
           referred_ip: string | null
+          referred_shipping_address_hash: string | null
           referred_shopify_customer_id: string | null
           referrer_ip: string | null
           referrer_member_id: string
@@ -360,10 +378,13 @@ export type Database = {
           block_reason?: string | null
           completed_at?: string | null
           created_at?: string
+          device_fingerprint_hash?: string | null
+          fraud_flags?: string[]
           id?: string
           points_awarded?: boolean
           referred_email: string
           referred_ip?: string | null
+          referred_shipping_address_hash?: string | null
           referred_shopify_customer_id?: string | null
           referrer_ip?: string | null
           referrer_member_id: string
@@ -374,10 +395,13 @@ export type Database = {
           block_reason?: string | null
           completed_at?: string | null
           created_at?: string
+          device_fingerprint_hash?: string | null
+          fraud_flags?: string[]
           id?: string
           points_awarded?: boolean
           referred_email?: string
           referred_ip?: string | null
+          referred_shipping_address_hash?: string | null
           referred_shopify_customer_id?: string | null
           referrer_ip?: string | null
           referrer_member_id?: string
