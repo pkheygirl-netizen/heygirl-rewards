@@ -7,7 +7,6 @@
     "build": "remix vite:build",
     "dev": "shopify app dev",
     "lint": "eslint --cache --cache-location ./node_modules/.cache/eslint .",
-    "setup": "prisma generate",
     "start": "remix-serve ./build/server/index.js",
     "typecheck": "tsc"
   },
@@ -34,7 +33,8 @@
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
     "typescript": "^5.0.0",
-    "vite": "^5.0.0"
+    "vite": "^5.0.0",
+    "vite-tsconfig-paths": "^4.3.0"
   },
   "engines": {
     "node": ">=18.0.0"
