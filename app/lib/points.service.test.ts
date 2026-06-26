@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import {
-  roundAward, roundClawback, computePurchasePoints, mapSocialActionType, selectMultiplier,
+  roundAward, roundClawback, computePurchasePoints, mapSocialActionType, selectMultiplier, generateSlug,
 } from "./points.service";
 
 test("roundAward floors", () => {
@@ -42,4 +42,14 @@ test("selectMultiplier: gold birthday month -> 1 (no multiplier)", () => {
 
 test("selectMultiplier: diamond non-birthday month -> 1", () => {
   expect(selectMultiplier(null, { tier: "diamond", birthday_month: 6 }, 7)).toBe(1);
+});
+
+test("generateSlug: name + 4 random digits, no internal id", () => {
+  const slug = generateSlug("Sara", "Khan");
+  expect(slug).toMatch(/^sara-khan-\d{4}$/);
+});
+
+test("generateSlug: strips unsafe chars, falls back to member", () => {
+  expect(generateSlug("", "")).toMatch(/^member-\d{4}$/);
+  expect(generateSlug("Zoë!", undefined)).toMatch(/^zo-\d{4}$/);
 });
