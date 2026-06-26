@@ -1,0 +1,29 @@
+name = "HeyGirl Rewards"
+client_id = "YOUR_ACTUAL_API_KEY_HERE"
+application_url = "https://heygirl-rewards.onrender.com"
+embedded = true
+
+[access_scopes]
+scopes = "read_customers,write_customers,read_orders,write_orders,read_discounts,write_discounts,read_script_tags,write_script_tags,read_products,write_products"
+
+[auth]
+redirect_urls = ["https://heygirl-rewards.onrender.com/auth/callback"]
+
+[webhooks]
+api_version = "2025-04"
+
+  [[webhooks.subscriptions]]
+  topics = ["orders/updated"]
+  uri = "/webhooks/orders-updated"
+
+  [[webhooks.subscriptions]]
+  topics = ["customers/create"]
+  uri = "/webhooks/customers-create"
+
+  [[webhooks.subscriptions]]
+  topics = ["app/uninstalled"]
+  uri = "/webhooks/app-uninstalled"
+
+[build]
+automatically_update_urls_on_dev = true
+dev_store_url = ""
