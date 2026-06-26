@@ -1,5 +1,5 @@
 name = "HeyGirl Rewards"
-client_id = "YOUR_ACTUAL_API_KEY_HERE"
+client_id = "a8f37fdc6a172e01ab94e0b6ce1898e2"
 application_url = "https://heygirl-rewards.onrender.com"
 embedded = true
 
