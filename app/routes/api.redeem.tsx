@@ -10,8 +10,9 @@ function verifySignature(customerId: string, sig: string | null): boolean {
     .createHmac("sha256", process.env.SHOPIFY_API_SECRET)
     .update(customerId)
     .digest("hex");
+  if (sig.length !== expected.length) return false;
   try {
-    return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+    return crypto.timingSafeEqual(Buffer.from(sig, "hex"), Buffer.from(expected, "hex"));
   } catch {
     return false;
   }
