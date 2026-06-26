@@ -46,6 +46,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         return new Response("enqueue failed", { status: 503 });
       }
     }
+
+    // Mark any loyalty codes used on paid orders
+    if (order.financial_status === "paid") {
+      const discountCodes: Array<{ code: string }> = order.discount_codes ?? [];
+      if (discountCodes.length > 0) {
+        const codes = discountCodes.map((d: { code: string }) => d.code);
+        const { error: codeErr } = await db
+          .from("loyalty_codes")
+          .update({
+            status: "used",
+            used_at: new Date().toISOString(),
+            shopify_order_id: String(order.id),
+          })
+          .in("code", codes)
+          .eq("status", "active");
+        if (codeErr) console.error("[orders-updated] loyalty_codes mark-used error:", codeErr);
+      }
+    }
   } catch (err) {
     console.error("[orders-updated] error:", err);
   }

@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { db } from "../db.server";
 import { shopifyGraphqlWithRetry } from "./shopify-graphql.server";
 
@@ -81,7 +82,7 @@ export async function redeemPoints(input: {
     .from("loyalty_codes")
     .insert({
       member_id: member.id,
-      code: "PENDING", // placeholder until we have the real code
+      code: `PENDING-${crypto.randomUUID()}`, // unique placeholder until we have the real code
       discount_amount: tier.discount_pkr, // required column from original schema
       discount_amount_pkr: tier.discount_pkr,
       points_spent: input.requestedPoints,
