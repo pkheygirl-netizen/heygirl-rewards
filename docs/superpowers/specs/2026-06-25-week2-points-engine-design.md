@@ -11,9 +11,10 @@
 Implement the points **earning and removal** engine: the logic that adds or subtracts points when a customer purchases, follows on social, signs up, has a birthday, or when points expire. Week 1 left clean stubs (webhook writes order state to Supabase and enqueues to `pointsQueue`; workers have no business logic). Week 2 fills in that logic.
 
 In scope this week:
+- **Gating schema migration first** (§11) — idempotency index, `points_remaining`, FIFO index, balance CHECK, one-active-campaign constraint
 - Atomic points-award path (RPC) — the single writer of `members.points_balance`
-- Purchase points (with multipliers + refund claw-back via new `refunds/create` webhook)
-- Signup enrolment + 1,000 signup points (`customers/create` webhook, currently a stub)
+- Purchase points via **`orders/fulfilled`** trigger (multipliers + integer rounding + refund claw-back via new `refunds/create` webhook)
+- Member enrolment on `customers/create`; **1,000 signup points on `customers/enable`**
 - Social action award with **24-hour** delay
 - Birthday cron (1st of month, 9:00 AM PKT) — logs + enqueues notification stub
 - Points expiry cron (daily, 2:00 AM PKT) — FIFO, 30-day warning stub
@@ -59,7 +60,7 @@ The merchant never sees this structure; it only affects maintainability. Small f
 A single Postgres function `award_points(...)` is the **only writer of `members.points_balance`**. No worker or service code mutates the balance directly. Within one transaction:
 
 1. `pg_advisory_xact_lock(hashtextextended(<action_type> || ':' || <reference_id>, 0))` — serializes concurrent jobs for the same action+reference. **`hashtextextended` returns bigint (64-bit), and the key is scoped by `action_type`** so the lock unit matches the idempotency unit (plain `hashtext` returns int4 and would key on reference alone, risking cross-action-space collisions). This is the Week 3 race-condition fix pulled forward into Week 2 (approved). It retires the known dual-webhook race permanently. The lock is transaction-scoped (`_xact_`), so it auto-releases on commit/rollback.
-2. Insert the `points_ledger` row **first**. A **unique index on `(member_id, action_type, reference_id)` created `NULLS NOT DISTINCT`** (Postgres 15+; project is on PG17) makes a duplicate raise a unique-violation, caught and treated as "already awarded." `NULLS NOT DISTINCT` is required because `points_ledger.reference_id` is nullable and a plain unique index treats NULLs as distinct — bypassing idempotency. The migration also makes `reference_id NOT NULL` for award paths by always supplying a key (see table below).
+2. Insert the `points_ledger` row **first**. A **unique index on `(member_id, action_type, reference_id)` created `NULLS NOT DISTINCT`** (Postgres 15+; project is on PG17) makes a duplicate raise a unique-violation, caught and treated as "already awarded." `reference_id` stays **nullable at the column level**, but **every award path supplies a non-null key** (see table below) — including a synthetic key (the ledger row's own UUID, generated client-side before insert) for reference-less actions like `adjustment` and `redemption`. This is deliberate: declaring `reference_id NOT NULL` globally would break legitimate manual adjustments, and relying on `NULLS NOT DISTINCT` to dedupe `adjustment` rows is actively wrong (two distinct manual awards to the same member would collapse into a false duplicate). Synthetic-UUID keys make every award row independently unique while real references (order/refund/social ids) still dedupe correctly.
 3. Compute `balance_after` inside the transaction; `UPDATE members SET points_balance = points_balance + <delta>`.
 4. Where applicable, flip `order_webhook_state.points_awarded = true`.
 
@@ -69,28 +70,36 @@ If the process crashes between the ledger insert and the balance update, the uni
 
 ### Idempotency keys per action type
 
-| Action | `action_type` | `reference_id` |
+**`action_type` values MUST match the live `points_ledger_action_type_check` CHECK constraint exactly.** The DB vocabulary is the source of truth (it is a working guardrail; we do not loosen it to match prose). The allowed values are: `signup, purchase, social_youtube, social_facebook, social_instagram, review, referral_earned, referral_bonus, redemption, expiry, adjustment, birthday, campaign_bonus, refund_deduction`. The advisory-lock key string in §3 step 1 uses the **same** `action_type` string.
+
+| Action | `action_type` (canonical, matches CHECK) | `reference_id` |
 |---|---|---|
 | Purchase | `purchase` | `shopify_order_id` |
-| Refund/return | `refund` | `refund.id` (Shopify refund id — **not** order id; an order can have multiple partial refunds) |
+| Refund/return | `refund_deduction` | `refund.id` (Shopify refund id — **not** order id; an order can have multiple partial refunds) |
 | Signup | `signup` | `shopify_customer_id` |
-| Social | `social` | `social_actions.id` |
-| Referral (Week 3) | `referral` | `referrals.id` |
-| Expiry | `expiry` | per-tranche `points_ledger.id` of the expiring row (deterministic, never null) |
+| Social (YouTube) | `social_youtube` | `social_actions.id` |
+| Social (Facebook) | `social_facebook` | `social_actions.id` |
+| Social (Instagram) | `social_instagram` | `social_actions.id` |
+| Referral earn (Week 3) | `referral_earned` | `referrals.id` |
+| Expiry | `expiry` | the expiring tranche's `points_ledger.id` (deterministic, never null) |
+| Manual adjustment | `adjustment` | synthetic — the new ledger row's own UUID (never collides) |
+| Redemption (Week 3) | `redemption` | `loyalty_codes.id` |
+
+> Note: `social_actions.action_type` stores the short form (`youtube`/`facebook`/`instagram`); the ledger writes the `social_<platform>` long form. The service maps short→long when awarding so the ledger `action_type` always matches the CHECK.
 
 ---
 
 ## 4. Earning rules
 
 ### Purchases
-- **Trigger:** order is **both paid AND fulfilled** (`financial_status == paid` AND `fulfillment_status == fulfilled`), via the existing `orders/updated` gate.
-- **Partial fulfillment:** `fulfillment_status` of `"partial"` (or `null`) does **not** award — points are awarded only when the order reaches fully `"fulfilled"`. This is intended: a split shipment earns nothing until the final parcel ships. Documented so it is a deliberate choice, not a gap.
-- **Base award:** 1 point per Rs.1 of `(order total − shipping − tax)` (subtraction already implemented in `webhooks.orders-updated.tsx`). `total_tax` / `total_shipping_price_set` may be absent on some orders; the existing `?? "0"` guards handle this.
-- **Multiplier:** apply `getActiveMultiplier(member)` (see below), then award via the RPC.
+- **Trigger:** the **`orders/fulfilled`** webhook is the primary earn signal — it is a clean "fully fulfilled" event, avoiding the flapping/`partial`/`null` ambiguity of polling top-level `fulfillment_status` on `orders/updated`. The award job then verifies the order is also `financial_status == paid` (read from the order) before awarding. We keep an `order_webhook_state` row so a paid-before-fulfilled or fulfilled-before-paid ordering still converges (whichever webhook completes the pair triggers the award). `orders/updated` is no longer the gate; `orders/fulfilled` + the paid check replace it. (`orders/paid` is a **valid** topic — the earlier code comment claiming otherwise is wrong — and may be added if a paid-state signal is needed, but `orders/fulfilled` + state row is sufficient.)
+- **Partial fulfillment:** a `"partial"` fulfillment does **not** award — points are awarded only when the order is fully fulfilled. Intended: a split shipment earns nothing until the final parcel ships.
+- **Base award:** 1 point per Rs.1 of `(order total − shipping − tax)`. **Compute on integer paisa, never `parseFloat` PKR** — IEEE-754 subtraction of float rupees can yield `1499.4999998`. Read the order's `numeric` money fields and work in integer paisa, divide at the end.
+- **Multiplier + rounding:** apply `getActiveMultiplier(member)`, then **round to an integer with a single, centralized rule** (`points_balance`, `points`, `balance_after` are all `integer` columns): **awards floor, claw-backs ceil** — so we never over-credit and never under-deduct. This rule lives in `points.service.ts` only; the DB never implicitly coerces a fractional value. Award via the RPC.
 
 ### Multipliers — single value, no stacking
 `getActiveMultiplier(member)` returns exactly one number, evaluated in priority order:
-1. If a bonus campaign is currently active (`bonus_campaigns.is_active` and `now()` within `starts_at`/`ends_at`) → **2×**
+1. If a bonus campaign is currently active (`bonus_campaigns.is_active` and `now()` within `starts_at`/`ends_at`) → use the campaign's **own `multiplier` value** (`numeric(3,1)`, e.g. 2.0 or 2.5) — **not** a hardcoded 2×. One-active-at-a-time is enforced by the exclusion constraint (§11), so the lookup is deterministic.
 2. Else if member tier is **Diamond** AND current month is the member's birthday month → **1.2×**
 3. Else → **1×**
 
@@ -104,14 +113,15 @@ Rules:
   - A new `refunds/create` subscription in `shopify.app.toml` (currently only `orders/updated`, `customers/create`, `app/uninstalled` are subscribed).
   - A new handler `app/routes/webhooks.refunds-create.tsx` that enqueues a refund job keyed on `refund.id`.
 - **Amount:** points clawed back are proportional to the refunded merchandise amount (sum of `refund_line_items` subtotal, excl. shipping/tax — matching the original earn basis). Partial refunds claw back proportionally; full refunds claw back the order's full earned points.
-- Removes points via the **same atomic RPC** with a negative delta and `action_type = refund`, `reference_id = refund.id` (so multiple partial refunds on one order each dedupe independently).
-- Consumes the **same oldest-first (FIFO) tranches** that expiry would later touch, so points are never double-deducted (once by refund, once by expiry).
+- Removes points via the **same atomic RPC** with a negative delta and `action_type = refund_deduction`, `reference_id = refund.id` (so multiple partial refunds on one order each dedupe independently).
+- **FIFO tranche consumption requires a new `points_remaining` column** on `points_ledger` (the current schema has only `points` + a boolean `expired`, which cannot represent a *partially* consumed tranche). Each purchase tranche carries `points_remaining` (initialized to `points`). Refunds decrement `points_remaining` oldest-first; expiry only expires `points_remaining > 0`. Without this column the "same FIFO tranche, no double-deduction" guarantee is **not implementable** — a partial refund of a tranche would later be re-expired in full. This column is part of the gating migration (§11).
 
-### Signup
-- `customers/create` webhook (currently a stub) wired to `enrolMember()`.
-- **Over-trigger guard (NEW):** `customers/create` fires for **any** customer record creation — including **guest checkout** (Shopify creates a customer record for a guest who supplies an email) and merchant/admin/import-created customers — not only genuine storefront sign-ups. Awarding 1,000 points unconditionally would leak points/cost. **Enrolment + signup points are gated on `customer.state === 'enabled'`** (the closest signal that the customer has an actual storefront account). Guest-checkout customers (`state` of `disabled`/`invited`/`declined`) are **not** auto-enrolled here — they follow the guest opt-in flow (build plan §7, later week).
-- **Missing email (NEW):** `members.email` is `NOT NULL` in the schema, but a customer can be created without an email (admin/import paths). `enrolMember()` **skips enrolment and logs** when `customer.email` is absent, rather than attempting an insert that would throw a NOT NULL violation and silently drop. (Alternatively the migration may relax `members.email` to nullable — decision recorded for implementation; default is skip-and-log.)
-- On valid enrolment: creates the `members` row as Silver, generates `referral_slug` (first name + random 4-digit suffix, unique on collision), awards **1,000** signup points via the RPC (`action_type = signup`, `reference_id = shopify_customer_id`).
+### Signup — enrol on create, award on activate
+The original "gate on `customer.state === 'enabled'` inside `customers/create`" was **wrong**: at `customers/create` time a new customer is almost always `state: "disabled"` and only flips to `enabled` *after* clicking the account-activation email — at which point Shopify fires **`customers/enable`**, not `customers/create`. Gating the award on `enabled` inside `customers/create` would award **nobody**. Corrected two-step design:
+
+- **On `customers/create`:** call `enrolMember()` to create the `members` row (Silver, generate `referral_slug`) **but do NOT award signup points yet**. This captures both real signups and guest-checkout records so later merges work. Skip-and-log if `customer.email` is absent (`members.email` is `NOT NULL`; attempting a null insert would throw and silently drop the member).
+- **On `customers/enable`** (new subscription): the customer has genuinely activated a storefront account → award **1,000** signup points via the RPC (`action_type = signup`, `reference_id = shopify_customer_id`). This is the correct "real account created" signal and naturally excludes guest-checkout records that never activate.
+- `referral_slug`: first name + **random 4-digit suffix** (e.g. `sara-4821`), retry on unique collision — **not** the full Shopify customer id (which leaks the internal id into a public URL and is unshareable).
 
 ### Social actions
 - Customer triggers a social action → row inserted into `social_actions` with `status = pending`, `pending_until = now() + 24h`.
@@ -137,7 +147,8 @@ Implemented as **BullMQ repeatable jobs** (approved) — registered on app start
 
 ### Expiry job — daily, 2:00 AM PKT
 - **Silver members only**, and only **purchase-earned** points older than 365 days, oldest-first (FIFO).
-- In one atomic transaction per member: mark the selected `points_ledger` tranches `expired = true`, subtract their sum from `points_balance`, write a compensating `action_type = expiry` ledger row.
+- In one atomic transaction per member: for the selected tranches set `points_remaining = 0` and `expired = true`, subtract their **remaining** sum from `points_balance` (never the original `points` — a tranche partly clawed back by a refund expires only what's left), write a compensating `action_type = expiry` ledger row.
+- `points_balance` can never go negative — a `CHECK (points_balance >= 0)` constraint backs this and claw-backs/expiry clamp at zero (logging any shortfall).
 - **`expires_at` is stamped only on purchase ledger rows for Silver members at award time** — signup/social/referral points and all Gold/Diamond points have `expires_at = null` and never expire.
 - **Tier-upgrade interaction:** when `checkAndUpgradeTier()` promotes a member to Gold/Diamond, it **nulls out pending `expires_at`** on their existing points — points that the rules now say never expire must stop aging.
 - **Catch-up:** queries by `expires_at < now()`, not "since last run" — a missed day is automatically picked up next run. (The **birthday cron has no catch-up** — if its run is missed, that month's birthday rewards are skipped. Mitigated by the always-on worker requirement above.)
@@ -161,15 +172,19 @@ These design decisions diverge from HeyGirl_Rewards_Build_Plan_v2.md and are int
 
 1. **Social action delay: 24 hours** (build plan §4/§8/§14 say 12h). 24h is the new source of truth. Build plan text not yet updated in those spots — flagged here.
 2. **Birthday 1.2× multiplier: Diamond tier ONLY** (build plan originally Gold + Diamond). Build plan §3 (×2) and §4 already updated to reflect this. **T&C requirement:** the (not-yet-drafted) Terms & Conditions must state "the 1.2× birthday-month points multiplier applies to Diamond members only." Recorded here because no T&C document exists yet (build plan §19 open item).
-3. **Week 3 race-condition fix pulled into Week 2:** the `pg_advisory_xact_lock` in the award RPC. Build plan §16 deferred it to Week 3; building the earning engine on a known-racy gate was rejected.
+3. **Week 3 race-condition fix pulled into Week 2:** the `pg_advisory_xact_lock` in the award RPC. Build plan §16 deferred it to Week 3; building the earning engine on a known-racy gate was rejected. (The committed `orders-updated.tsx` comment still says "added in Week 3" — fix during implementation.)
+4. **Earn trigger is `orders/fulfilled`, not the `orders/updated` / `orders/paid` dual gate** (build plan §4). `orders/paid` is a valid topic, but `orders/fulfilled` + a paid check is the cleaner signal and avoids `orders/updated` status-flapping. Build plan §4 still describes the old dual-webhook state machine — superseded here.
+5. **Signup points award on `customers/enable`, not `customers/create`** (build plan §4/§7 imply instant-on-create). The customer is `disabled` at create time; `enabled` is the real activation signal.
+6. **All points are integers with a fixed rounding rule** (floor awards / ceil claw-backs, computed on integer paisa). The build plan's "1 pt per Rs.1" with 1.2×/2× multipliers produces fractions the build plan never addressed.
 
 ---
 
 ## 8. Testing approach
 
-- Unit tests for `points.service.ts` policy functions (multiplier selection, FIFO tranche selection, tier thresholds) — pure TypeScript, no DB.
-- Integration tests for the `award_points` RPC: concurrent double-award attempt (must award once), crash-between-insert-and-update retry (must not double-award), refund claw-back consuming correct FIFO tranches, expiry consistency between ledger and stored balance.
-- Webhook handler tests: duplicate `orders/updated` delivery is idempotent.
+- **Test tooling must be added this week** (no runner currently in `package.json`) — Vitest. Idempotency-under-retry is the single most important correctness property and currently has no harness; it ships in Week 2, not Week 8.
+- Unit tests for `points.service.ts` policy functions (multiplier selection incl. campaign `multiplier` value, integer rounding floor/ceil, FIFO tranche selection with `points_remaining`, tier thresholds) — pure TypeScript, no DB.
+- Integration tests for the `award_points` RPC: concurrent double-award attempt (must award once), crash-between-insert-and-update retry (must not double-award), partial-refund claw-back decrementing correct FIFO tranches, expiry consuming only `points_remaining`, balance never negative.
+- Webhook handler tests: duplicate `orders/fulfilled` delivery is idempotent; `customers/create` enrols without awarding; `customers/enable` awards once.
 
 ---
 
@@ -180,14 +195,31 @@ These design decisions diverge from HeyGirl_Rewards_Build_Plan_v2.md and are int
 - `app/workers/social.worker.ts` (new)
 - `app/workers/cron.worker.ts` (new)
 - `app/lib/queue.server.ts` (refactor — register workers, repeatable jobs)
-- `app/routes/webhooks.orders-updated.tsx` (route award through RPC; keep boolean as fast-path; return non-2xx if the *enqueue* fails so Shopify retries delivery — see §10)
-- `app/routes/webhooks.customers-create.tsx` (wire `enrolMember` with `state === 'enabled'` guard + missing-email skip)
+- `app/routes/webhooks.orders-fulfilled.tsx` (**new** — primary earn trigger; route award through RPC; return non-2xx if the *enqueue* fails so Shopify retries — see §10)
+- `app/routes/webhooks.orders-updated.tsx` (demoted — no longer the earn gate; kept only to maintain `order_webhook_state`/paid status if needed, or removed)
+- `app/routes/webhooks.customers-create.tsx` (wire `enrolMember`, enrol only — no award; missing-email skip; random-4-digit slug)
+- `app/routes/webhooks.customers-enable.tsx` (**new** — awards 1,000 signup points)
 - `app/routes/webhooks.refunds-create.tsx` (**new** — refund claw-back trigger)
-- `shopify.app.toml` (**new subscription** — `refunds/create`)
-- Supabase migration: `award_points` RPC, unique index `(member_id, action_type, reference_id) NULLS NOT DISTINCT` on `points_ledger`, `reference_id NOT NULL` for award paths
+- `app/routes/webhooks.orders-paid.tsx` (fix the false "invalid topic" comment; remove or repurpose deliberately)
+- `shopify.app.toml` (**new subscriptions** — `orders/fulfilled`, `customers/enable`, `refunds/create`)
 - `app/database.types.ts` (regenerate via Supabase MCP after migration)
+
+See §11 for the gating schema migration that must land before any of the above worker/RPC code.
+
+## 11. Gating schema migration (must land FIRST)
+
+The Approach-B correctness argument rests on schema objects that **do not yet exist**. None of the worker/RPC code is correct against the current schema until this single migration ships and `database.types.ts` is regenerated:
+
+1. **Idempotency unique index** — `CREATE UNIQUE INDEX ... ON points_ledger (member_id, action_type, reference_id) NULLS NOT DISTINCT`. (Currently absent — only pkey + member_id/earned_at/expires_at indexes exist.)
+2. **`points_remaining INTEGER`** on `points_ledger` (initialized to `points` for purchase tranches) — enables partial-refund FIFO without double-deduction.
+3. **FIFO composite index** — `CREATE INDEX ... ON points_ledger (member_id, earned_at) WHERE action_type = 'purchase' AND expired = false` — serves the hot per-member FIFO scan (largest table after migration).
+4. **`CHECK (points_balance >= 0)`** on `members`.
+5. **`bonus_campaigns` one-active enforcement** — exclusion constraint preventing overlapping active campaigns, plus an index on `(is_active, starts_at, ends_at)` for the per-purchase multiplier lookup (hot path). Removes the nondeterminism of two active campaigns.
+
+The `award_points` RPC, the refund path, and the expiry cron are all defined against this post-migration schema. The `action_type` CHECK constraint is **left as-is** (it is the canonical vocabulary — see §3).
 
 ## 10. Robustness notes (from infra review)
 
 - **Enqueue failures are not swallowed.** Webhook handlers still return 200 for *business-logic* errors (to avoid Shopify retry storms on bad data), but if the BullMQ `add()` itself throws (e.g. Redis down), the handler returns a non-2xx so Shopify redelivers — otherwise the points job is lost silently after a 200.
 - **Customer-id type consistency.** `shopify_customer_id` is `text` in the schema; all enqueue/award/lookup paths must `String(...)` the Shopify numeric customer id consistently (the current order handler enqueues a raw number) to avoid join misses.
+- **RLS is service-key-only.** All 9 tables have RLS enabled with **zero policies**. The server uses the Supabase service key (which bypasses RLS), so this is fine — but it is recorded explicitly: **no anon/publishable key may read these tables** (it would silently return empty rows, no error). Any storefront balance read must go through the app server, never a direct anon-key query. Adding explicit policies is deferred until a client-direct read path is actually introduced.
