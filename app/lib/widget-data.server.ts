@@ -113,7 +113,25 @@ export async function getPointsHistory(
     .order("created_at", { ascending: false })
     .range(offset, offset + PAGE_SIZE - 1);
 
-  if (filterType) query = query.eq("action_type", filterType);
+  const FILTER_MAP: Record<string, string[]> = {
+    purchase: ["purchase"],
+    redemption: ["redemption"],
+    referral: ["referral"],
+    social: ["social_youtube", "social_facebook", "social_instagram"],
+    other: ["signup", "birthday", "adjustment", "expiry"],
+  };
+
+  if (filterType && FILTER_MAP[filterType]) {
+    const types = FILTER_MAP[filterType];
+    if (types.length === 1) {
+      query = query.eq("action_type", types[0]);
+    } else {
+      query = query.in("action_type", types);
+    }
+  } else if (filterType && !FILTER_MAP[filterType]) {
+    // Unknown filter — pass through as-is (graceful fallback)
+    query = query.eq("action_type", filterType);
+  }
 
   const { data, count } = await query;
   return {

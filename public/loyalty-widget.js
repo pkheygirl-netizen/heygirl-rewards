@@ -395,7 +395,7 @@
     </div>
     <div id="hg-history-list">${j()}</div>
     <div class="hg-pagination" id="hg-history-pagination"></div>
-  `;let t=1,o=null;async function r(i,s){let a=e.querySelector("#hg-history-list"),c=e.querySelector("#hg-history-pagination");a.innerHTML=j(),c.innerHTML="";let{items:m,total:y}=await E(i,s);if(m.length===0){a.innerHTML='<p style="color:#888;font-size:13px;text-align:center;padding:32px 0;">No history yet \u2014 start earning points!</p>';return}a.innerHTML=m.map(g=>{let u=ee[g.action_type]??p(g.action_type),d=te[g.action_type]??"\u2B50",l=g.points>=0,h=g.reason_note?`<div style="font-size:11px;color:#888;">${p(g.reason_note)}</div>`:"";return`
+  `;let t=1,o=null;async function r(i,s){let a=e.querySelector("#hg-history-list"),c=e.querySelector("#hg-history-pagination");a.innerHTML=j(),c.innerHTML="";let{items:m,total:y}=await E(i,s);if(m.length===0){a.innerHTML='<p style="color:#888;font-size:13px;text-align:center;padding:32px 0;">No history yet \u2014 start earning points!</p>';return}a.innerHTML=m.map(g=>{let u=ee[g.action_type]??p(g.action_type),d=te[g.action_type]??"\u2B50",l=g.delta>=0,h=g.reason_note?`<div style="font-size:11px;color:#888;">${p(g.reason_note)}</div>`:"";return`
         <div class="hg-history-item">
           <div style="display:flex;align-items:center;gap:8px;">
             <span style="font-size:18px;line-height:1;">${d}</span>
@@ -406,7 +406,7 @@
             </div>
           </div>
           <div class="hg-history-delta ${l?"hg-positive":"hg-negative"}">
-            ${l?"+":""}${g.points.toLocaleString()} pts
+            ${l?"+":""}${g.delta.toLocaleString()} pts
           </div>
         </div>
       `}).join("");let b=Math.ceil(y/50);b>1&&(c.innerHTML=`

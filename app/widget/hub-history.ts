@@ -90,7 +90,7 @@ export function renderHistoryTab(panel: HTMLElement, _data: CustomerResponse): v
     pagEl.innerHTML = "";
 
     const { items, total } = await fetchHistory(page, filterType) as {
-      items: Array<{ action_type: string; points: number; created_at: string; reason_note?: string }>;
+      items: Array<{ action_type: string; delta: number; created_at: string; reason_note?: string }>;
       total: number;
     };
 
@@ -102,7 +102,7 @@ export function renderHistoryTab(panel: HTMLElement, _data: CustomerResponse): v
     listEl.innerHTML = items.map((item) => {
       const label = ACTION_LABELS[item.action_type] ?? escHtml(item.action_type);
       const icon = ACTION_ICONS[item.action_type] ?? "⭐";
-      const positive = item.points >= 0;
+      const positive = item.delta >= 0;
       const note = item.reason_note ? `<div style="font-size:11px;color:#888;">${escHtml(item.reason_note)}</div>` : "";
       return `
         <div class="hg-history-item">
@@ -115,7 +115,7 @@ export function renderHistoryTab(panel: HTMLElement, _data: CustomerResponse): v
             </div>
           </div>
           <div class="hg-history-delta ${positive ? "hg-positive" : "hg-negative"}">
-            ${positive ? "+" : ""}${item.points.toLocaleString()} pts
+            ${positive ? "+" : ""}${item.delta.toLocaleString()} pts
           </div>
         </div>
       `;
