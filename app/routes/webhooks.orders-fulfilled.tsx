@@ -50,6 +50,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       console.error("[orders-fulfilled] enqueue failed:", enqueueErr);
       return new Response("enqueue failed", { status: 503 }); // Shopify will retry
     }
+
+    // Check if this customer was referred — award referrer points
+    try {
+      await pointsQueue.add("award_referral", {
+        referredShopifyCustomerId: String(customerId),
+      });
+    } catch (refErr) {
+      // Non-critical: log but don't fail the webhook
+      console.error("[orders-fulfilled] referral enqueue failed:", refErr);
+    }
   } catch (err) {
     console.error("[orders-fulfilled] error:", err);
   }

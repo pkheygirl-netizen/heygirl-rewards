@@ -143,3 +143,42 @@ export async function recordReferralVisit(input: {
 
   return { recorded: true, blocked: fraud.blocked };
 }
+
+export async function awardReferral(
+  referredShopifyCustomerId: string,
+): Promise<{ awarded: boolean; points?: number }> {
+  const customerId = String(referredShopifyCustomerId);
+
+  const { data: referral } = await db
+    .from("referrals")
+    .select("id, referrer_member_id, status")
+    .eq("referred_shopify_customer_id", customerId)
+    .eq("status", "pending")
+    .maybeSingle();
+  if (!referral) return { awarded: false };
+
+  const { data: settings } = await db
+    .from("app_settings")
+    .select("referral_points")
+    .eq("id", 1)
+    .maybeSingle();
+  const points = settings?.referral_points ?? 6000;
+
+  const { data, error } = await db.rpc("award_points", {
+    p_member_id: referral.referrer_member_id,
+    p_action_type: "referral_earned",
+    p_reference_id: String(referral.id),
+    p_points: points,
+    p_reason_note: `referral completed by ${customerId}`,
+  });
+  if (error) throw error;
+
+  const awarded = data?.[0]?.awarded ?? false;
+  if (awarded) {
+    await db
+      .from("referrals")
+      .update({ status: "completed" })
+      .eq("id", referral.id);
+  }
+  return { awarded, points: awarded ? points : undefined };
+}
