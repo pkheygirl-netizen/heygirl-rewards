@@ -11,7 +11,7 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- unique index on code (the discount code column)
-CREATE UNIQUE INDEX IF NOT EXISTS loyalty_codes_shopify_code_uniq
+CREATE UNIQUE INDEX IF NOT EXISTS loyalty_codes_code_uniq
   ON public.loyalty_codes (code);
 
 CREATE INDEX IF NOT EXISTS loyalty_codes_member_status_idx
