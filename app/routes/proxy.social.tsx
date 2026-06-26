@@ -7,6 +7,16 @@ import { socialQueue } from "../lib/queue.server";
 const CORS = { "Access-Control-Allow-Origin": "https://heygirl.pk" };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
+  if (request.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "Access-Control-Allow-Origin": "https://heygirl.pk",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+      },
+    });
+  }
   if (request.method !== "POST") return json({ error: "method_not_allowed" }, { status: 405, headers: CORS });
 
   const url = new URL(request.url);
