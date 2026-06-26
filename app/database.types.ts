@@ -298,6 +298,7 @@ export type Database = {
           id: string
           member_id: string
           points: number
+          points_remaining: number | null
           reason_note: string | null
           reference_id: string | null
           shopify_order_id: string | null
@@ -311,6 +312,7 @@ export type Database = {
           id?: string
           member_id: string
           points: number
+          points_remaining?: number | null
           reason_note?: string | null
           reference_id?: string | null
           shopify_order_id?: string | null
@@ -324,6 +326,7 @@ export type Database = {
           id?: string
           member_id?: string
           points?: number
+          points_remaining?: number | null
           reason_note?: string | null
           reference_id?: string | null
           shopify_order_id?: string | null
