@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import {
-  roundAward, roundClawback, computePurchasePoints, mapSocialActionType, selectMultiplier, generateSlug, tierForSpend,
+  roundAward, roundClawback, computePurchasePoints, mapSocialActionType, selectMultiplier, generateSlug, tierForSpend, expiresAtForMember,
 } from "./points.service";
 
 test("roundAward floors", () => {
@@ -60,4 +60,11 @@ test("tierForSpend thresholds", () => {
   expect(tierForSpend(50000)).toBe("gold");
   expect(tierForSpend(99999)).toBe("gold");
   expect(tierForSpend(100000)).toBe("diamond");
+});
+
+test("expiresAtForMember: silver gets +365d, others null", () => {
+  const base = new Date("2026-01-01T00:00:00Z");
+  expect(expiresAtForMember("silver", base)).toBe(new Date("2027-01-01T00:00:00Z").toISOString());
+  expect(expiresAtForMember("gold", base)).toBeNull();
+  expect(expiresAtForMember("diamond", base)).toBeNull();
 });

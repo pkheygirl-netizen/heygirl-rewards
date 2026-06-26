@@ -126,3 +126,57 @@ export async function checkAndUpgradeTier(
     .not("expires_at", "is", null);
   return target;
 }
+
+export function expiresAtForMember(tier: string, earnedAt: Date = new Date()): string | null {
+  if (tier !== "silver") return null;
+  const d = new Date(earnedAt);
+  d.setDate(d.getDate() + 365);
+  return d.toISOString();
+}
+
+export async function awardPurchase(input: {
+  shopifyCustomerId: string;
+  shopifyOrderId: string;
+  orderTotalPaisa: number;
+  shippingPaisa: number;
+  taxPaisa: number;
+}): Promise<{ awarded: boolean; points: number }> {
+  const customerId = String(input.shopifyCustomerId);
+  const { data: member } = await db
+    .from("members")
+    .select("id, tier, birthday_month, lifetime_spend_pkr")
+    .eq("shopify_customer_id", customerId)
+    .maybeSingle();
+  if (!member) {
+    console.warn(`[awardPurchase] no member for customer ${customerId}`);
+    return { awarded: false, points: 0 };
+  }
+
+  const multiplier = await getActiveMultiplier(member, new Date());
+  const points = computePurchasePoints(
+    input.orderTotalPaisa,
+    input.shippingPaisa,
+    input.taxPaisa,
+    multiplier,
+  );
+  if (points <= 0) return { awarded: false, points: 0 };
+
+  const { data, error } = await db.rpc("award_points", {
+    p_member_id: member.id,
+    p_action_type: "purchase",
+    p_reference_id: String(input.shopifyOrderId),
+    p_points: points,
+    p_expires_at: expiresAtForMember(member.tier),
+    p_shopify_order_id: String(input.shopifyOrderId),
+    p_reason_note: null,
+  });
+  if (error) throw error;
+  const awarded = data?.[0]?.awarded ?? false;
+  if (!awarded) return { awarded: false, points: 0 };
+
+  const basisRupees = (input.orderTotalPaisa - input.shippingPaisa - input.taxPaisa) / 100;
+  const newSpend = Number(member.lifetime_spend_pkr) + basisRupees;
+  await db.from("members").update({ lifetime_spend_pkr: newSpend }).eq("id", member.id);
+  await checkAndUpgradeTier(member.id, newSpend, member.tier);
+  return { awarded: true, points };
+}
