@@ -1,4 +1,5 @@
-import type { SessionStorage, Session } from "@shopify/shopify-app-remix/server";
+import type { SessionStorage } from "@shopify/shopify-app-session-storage";
+import type { Session } from "@shopify/shopify-api";
 import { db } from "./db.server";
 
 export class SupabaseSessionStorage implements SessionStorage {
@@ -35,7 +36,7 @@ export class SupabaseSessionStorage implements SessionStorage {
     const session = new (await import("@shopify/shopify-api")).Session({
       id: data.id,
       shop: data.shop,
-      state: data.state,
+      state: data.state ?? "",
       isOnline: data.is_online,
     });
     if (data.scope) session.scope = data.scope;

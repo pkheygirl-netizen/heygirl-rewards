@@ -166,9 +166,9 @@ export async function awardPurchase(input: {
     p_action_type: "purchase",
     p_reference_id: String(input.shopifyOrderId),
     p_points: points,
-    p_expires_at: expiresAtForMember(member.tier),
+    p_expires_at: expiresAtForMember(member.tier) ?? undefined,
     p_shopify_order_id: String(input.shopifyOrderId),
-    p_reason_note: null,
+    p_reason_note: undefined,
   });
   if (error) throw error;
   const awarded = data?.[0]?.awarded ?? false;
@@ -206,9 +206,6 @@ export async function awardSignup(shopifyCustomerId: string): Promise<{ awarded:
     p_action_type: "signup",
     p_reference_id: customerId,
     p_points: points,
-    p_expires_at: null,
-    p_shopify_order_id: null,
-    p_reason_note: null,
   });
   if (error) throw error;
   return { awarded: data?.[0]?.awarded ?? false };
@@ -233,9 +230,6 @@ export async function awardSocial(socialActionId: string): Promise<{ awarded: bo
     p_action_type: ledgerType,
     p_reference_id: socialActionId,
     p_points: points,
-    p_expires_at: null,
-    p_shopify_order_id: null,
-    p_reason_note: null,
   });
   if (error) throw error;
   const awarded = data?.[0]?.awarded ?? false;
@@ -273,8 +267,6 @@ export async function awardRefund(input: {
     p_action_type: "refund_deduction",
     p_reference_id: String(input.refundId),
     p_points: -clawback,
-    p_expires_at: null,
-    p_shopify_order_id: null,
     p_reason_note: "refund",
   });
   if (error) throw error;
@@ -333,8 +325,6 @@ export async function expireSilverPoints(
       p_action_type: "expiry",
       p_reference_id: String(t.id),
       p_points: -amount,
-      p_expires_at: null,
-      p_shopify_order_id: null,
       p_reason_note: "expiry",
     });
     if (error) throw error;

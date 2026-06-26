@@ -470,7 +470,21 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      award_points: {
+        Args: {
+          p_action_type: string
+          p_expires_at?: string
+          p_member_id: string
+          p_points: number
+          p_reason_note?: string
+          p_reference_id: string
+          p_shopify_order_id?: string
+        }
+        Returns: {
+          awarded: boolean
+          new_balance: number
+        }[]
+      }
     }
     Enums: {
       [_ in never]: never

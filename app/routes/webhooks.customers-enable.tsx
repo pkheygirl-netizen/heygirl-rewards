@@ -7,9 +7,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const { topic, shop, payload } = await authenticate.webhook(request);
   console.log(`[webhook] ${topic} from ${shop}`);
   try {
-    const customer = payload as Record<string, any>;
+    const customer = payload as { id?: string | number; email?: string | null; first_name?: string | null; last_name?: string | null };
     if (!customer?.id) return new Response(null, { status: 200 });
-    await enrolMember(customer); // idempotent — ensures member exists if create was missed
+    await enrolMember({ ...customer, id: customer.id }); // idempotent — ensures member exists if create was missed
     try {
       await pointsQueue.add("award_signup_points", { shopifyCustomerId: String(customer.id) });
     } catch (enqueueErr) {
