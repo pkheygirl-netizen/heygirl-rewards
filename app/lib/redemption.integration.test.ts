@@ -6,6 +6,10 @@ vi.mock("../db.server", () => ({
   },
 }));
 
+vi.mock("./queue.server", () => ({
+  notificationQueue: { add: vi.fn().mockResolvedValue(undefined) },
+}));
+
 vi.mock("./shopify-graphql.server", () => ({
   shopifyGraphqlWithRetry: vi.fn(),
 }));

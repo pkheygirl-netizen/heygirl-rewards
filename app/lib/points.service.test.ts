@@ -1,4 +1,9 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
+
+vi.mock("./queue.server", () => ({
+  notificationQueue: { add: vi.fn().mockResolvedValue(undefined) },
+}));
+
 import {
   roundAward, roundClawback, computePurchasePoints, mapSocialActionType, selectMultiplier, generateSlug, tierForSpend, expiresAtForMember,
 } from "./points.service";

@@ -1,4 +1,5 @@
 import { db } from "../db.server";
+import { notificationQueue } from "./queue.server";
 
 const TIER_RANK: Record<string, number> = { silver: 0, gold: 1, diamond: 2 };
 
@@ -133,6 +134,10 @@ export async function checkAndUpgradeTier(
     .eq("member_id", memberId)
     .eq("expired", false)
     .not("expires_at", "is", null);
+  // Notify member of tier upgrade (non-blocking)
+  notificationQueue
+    .add("tier_upgrade", { memberId, newTier: target })
+    .catch((err) => console.error("[checkAndUpgradeTier] notification enqueue failed:", err));
   return target;
 }
 

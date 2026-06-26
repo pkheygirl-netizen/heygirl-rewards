@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { db } from "../db.server";
 import { shopifyGraphqlWithRetry } from "./shopify-graphql.server";
+import { notificationQueue } from "./queue.server";
 
 export type RedemptionTier = { points: number; discount_pkr: number };
 
@@ -180,6 +181,15 @@ export async function redeemPoints(input: {
     .from("loyalty_codes")
     .update({ code: finalCode, shopify_price_rule_id: priceRuleId })
     .eq("id", codeRow.id);
+
+  // Notify member of redemption (non-blocking)
+  notificationQueue
+    .add("redemption_confirmed", {
+      memberId: member.id,
+      code: finalCode,
+      discountPkr: tier.discount_pkr,
+    })
+    .catch((err) => console.error("[redeemPoints] redemption_confirmed enqueue failed:", err));
 
   return { redeemed: true, code: finalCode, discountPkr: tier.discount_pkr };
 }

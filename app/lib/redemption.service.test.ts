@@ -1,4 +1,9 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
+
+vi.mock("./queue.server", () => ({
+  notificationQueue: { add: vi.fn().mockResolvedValue(undefined) },
+}));
+
 import { findTier, validateRedemption, generateCodeValue } from "./redemption.service";
 
 const DEFAULT_TIERS = [

@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
 import { db } from "../db.server";
+import { notificationQueue } from "./queue.server";
+import { awardReferralBonus } from "./referral-bonus.service";
 
 export function hashAddress(address: string): string {
   return crypto.createHash("sha256").update(address.toLowerCase().trim()).digest("hex");
@@ -146,6 +148,7 @@ export async function recordReferralVisit(input: {
 
 export async function awardReferral(
   referredShopifyCustomerId: string,
+  adminClient?: Parameters<typeof awardReferralBonus>[2],
 ): Promise<{ awarded: boolean; points?: number }> {
   const customerId = String(referredShopifyCustomerId);
 
@@ -175,10 +178,36 @@ export async function awardReferral(
 
   const awarded = data?.[0]?.awarded ?? false;
   if (awarded) {
-    await db
-      .from("referrals")
-      .update({ status: "completed" })
-      .eq("id", referral.id);
+    await db.from("referrals").update({ status: "completed" }).eq("id", referral.id);
+
+    // Notify referrer of success (non-blocking)
+    notificationQueue
+      .add("referral_success", { memberId: referral.referrer_member_id, points })
+      .catch((err) => console.error("[awardReferral] referral_success enqueue failed:", err));
+
+    // Award referred friend's free-shipping code (non-blocking, needs admin)
+    if (adminClient) {
+      awardReferralBonus(customerId, String(referral.id), adminClient)
+        .then((result) => {
+          if (result.awarded && result.code) {
+            // Look up referred friend's member ID for the email notification
+            db.from("members")
+              .select("id")
+              .eq("shopify_customer_id", customerId)
+              .maybeSingle()
+              .then(({ data: m }) => {
+                if (m) {
+                  notificationQueue
+                    .add("referral_bonus", { memberId: m.id, code: result.code })
+                    .catch((err) =>
+                      console.error("[awardReferral] referral_bonus enqueue failed:", err),
+                    );
+                }
+              });
+          }
+        })
+        .catch((err) => console.error("[awardReferral] awardReferralBonus failed:", err));
+    }
   }
   return { awarded, points: awarded ? points : undefined };
 }

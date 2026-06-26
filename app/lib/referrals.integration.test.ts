@@ -6,6 +6,14 @@ vi.mock("../db.server", () => ({
   },
 }));
 
+vi.mock("./queue.server", () => ({
+  notificationQueue: { add: vi.fn().mockResolvedValue(undefined) },
+}));
+
+vi.mock("./referral-bonus.service", () => ({
+  awardReferralBonus: vi.fn().mockResolvedValue({ awarded: false, reason: "disabled" }),
+}));
+
 import { awardReferral } from "./referrals.service";
 import { db } from "../db.server";
 
