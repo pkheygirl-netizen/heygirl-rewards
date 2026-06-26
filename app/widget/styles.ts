@@ -214,6 +214,42 @@ export const CSS = `
 .hg-stat-val { font-size: 20px; font-weight: 800; color: #e91e8c; }
 .hg-stat-label { font-size: 11px; color: #888; margin-top: 2px; }
 
+/* My Rewards tab */
+.hg-rewards-hero {
+  background: linear-gradient(135deg, #e91e8c 0%, #c2185b 100%);
+  border-radius: 14px; padding: 18px; margin-bottom: 20px; color: #fff;
+}
+.hg-rewards-pts { font-size: 36px; font-weight: 800; line-height: 1; }
+.hg-rewards-pts-label { font-size: 13px; opacity: 0.85; margin-top: 2px; }
+.hg-section { margin-bottom: 20px; }
+.hg-section-title { font-weight: 700; font-size: 14px; margin-bottom: 10px; }
+.hg-active-code-row {
+  background: #fdf0f8; border-radius: 8px; padding: 10px 12px;
+  margin-bottom: 8px; display: flex; justify-content: space-between;
+  align-items: center; font-size: 13px;
+}
+.hg-redeem-msg {
+  min-height: 24px; font-size: 13px; text-align: center; margin: 0 0 16px;
+}
+.hg-birthday-card {
+  background: linear-gradient(135deg, #fdf0f8, #f7e8f2);
+  border-radius: 12px; padding: 14px; margin-bottom: 20px;
+  border: 1px solid #f0d0e8;
+}
+.hg-reward-room {
+  background: #1a1a1a; border-radius: 12px; padding: 16px;
+  text-align: center; color: #fff; margin-bottom: 8px;
+}
+.hg-reward-room-btn {
+  background: #e91e8c; color: #fff; opacity: 0.75;
+  margin: 0; cursor: pointer;
+}
+.hg-coming-soon-tip {
+  background: #333; color: #fff; border-radius: 6px;
+  padding: 6px 12px; font-size: 12px; text-align: center;
+  margin-top: 8px; animation: hg-slide-up 0.2s ease;
+}
+
 /* VIP tiers */
 .hg-tier-cards { display: flex; flex-direction: column; gap: 12px; }
 .hg-tier-card { border: 2px solid #f7e8f2; border-radius: 12px; padding: 16px; }
