@@ -336,3 +336,66 @@ export async function expireSilverPoints(
   }
   return { membersAffected: affected.size, pointsExpired: total };
 }
+
+// ── GDPR / CCPA compliance ──────────────────────────────────────────────────
+
+/**
+ * customers/redact — erase a customer's personal data. We anonymize in place
+ * rather than delete: FKs from points_ledger/referrals/etc. have no ON DELETE
+ * CASCADE, and the non-identifying transactional records may be retained for
+ * legitimate accounting once the personal identifiers are stripped.
+ */
+export async function redactCustomer(shopifyCustomerId: string): Promise<{ redacted: boolean }> {
+  const customerId = String(shopifyCustomerId);
+  const { data: member } = await db
+    .from("members")
+    .select("id")
+    .eq("shopify_customer_id", customerId)
+    .maybeSingle();
+  if (!member) {
+    console.warn(`[redactCustomer] no member ${customerId}`);
+    return { redacted: false };
+  }
+
+  await db
+    .from("members")
+    .update({
+      email: `redacted-${member.id}@redacted.invalid`,
+      first_name: null,
+      last_name: null,
+      birthday_day: null,
+      birthday_month: null,
+      consent_given: false,
+      consent_given_at: null,
+    })
+    .eq("id", member.id);
+
+  // Strip referral PII (IPs, email, customer id) tied to this person.
+  await db
+    .from("referrals")
+    .update({ referrer_ip: null, referred_ip: null })
+    .eq("referrer_member_id", member.id);
+  await db
+    .from("referrals")
+    .update({ referred_ip: null, referrer_ip: null, referred_email: `redacted-${member.id}@redacted.invalid` })
+    .eq("referred_shopify_customer_id", customerId);
+
+  return { redacted: true };
+}
+
+/**
+ * shop/redact — fires ~48h after uninstall. Single-merchant app, so this erases
+ * all stored data. Deletes children before members (FKs are RESTRICT, no cascade).
+ */
+export async function redactShop(): Promise<{ redacted: boolean }> {
+  const all = (table: "points_ledger" | "loyalty_codes" | "social_actions" | "referrals" | "order_webhook_state" | "members") =>
+    db.from(table).delete().not("id", "is", null);
+
+  await all("points_ledger");
+  await all("loyalty_codes");
+  await all("social_actions");
+  await all("referrals");
+  await all("order_webhook_state");
+  await all("members");
+  return { redacted: true };
+}

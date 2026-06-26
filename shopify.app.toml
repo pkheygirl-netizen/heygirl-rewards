@@ -36,6 +36,18 @@ api_version = "2025-04"
   topics = ["customers/enable"]
   uri = "/webhooks/customers-enable"
 
+  [[webhooks.subscriptions]]
+  topics = ["customers/data_request"]
+  uri = "/webhooks/customers-data-request"
+
+  [[webhooks.subscriptions]]
+  topics = ["customers/redact"]
+  uri = "/webhooks/customers-redact"
+
+  [[webhooks.subscriptions]]
+  topics = ["shop/redact"]
+  uri = "/webhooks/shop-redact"
+
 [build]
 automatically_update_urls_on_dev = true
 dev_store_url = ""
