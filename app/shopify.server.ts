@@ -1,21 +1,48 @@
 import "@shopify/shopify-app-remix/adapters/node";
-import { AppDistribution, shopifyApp } from "@shopify/shopify-app-remix/server";
+import {
+  AppDistribution,
+  BillingInterval,
+  ApiVersion,
+  shopifyApp,
+} from "@shopify/shopify-app-remix/server";
 import { SupabaseSessionStorage } from "./supabase-session-storage.server";
+
+// Billing plan definitions — activate by passing `billing` to shopifyApp() and
+// adding a requiresBilling check in the app loader when monetisation goes live.
+export const PLANS = {
+  FREE: "HeyGirl Rewards — Free",
+} as const;
 
 const shopify = shopifyApp({
   apiKey: process.env.SHOPIFY_API_KEY!,
   apiSecretKey: process.env.SHOPIFY_API_SECRET!,
   appUrl: process.env.SHOPIFY_APP_URL ?? "https://heygirl-rewards.onrender.com",
   scopes: process.env.SCOPES?.split(",") ?? [
+    // Customer data — enrolment, PII, consent
     "read_customers", "write_customers",
-    "read_orders", "write_orders",
+    // Orders — read-only for points calculation (no order editing)
+    "read_orders",
+    // Discounts — generate loyalty redemption codes
     "read_discounts", "write_discounts",
+    // Script tags — reward room widget + storefront event tracking
     "read_script_tags", "write_script_tags",
+    // Products — create/manage hidden reward room products
     "read_products", "write_products",
   ],
-  apiVersion: "2025-04" as any,
+  apiVersion: ApiVersion.April25,
   distribution: AppDistribution.SingleMerchant,
   sessionStorage: new SupabaseSessionStorage(),
+  // Billing scaffold — currently free. To activate paid plans, uncomment the
+  // billing block below and add `await requireBillingOrRedirect(admin, [PLANS.FREE])`
+  // in the app loader.
+  //
+  // billing: {
+  //   [PLANS.FREE]: {
+  //     amount: 0,
+  //     currencyCode: "USD",
+  //     interval: BillingInterval.Every30Days,
+  //   },
+  // },
   hooks: {
     afterAuth: async ({ session }) => {
       await shopify.registerWebhooks({ session });

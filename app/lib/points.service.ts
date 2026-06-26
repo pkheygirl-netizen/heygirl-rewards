@@ -61,12 +61,19 @@ export async function getActiveMultiplier(
   return selectMultiplier(data?.multiplier ?? null, member, now.getMonth() + 1);
 }
 
-export async function enrolMember(customer: {
-  id: number | string;
-  email?: string | null;
-  first_name?: string | null;
-  last_name?: string | null;
-}): Promise<{ enrolled: boolean; reason?: string }> {
+export async function enrolMember(
+  customer: {
+    id: number | string;
+    email?: string | null;
+    first_name?: string | null;
+    last_name?: string | null;
+  },
+  // consent must be explicitly collected via the storefront widget opt-in
+  // checkbox before this is set to true. Defaults to false so webhook-driven
+  // enrolments (customers/create, customers/enable) create the record without
+  // consent until the customer actively joins via the loyalty widget.
+  consentGiven: boolean = false,
+): Promise<{ enrolled: boolean; reason?: string }> {
   const customerId = String(customer.id);
   if (!customer.email) {
     console.warn(`[enrolMember] skip: customer ${customerId} has no email`);
@@ -80,6 +87,7 @@ export async function enrolMember(customer: {
     .maybeSingle();
   if (existing) return { enrolled: false, reason: "already_member" };
 
+  const now = new Date().toISOString();
   for (let attempt = 0; attempt < 5; attempt++) {
     const { error } = await db.from("members").insert({
       shopify_customer_id: customerId,
@@ -90,7 +98,8 @@ export async function enrolMember(customer: {
       points_balance: 0,
       lifetime_spend_pkr: 0,
       referral_slug: generateSlug(customer.first_name, customer.last_name),
-      consent_given: false,
+      consent_given: consentGiven,
+      consent_given_at: consentGiven ? now : null,
     });
     if (!error) return { enrolled: true };
     if (!error.message?.includes("referral_slug")) {
@@ -193,11 +202,18 @@ export async function awardSignup(shopifyCustomerId: string): Promise<{ awarded:
   const customerId = String(shopifyCustomerId);
   const { data: member } = await db
     .from("members")
-    .select("id")
+    .select("id, consent_given")
     .eq("shopify_customer_id", customerId)
     .maybeSingle();
   if (!member) {
     console.warn(`[awardSignup] no member ${customerId}`);
+    return { awarded: false };
+  }
+  // Only award signup bonus if the customer has explicitly opted in via the
+  // loyalty widget. The customers/enable webhook fires for all activations;
+  // consent gates the actual point award.
+  if (!member.consent_given) {
+    console.log(`[awardSignup] skip: customer ${customerId} has not consented`);
     return { awarded: false };
   }
   const points = await settingValue("signup_points", 1000);
