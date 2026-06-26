@@ -269,4 +269,37 @@ export const CSS = `
 }
 .hg-tier-benefit { font-size: 12px; color: #555; margin: 3px 0; }
 .hg-tier-progress-section { margin-top: 16px; padding-top: 16px; border-top: 1px solid #f7e8f2; }
+
+/* ---- Hub Tab 3: Referrals ---- */
+.hg-referral-link-card { background: #fdf0f8; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+.hg-referral-url { background: #fff; border: 1px solid #f0d0e8; border-radius: 8px; padding: 10px; font-size: 12px; color: #888; word-break: break-all; margin-bottom: 10px; }
+.hg-btn { border: none; border-radius: 8px; padding: 9px 14px; font-size: 12px; font-weight: 700; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
+.hg-btn-wa { background: #25d366; color: #fff; flex: 1; }
+.hg-btn-copy { background: #e91e8c; color: #fff; flex: 1; }
+.hg-stats-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 20px; }
+.hg-stat-box { background: #f7e8f2; border-radius: 10px; padding: 10px 6px; text-align: center; }
+.hg-stat-num { font-size: 20px; font-weight: 800; color: #e91e8c; }
+.hg-stat-lbl { font-size: 11px; color: #888; margin-top: 2px; }
+.hg-social-note { font-size: 12px; color: #888; margin-bottom: 10px; }
+.hg-social-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.hg-social-row { display: flex; justify-content: space-between; align-items: center; background: #fdf0f8; border-radius: 10px; padding: 10px 12px; }
+.hg-social-label { font-size: 13px; font-weight: 600; }
+.hg-pts-badge { background: #e91e8c; color: #fff; border-radius: 20px; padding: 2px 7px; font-size: 11px; font-weight: 700; margin-left: 6px; }
+.hg-btn-social { background: #e91e8c; color: #fff; border-radius: 8px; padding: 7px 12px; font-size: 12px; font-weight: 700; border: none; cursor: pointer; }
+.hg-btn-social:disabled { opacity: 0.6; cursor: not-allowed; }
+.hg-social-msg { min-height: 20px; font-size: 13px; text-align: center; margin-bottom: 16px; }
+.hg-msg-ok { color: #2e7d32; }
+.hg-msg-warn { color: #e65100; }
+.hg-msg-err { color: #c62828; }
+.hg-history-section { margin-bottom: 16px; }
+.hg-history-label { font-weight: 600; font-size: 13px; }
+.hg-history-date { font-size: 11px; color: #888; margin-top: 2px; }
+.hg-status-badge { font-size: 12px; text-transform: capitalize; padding: 3px 10px; border-radius: 20px; background: #f7e8f2; color: #e91e8c; }
+.hg-status-rewarded { background: #e8f5e9; color: #2e7d32; }
+.hg-empty-state { font-size: 13px; color: #aaa; text-align: center; padding: 16px 0; }
+.hg-influencer-badge { background: #fff8e1; border: 1px solid #ffe082; border-radius: 10px; padding: 14px; margin-top: 16px; }
+.hg-influencer-title { font-weight: 700; font-size: 13px; margin-bottom: 4px; }
+.hg-influencer-rate { font-size: 12px; color: #555; margin-bottom: 4px; }
+.hg-influencer-stats { font-size: 12px; color: #555; }
 `;
+
