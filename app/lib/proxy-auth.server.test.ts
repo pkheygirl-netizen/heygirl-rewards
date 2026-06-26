@@ -1,7 +1,7 @@
 // app/lib/proxy-auth.server.test.ts
 import { describe, it, expect } from "vitest";
 import crypto from "node:crypto";
-import { buildTestProxyUrl, extractProxyCustomerId } from "./proxy-auth.server";
+import { extractProxyCustomerId } from "./proxy-auth.server";
 
 describe("extractProxyCustomerId", () => {
   it("returns customer_id when Shopify signature is valid", () => {
