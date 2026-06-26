@@ -300,3 +300,41 @@ export async function awardRefund(input: {
   }
   return { awarded: true, deducted: clawback };
 }
+
+export async function expireSilverPoints(
+  now: Date = new Date(),
+): Promise<{ membersAffected: number; pointsExpired: number }> {
+  const iso = now.toISOString();
+  const { data: tranches } = await db
+    .from("points_ledger")
+    .select("id, member_id, points_remaining, members!inner(tier)")
+    .eq("action_type", "purchase")
+    .eq("expired", false)
+    .gt("points_remaining", 0)
+    .lt("expires_at", iso);
+
+  const affected = new Set<string>();
+  let total = 0;
+  for (const t of tranches ?? []) {
+    const tier = (t as any).members?.tier;
+    if (tier !== "silver") continue; // safety: only silver expires
+    const amount = t.points_remaining ?? 0;
+    if (amount <= 0) continue;
+    const { data, error } = await db.rpc("award_points", {
+      p_member_id: t.member_id,
+      p_action_type: "expiry",
+      p_reference_id: String(t.id),
+      p_points: -amount,
+      p_expires_at: null,
+      p_shopify_order_id: null,
+      p_reason_note: "expiry",
+    });
+    if (error) throw error;
+    if (data?.[0]?.awarded) {
+      await db.from("points_ledger").update({ points_remaining: 0, expired: true }).eq("id", t.id);
+      affected.add(t.member_id);
+      total += amount;
+    }
+  }
+  return { membersAffected: affected.size, pointsExpired: total };
+}
