@@ -6,6 +6,7 @@ import {
   shopifyApp,
 } from "@shopify/shopify-app-remix/server";
 import { SupabaseSessionStorage } from "./supabase-session-storage.server";
+import { registerScriptTagAndPage } from "./lib/scripttag.server";
 
 // Billing plan definitions — activate by passing `billing` to shopifyApp() and
 // adding a requiresBilling check in the app loader when monetisation goes live.
@@ -44,8 +45,9 @@ const shopify = shopifyApp({
   //   },
   // },
   hooks: {
-    afterAuth: async ({ session }) => {
+    afterAuth: async ({ session, admin }) => {
       await shopify.registerWebhooks({ session });
+      await registerScriptTagAndPage(admin);
     },
   },
 });
