@@ -267,6 +267,38 @@ export type Database = {
           },
         ]
       }
+      notification_log: {
+        Row: {
+          event_type: string
+          id: string
+          member_id: string
+          reference_id: string
+          sent_at: string
+        }
+        Insert: {
+          event_type: string
+          id?: string
+          member_id: string
+          reference_id?: string
+          sent_at?: string
+        }
+        Update: {
+          event_type?: string
+          id?: string
+          member_id?: string
+          reference_id?: string
+          sent_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "notification_log_member_id_fkey"
+            columns: ["member_id"]
+            isOneToOne: false
+            referencedRelation: "members"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       order_webhook_state: {
         Row: {
           created_at: string
