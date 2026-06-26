@@ -245,3 +245,58 @@ export async function awardSocial(socialActionId: string): Promise<{ awarded: bo
   }
   return { awarded };
 }
+
+export async function awardRefund(input: {
+  shopifyCustomerId: string;
+  refundId: string;
+  refundedMerchandisePaisa: number;
+}): Promise<{ awarded: boolean; deducted: number }> {
+  const customerId = String(input.shopifyCustomerId);
+  const { data: member } = await db
+    .from("members")
+    .select("id")
+    .eq("shopify_customer_id", customerId)
+    .maybeSingle();
+  if (!member) {
+    console.warn(`[awardRefund] no member ${customerId}`);
+    return { awarded: false, deducted: 0 };
+  }
+
+  const clawback = roundClawback(input.refundedMerchandisePaisa / 100);
+  if (clawback <= 0) return { awarded: false, deducted: 0 };
+
+  // Idempotent negative award first; if duplicate refund id, stop (no double FIFO decrement)
+  const { data, error } = await db.rpc("award_points", {
+    p_member_id: member.id,
+    p_action_type: "refund_deduction",
+    p_reference_id: String(input.refundId),
+    p_points: -clawback,
+    p_expires_at: null,
+    p_shopify_order_id: null,
+    p_reason_note: "refund",
+  });
+  if (error) throw error;
+  const awarded = data?.[0]?.awarded ?? false;
+  if (!awarded) return { awarded: false, deducted: 0 };
+
+  // Decrement points_remaining FIFO across purchase tranches
+  let remaining = clawback;
+  const { data: tranches } = await db
+    .from("points_ledger")
+    .select("id, points_remaining")
+    .eq("member_id", member.id)
+    .eq("action_type", "purchase")
+    .eq("expired", false)
+    .gt("points_remaining", 0)
+    .order("earned_at", { ascending: true });
+  for (const t of tranches ?? []) {
+    if (remaining <= 0) break;
+    const take = Math.min(t.points_remaining ?? 0, remaining);
+    await db
+      .from("points_ledger")
+      .update({ points_remaining: (t.points_remaining ?? 0) - take })
+      .eq("id", t.id);
+    remaining -= take;
+  }
+  return { awarded: true, deducted: clawback };
+}
