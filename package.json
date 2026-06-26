@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "build": "remix vite:build",
+    "build": "npm run build:widget && remix vite:build",
+    "build:widget": "node scripts/build-widget.mjs",
     "dev": "shopify app dev",
     "lint": "eslint --cache --cache-location ./node_modules/.cache/eslint .",
     "start": "remix-serve ./build/server/index.js",
