@@ -1,20 +1,20 @@
 import { Worker } from "bullmq";
-import { makeRedis, pointsQueue, notificationQueue } from "../lib/queue.server";
+import { makeRedis, cronQueue, notificationQueue } from "../lib/queue.server";
 import { expireSilverPoints } from "../lib/points.service";
 import { db } from "../db.server";
 
 // Register repeatable jobs (idempotent: stable repeat keys via jobId).
 export async function registerCronJobs() {
-  await pointsQueue.add("cron_expiry", {}, {
+  await cronQueue.add("cron_expiry", {}, {
     repeat: { pattern: "0 2 * * *", tz: "Asia/Karachi" }, jobId: "cron_expiry",
   });
-  await pointsQueue.add("cron_birthday", {}, {
+  await cronQueue.add("cron_birthday", {}, {
     repeat: { pattern: "0 9 1 * *", tz: "Asia/Karachi" }, jobId: "cron_birthday",
   });
 }
 
 export const cronWorker = new Worker(
-  "points",
+  "cron",
   async (job) => {
     if (job.name === "cron_expiry") {
       const r = await expireSilverPoints();

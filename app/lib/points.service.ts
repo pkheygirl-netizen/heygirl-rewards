@@ -174,6 +174,8 @@ export async function awardPurchase(input: {
   const awarded = data?.[0]?.awarded ?? false;
   if (!awarded) return { awarded: false, points: 0 };
 
+  // NOTE: read-modify-write race — safe for MVP (single Shopify store, low concurrency)
+  // Fix before high-concurrency: move lifetime_spend_pkr += into the award_points RPC
   const basisRupees = (input.orderTotalPaisa - input.shippingPaisa - input.taxPaisa) / 100;
   const newSpend = Number(member.lifetime_spend_pkr) + basisRupees;
   await db.from("members").update({ lifetime_spend_pkr: newSpend }).eq("id", member.id);
@@ -279,6 +281,9 @@ export async function awardRefund(input: {
   const awarded = data?.[0]?.awarded ?? false;
   if (!awarded) return { awarded: false, deducted: 0 };
 
+  // NOTE: FIFO decrement is not atomic with RPC — concurrent refunds may over/under-decrement
+  // points_remaining. Balance (via RPC) remains correct; points_remaining can drift.
+  // Fix before high-concurrency: move FIFO decrement into the award_points RPC.
   // Decrement points_remaining FIFO across purchase tranches
   let remaining = clawback;
   const { data: tranches } = await db
@@ -313,6 +318,9 @@ export async function expireSilverPoints(
     .gt("points_remaining", 0)
     .lt("expires_at", iso);
 
+  // NOTE: FIFO decrement is not atomic with RPC — concurrent expiry runs may over/under-decrement
+  // points_remaining. Balance (via RPC) remains correct; points_remaining can drift.
+  // Fix before high-concurrency: move FIFO decrement into the award_points RPC.
   const affected = new Set<string>();
   let total = 0;
   for (const t of tranches ?? []) {

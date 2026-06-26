@@ -15,6 +15,7 @@ function makeRedis() {
 export const pointsQueue = new Queue("points", { connection: makeRedis() });
 export const socialQueue = new Queue("social-actions", { connection: makeRedis() });
 export const notificationQueue = new Queue("notifications", { connection: makeRedis() });
+export const cronQueue = new Queue("cron", { connection: makeRedis() });
 
 // Workers run ONLY in the dedicated worker process (WORKER=1), never the web dyno.
 export function startWorkers() {
