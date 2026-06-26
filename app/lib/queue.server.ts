@@ -24,6 +24,7 @@ export function startWorkers() {
   void import("../workers/points.worker");
   void import("../workers/social.worker");
   void import("../workers/cron.worker");
+  void import("../workers/notification.worker");
   console.log("[workers] started");
 }
 
