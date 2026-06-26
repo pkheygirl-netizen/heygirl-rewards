@@ -203,6 +203,13 @@ export const CSS = `
 .hg-page-btn { background: #f7e8f2; border: none; border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
 .hg-page-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
+/* Skeleton loader rows */
+.hg-skel {
+  display: inline-block; background: #f0e0ea;
+  animation: hg-pulse 1.2s ease-in-out infinite;
+}
+.hg-skeleton-row { opacity: 0.8; }
+
 /* Referral section */
 .hg-referral-card { background: #fdf0f8; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
 .hg-share-row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
