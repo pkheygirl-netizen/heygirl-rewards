@@ -29,3 +29,7 @@ export const authenticate = shopify.authenticate;
 export const unauthenticated = shopify.unauthenticated;
 export const login = shopify.login;
 export const sessionStorage = shopify.sessionStorage;
+
+// Wire workers into server startup (no-op unless WORKER=1)
+import { startWorkers } from "./lib/queue.server";
+startWorkers();
