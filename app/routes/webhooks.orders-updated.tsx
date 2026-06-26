@@ -3,25 +3,23 @@ import { authenticate } from "../shopify.server";
 import { db } from "../db.server";
 import { pointsQueue } from "../lib/queue.server";
 
+const toPaisa = (v: unknown) => Math.round(Number(v ?? 0) * 100);
+
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { topic, shop, payload } = await authenticate.webhook(request);
   console.log(`[webhook] ${topic} from ${shop}`);
-
   try {
     const order = payload as Record<string, any>;
     const customerId = order?.customer?.id;
     if (!customerId) return new Response(null, { status: 200 });
 
-    const shipping = parseFloat(order?.total_shipping_price_set?.shop_money?.amount ?? "0");
-    const tax = parseFloat(order?.total_tax ?? "0");
-    const orderTotal = parseFloat(order?.total_price ?? "0") - shipping - tax;
+    const orderTotalPaisa = toPaisa(order.total_price);
+    const shippingPaisa = toPaisa(order.total_shipping_price_set?.shop_money?.amount);
+    const taxPaisa = toPaisa(order.total_tax);
 
     const { data: existing } = await db
-      .from("order_webhook_state")
-      .select("points_awarded")
-      .eq("shopify_order_id", String(order.id))
-      .maybeSingle();
-
+      .from("order_webhook_state").select("points_awarded")
+      .eq("shopify_order_id", String(order.id)).maybeSingle();
     if (existing?.points_awarded) return new Response(null, { status: 200 });
 
     await db.from("order_webhook_state").upsert(
@@ -30,27 +28,26 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         shopify_customer_id: String(customerId),
         fulfillment_status: order.fulfillment_status ?? null,
         financial_status: order.financial_status ?? null,
-        order_total_pkr: orderTotal,
+        order_total_pkr: (orderTotalPaisa - shippingPaisa - taxPaisa) / 100,
         updated_at: new Date().toISOString(),
       },
-      { onConflict: "shopify_order_id" }
+      { onConflict: "shopify_order_id" },
     );
 
-    if (
-      order.fulfillment_status === "fulfilled" &&
-      order.financial_status === "paid"
-    ) {
-      // Atomic race-condition fix added in Week 3 with advisory lock
-      await pointsQueue.add("award_purchase_points", {
-        shopify_order_id: order.id,
-        shopify_customer_id: customerId,
-        order_total_pkr: orderTotal,
-      });
+    if (order.fulfillment_status === "fulfilled" && order.financial_status === "paid") {
+      try {
+        await pointsQueue.add("award_purchase_points", {
+          shopifyCustomerId: String(customerId),
+          shopifyOrderId: String(order.id),
+          orderTotalPaisa, shippingPaisa, taxPaisa,
+        });
+      } catch (enqueueErr) {
+        console.error("[orders-updated] enqueue failed:", enqueueErr);
+        return new Response("enqueue failed", { status: 503 });
+      }
     }
   } catch (err) {
     console.error("[orders-updated] error:", err);
-    // Always return 200 — prevents Shopify retry storm
   }
-
   return new Response(null, { status: 200 });
 };

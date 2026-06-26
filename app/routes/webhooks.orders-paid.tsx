@@ -1,11 +1,11 @@
 import type { ActionFunctionArgs } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 
-// orders/paid is not a valid Shopify webhook topic in 2025-04.
-// All order payment logic is handled by orders/updated webhook.
-// This stub exists as a safety net and will be removed in Week 3.
+// orders/paid IS a valid topic. Earning is primarily driven by orders/fulfilled
+// + a paid check; orders/updated also converges the paid+fulfilled pair. This
+// route is retained as a no-op acknowledgement and may carry paid-status logic later.
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { topic, shop } = await authenticate.webhook(request);
-  console.log(`[webhook] ${topic} from ${shop} — handled by orders-updated`);
+  console.log(`[webhook] ${topic} from ${shop} — acknowledged`);
   return new Response(null, { status: 200 });
 };
