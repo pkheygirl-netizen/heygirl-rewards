@@ -22,7 +22,13 @@ const SOCIAL_ACTIONS = [
 export async function renderReferralsTab(panel: HTMLElement, _data: CustomerResponse) {
   panel.innerHTML = `<p style="color:#888;font-size:13px;text-align:center;padding:20px 0;">Loading…</p>`;
 
-  const referralData = (await fetchReferral()) as ReferralDashboard | null;
+  let referralData: ReferralDashboard | null = null;
+  try {
+    referralData = (await fetchReferral()) as ReferralDashboard | null;
+  } catch {
+    panel.innerHTML = `<p class="hg-empty-state">Could not load referral data. Please try again later.</p>`;
+    return;
+  }
 
   if (!referralData) {
     panel.innerHTML = `<p style="color:#888;font-size:13px;text-align:center;padding:20px 0;">Referral data unavailable.</p>`;
