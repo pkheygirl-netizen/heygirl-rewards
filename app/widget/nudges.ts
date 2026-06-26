@@ -1,5 +1,6 @@
 // app/widget/nudges.ts
 import type { CustomerResponse } from "./api";
+import { escHtml } from "./utils";
 
 const LS_NUDGE1 = "hg_nudge1_shown";
 const SS_NUDGE5 = "hg_nudge5_shown";
@@ -73,7 +74,7 @@ function showNudge3(code: { code: string; discount_pkr: number }) {
   if (!container) return;
   const el = createNudge(
     `You have an unused Rs.${code.discount_pkr} reward!`,
-    `Apply code <strong>${code.code}</strong> at checkout to save.`,
+    `Apply code <strong>${escHtml(code.code)}</strong> at checkout to save.`,
     "Copy Code",
     "hg-nudge-cart",
     () => { navigator.clipboard?.writeText(code.code); }

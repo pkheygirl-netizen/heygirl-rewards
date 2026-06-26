@@ -1,5 +1,6 @@
 // app/widget/launcher.ts
 import type { CustomerResponse } from "./api";
+import { escHtml } from "./utils";
 
 const TIER_LABEL: Record<string, string> = {
   silver: "◈ Silver",
@@ -58,7 +59,7 @@ export function renderPanel(data: CustomerResponse) {
 
   panel.innerHTML = `
     <div class="hg-panel-header">
-      <div class="hg-name">Hi, ${member.firstName ?? "there"}!</div>
+      <div class="hg-name">Hi, ${escHtml(member.firstName ?? "there")}!</div>
       <span class="hg-tier">${TIER_LABEL[member.tier] ?? member.tier}</span>
       <div class="hg-balance">${member.balance.toLocaleString()} pts</div>
     </div>
