@@ -1,5 +1,7 @@
 import { db } from "../db.server";
 
+const TIER_RANK: Record<string, number> = { silver: 0, gold: 1, diamond: 2 };
+
 export function generateSlug(firstName?: string | null, lastName?: string | null): string {
   const base =
     [firstName, lastName].filter(Boolean).join("-").toLowerCase().replace(/[^a-z0-9-]/g, "") ||
@@ -98,4 +100,29 @@ export async function enrolMember(customer: {
     // else slug collision — retry with a new suffix
   }
   return { enrolled: false, reason: "slug_collision" };
+}
+
+export function tierForSpend(lifetimeSpendPkr: number): "silver" | "gold" | "diamond" {
+  if (lifetimeSpendPkr >= 100000) return "diamond";
+  if (lifetimeSpendPkr >= 50000) return "gold";
+  return "silver";
+}
+
+export async function checkAndUpgradeTier(
+  memberId: string,
+  lifetimeSpendPkr: number,
+  currentTier: string,
+): Promise<string> {
+  const target = tierForSpend(lifetimeSpendPkr);
+  if (TIER_RANK[target] <= TIER_RANK[currentTier]) return currentTier;
+
+  await db.from("members").update({ tier: target }).eq("id", memberId);
+  // Points now never expire for gold/diamond — stop aging existing tranches
+  await db
+    .from("points_ledger")
+    .update({ expires_at: null })
+    .eq("member_id", memberId)
+    .eq("expired", false)
+    .not("expires_at", "is", null);
+  return target;
 }

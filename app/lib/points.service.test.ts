@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import {
-  roundAward, roundClawback, computePurchasePoints, mapSocialActionType, selectMultiplier, generateSlug,
+  roundAward, roundClawback, computePurchasePoints, mapSocialActionType, selectMultiplier, generateSlug, tierForSpend,
 } from "./points.service";
 
 test("roundAward floors", () => {
@@ -52,4 +52,12 @@ test("generateSlug: name + 4 random digits, no internal id", () => {
 test("generateSlug: strips unsafe chars, falls back to member", () => {
   expect(generateSlug("", "")).toMatch(/^member-\d{4}$/);
   expect(generateSlug("Zoë!", undefined)).toMatch(/^zo-\d{4}$/);
+});
+
+test("tierForSpend thresholds", () => {
+  expect(tierForSpend(0)).toBe("silver");
+  expect(tierForSpend(49999)).toBe("silver");
+  expect(tierForSpend(50000)).toBe("gold");
+  expect(tierForSpend(99999)).toBe("gold");
+  expect(tierForSpend(100000)).toBe("diamond");
 });
