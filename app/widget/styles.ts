@@ -261,11 +261,16 @@ export const CSS = `
 .hg-tier-cards { display: flex; flex-direction: column; gap: 12px; }
 .hg-tier-card { border: 2px solid #f7e8f2; border-radius: 12px; padding: 16px; }
 .hg-tier-card.hg-current-tier { border-color: #e91e8c; }
-.hg-tier-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-.hg-tier-name { font-size: 16px; font-weight: 800; }
+.hg-tier-card.hg-achieved-tier { opacity: 0.6; }
+.hg-tier-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 8px; }
+.hg-tier-name { font-size: 16px; font-weight: 800; flex: 1; }
 .hg-current-badge {
   background: #e91e8c; color: #fff; border-radius: 20px;
-  padding: 2px 8px; font-size: 11px; font-weight: 600;
+  padding: 2px 8px; font-size: 11px; font-weight: 600; white-space: nowrap;
+}
+.hg-achieved-badge {
+  background: #f7e8f2; color: #888; border-radius: 20px;
+  padding: 2px 8px; font-size: 11px; font-weight: 600; white-space: nowrap;
 }
 .hg-tier-benefit { font-size: 12px; color: #555; margin: 3px 0; }
 .hg-tier-progress-section { margin-top: 16px; padding-top: 16px; border-top: 1px solid #f7e8f2; }
