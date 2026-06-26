@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import {
-  roundAward, roundClawback, computePurchasePoints, mapSocialActionType,
+  roundAward, roundClawback, computePurchasePoints, mapSocialActionType, selectMultiplier,
 } from "./points.service";
 
 test("roundAward floors", () => {
@@ -26,4 +26,20 @@ test("mapSocialActionType maps short to ledger long form", () => {
   expect(mapSocialActionType("youtube")).toBe("social_youtube");
   expect(mapSocialActionType("facebook")).toBe("social_facebook");
   expect(mapSocialActionType("instagram")).toBe("social_instagram");
+});
+
+test("selectMultiplier: active campaign wins with its own value", () => {
+  expect(selectMultiplier(2.5, { tier: "diamond", birthday_month: 6 }, 6)).toBe(2.5);
+});
+
+test("selectMultiplier: diamond birthday month -> 1.2 when no campaign", () => {
+  expect(selectMultiplier(null, { tier: "diamond", birthday_month: 6 }, 6)).toBe(1.2);
+});
+
+test("selectMultiplier: gold birthday month -> 1 (no multiplier)", () => {
+  expect(selectMultiplier(null, { tier: "gold", birthday_month: 6 }, 6)).toBe(1);
+});
+
+test("selectMultiplier: diamond non-birthday month -> 1", () => {
+  expect(selectMultiplier(null, { tier: "diamond", birthday_month: 6 }, 7)).toBe(1);
 });

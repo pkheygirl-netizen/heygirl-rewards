@@ -5,5 +5,9 @@ export default defineConfig({
     environment: "node",
     include: ["app/**/*.test.ts"],
     globals: false,
+    env: {
+      SUPABASE_URL: "https://zobnrlgfxlbuwlahwngn.supabase.co",
+      SUPABASE_SERVICE_KEY: "test-key-placeholder",
+    },
   },
 });
