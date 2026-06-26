@@ -17,5 +17,5 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   if (!customerId) return json({ error: "not_logged_in" }, { status: 403, headers: CORS });
 
   const data = await getReferralDashboard(customerId);
-  return json({ data }, { headers: CORS });
+  return json(data, { headers: CORS });
 };

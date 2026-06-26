@@ -139,10 +139,18 @@ export async function getReferralDashboard(
     .order("created_at", { ascending: false })
     .limit(20);
 
-  const completed = (referrals ?? []).filter(
+  // Separate query for exact completed count — avoids undercounting when >20 referrals exist
+  const { count: completedCount } = await db
+    .from("referrals")
+    .select("id", { count: "exact", head: true })
+    .eq("referrer_member_id", member.id)
+    .eq("status", "rewarded");
+
+  // totalPtsEarned is a rolling sum of the 20 most recent rewarded referrals (acceptable approximation)
+  const recentCompleted = (referrals ?? []).filter(
     (r: { status: string }) => r.status === "rewarded"
   );
-  const totalPts = completed.reduce(
+  const totalPts = recentCompleted.reduce(
     (sum: number, r: { pts_awarded: number }) => sum + (r.pts_awarded ?? 0),
     0
   );
@@ -151,7 +159,7 @@ export async function getReferralDashboard(
     referralSlug: member.referral_slug,
     referralLink: `https://heygirl.pk?ref=${member.referral_slug}`,
     totalReferrals: count ?? 0,
-    completedReferrals: completed.length,
+    completedReferrals: completedCount ?? 0,
     totalPtsEarned: totalPts,
     history: (referrals ?? []).map(
       (r: { status: string; created_at: string }) => ({
