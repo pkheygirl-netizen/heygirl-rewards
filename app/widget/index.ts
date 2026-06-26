@@ -4,11 +4,12 @@ import { fetchCustomer, type CustomerResponse } from "./api";
 import { renderLauncher, renderPanel } from "./launcher";
 import { initNudges } from "./nudges";
 import { initProductEmbed, initCartInline } from "./embeds";
+import { initHub } from "./hub";
+import { renderLandingPage } from "./landing";
 
 (function () {
   "use strict";
 
-  // Inject CSS once
   function injectCSS() {
     if (document.getElementById("hg-styles")) return;
     const style = document.createElement("style");
@@ -17,7 +18,6 @@ import { initProductEmbed, initCartInline } from "./embeds";
     document.head.appendChild(style);
   }
 
-  // Detect current page context
   function detectPage(): "product" | "cart" | "rewards" | "other" {
     const path = window.location.pathname;
     if (path === "/pages/rewards") return "rewards";
@@ -30,45 +30,27 @@ import { initProductEmbed, initCartInline } from "./embeds";
     try {
       injectCSS();
       const pageType = detectPage();
-
       const data: CustomerResponse | null = await fetchCustomer();
-      if (!data) return; // fail silently
+      if (!data) return;
 
-      // Floating launcher visible on all pages except /pages/rewards
       if (pageType !== "rewards") {
         renderLauncher(data);
         renderPanel(data);
+        initHub(data);
       }
 
-      // Nudges
       if (data.nudgeSettings) {
         initNudges(data, pageType);
       }
 
-      // Page-specific embeds
-      if (pageType === "product") {
-        initProductEmbed(data);
-      }
-      if (pageType === "cart") {
-        initCartInline(data);
-      }
-
-      // /pages/rewards landing page — Plan 5B fills this in
-      if (pageType === "rewards") {
-        renderRewardsLandingPage(data);
-      }
+      if (pageType === "product") initProductEmbed(data);
+      if (pageType === "cart") initCartInline(data);
+      if (pageType === "rewards") renderLandingPage(data);
     } catch {
-      // fail silently — storefront looks normal
+      // fail silently
     }
   }
 
-  // Stub — implemented in Plan 5B
-  function renderRewardsLandingPage(_data: CustomerResponse) {}
-
-  // Expose for Plan 5B to override
-  (window as unknown as Record<string, unknown>).__hgOpenHub = null;
-
-  // Activate: either immediately if DOM ready, or on DOMContentLoaded
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init);
   } else {
