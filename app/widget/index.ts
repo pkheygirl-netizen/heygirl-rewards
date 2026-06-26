@@ -66,7 +66,7 @@ import { initProductEmbed, initCartInline } from "./embeds";
   function renderRewardsLandingPage(_data: CustomerResponse) {}
 
   // Expose for Plan 5B to override
-  (window as unknown as Record<string, unknown>).__hgRenderHub = null;
+  (window as unknown as Record<string, unknown>).__hgOpenHub = null;
 
   // Activate: either immediately if DOM ready, or on DOMContentLoaded
   if (document.readyState === "loading") {
