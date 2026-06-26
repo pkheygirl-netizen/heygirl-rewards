@@ -18,6 +18,13 @@ export const cronWorker = new Worker(
   async (job) => {
     if (job.name === "cron_expiry") {
       const r = await expireSilverPoints();
+      // Also expire stale loyalty codes
+      const { error: codeErr } = await db
+        .from("loyalty_codes")
+        .update({ status: "expired" })
+        .lt("expires_at", new Date().toISOString())
+        .eq("status", "active");
+      if (codeErr) console.error("[cron_expiry] loyalty_codes expiry error:", codeErr);
       // 30-day warning notification stub (real email Week 4)
       console.log("[cron_expiry]", r);
       return r;
