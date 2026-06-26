@@ -180,3 +180,68 @@ export async function awardPurchase(input: {
   await checkAndUpgradeTier(member.id, newSpend, member.tier);
   return { awarded: true, points };
 }
+
+async function settingValue(key: "signup_points" | "social_points", fallback: number): Promise<number> {
+  const { data } = await db.from("app_settings").select(key).eq("id", 1).maybeSingle();
+  const v = (data as Record<string, number> | null)?.[key];
+  return typeof v === "number" ? v : fallback;
+}
+
+export async function awardSignup(shopifyCustomerId: string): Promise<{ awarded: boolean }> {
+  const customerId = String(shopifyCustomerId);
+  const { data: member } = await db
+    .from("members")
+    .select("id")
+    .eq("shopify_customer_id", customerId)
+    .maybeSingle();
+  if (!member) {
+    console.warn(`[awardSignup] no member ${customerId}`);
+    return { awarded: false };
+  }
+  const points = await settingValue("signup_points", 1000);
+  const { data, error } = await db.rpc("award_points", {
+    p_member_id: member.id,
+    p_action_type: "signup",
+    p_reference_id: customerId,
+    p_points: points,
+    p_expires_at: null,
+    p_shopify_order_id: null,
+    p_reason_note: null,
+  });
+  if (error) throw error;
+  return { awarded: data?.[0]?.awarded ?? false };
+}
+
+export async function awardSocial(socialActionId: string): Promise<{ awarded: boolean }> {
+  const { data: row } = await db
+    .from("social_actions")
+    .select("id, member_id, action_type, status")
+    .eq("id", socialActionId)
+    .maybeSingle();
+  if (!row) {
+    console.warn(`[awardSocial] no action ${socialActionId}`);
+    return { awarded: false };
+  }
+  if (row.status !== "pending") return { awarded: false }; // voided/awarded already
+
+  const points = await settingValue("social_points", 1000);
+  const ledgerType = mapSocialActionType(row.action_type as "youtube" | "facebook" | "instagram");
+  const { data, error } = await db.rpc("award_points", {
+    p_member_id: row.member_id,
+    p_action_type: ledgerType,
+    p_reference_id: socialActionId,
+    p_points: points,
+    p_expires_at: null,
+    p_shopify_order_id: null,
+    p_reason_note: null,
+  });
+  if (error) throw error;
+  const awarded = data?.[0]?.awarded ?? false;
+  if (awarded) {
+    await db
+      .from("social_actions")
+      .update({ status: "awarded", points_awarded: points })
+      .eq("id", socialActionId);
+  }
+  return { awarded };
+}
