@@ -39,3 +39,76 @@ export async function getPointsIssuedSeries(
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([date, points]) => ({ date, points }));
 }
+
+export type ActivityItem = {
+  id: string;
+  kind: "earn" | "redeem" | "referral";
+  memberName: string;
+  detail: string;
+  at: string;
+};
+
+function memberName(
+  m: { first_name?: string | null; last_name?: string | null } | null,
+): string {
+  if (!m) return "A member";
+  return [m.first_name, m.last_name].filter(Boolean).join(" ") || "A member";
+}
+
+export async function getActivityFeed(limit = 20): Promise<ActivityItem[]> {
+  const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+  const [earns, redeems, refs] = await Promise.all([
+    db
+      .from("points_ledger")
+      .select("id, points, action_type, earned_at, members(first_name,last_name)")
+      .gte("earned_at", since)
+      .order("earned_at", { ascending: false })
+      .limit(limit),
+    db
+      .from("loyalty_codes")
+      .select("id, created_at, members(first_name,last_name)")
+      .gte("created_at", since)
+      .order("created_at", { ascending: false })
+      .limit(limit),
+    db
+      .from("referrals")
+      .select("id, completed_at, members:referrer_member_id(first_name,last_name)")
+      .gte("completed_at", since)
+      .order("completed_at", { ascending: false })
+      .limit(limit),
+  ]);
+
+  const items: ActivityItem[] = [];
+  for (const r of earns.data ?? []) {
+    if ((r.points as number) <= 0) continue;
+    items.push({
+      id: r.id as string,
+      kind: "earn",
+      memberName: memberName(r.members as any),
+      detail: `earned ${r.points} points (${r.action_type})`,
+      at: r.earned_at as string,
+    });
+  }
+  for (const r of redeems.data ?? []) {
+    items.push({
+      id: r.id as string,
+      kind: "redeem",
+      memberName: memberName(r.members as any),
+      detail: "redeemed a reward",
+      at: r.created_at as string,
+    });
+  }
+  for (const r of refs.data ?? []) {
+    if (!r.completed_at) continue;
+    items.push({
+      id: r.id as string,
+      kind: "referral",
+      memberName: memberName(r.members as any),
+      detail: "completed a referral",
+      at: r.completed_at as string,
+    });
+  }
+
+  return items.sort((a, b) => b.at.localeCompare(a.at)).slice(0, limit);
+}

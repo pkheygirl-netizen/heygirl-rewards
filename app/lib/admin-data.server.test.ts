@@ -65,3 +65,56 @@ describe("getPointsIssuedSeries", () => {
     ]);
   });
 });
+
+describe("getActivityFeed", () => {
+  it("merges and sorts recent events newest-first", async () => {
+    vi.resetModules();
+    vi.doMock("../db.server", () => ({
+      db: {
+        from: vi.fn((table: string) => ({
+          select: vi.fn(() => ({
+            gte: vi.fn(() => ({
+              order: vi.fn(() => ({
+                limit: vi.fn(() =>
+                  Promise.resolve({
+                    data:
+                      table === "points_ledger"
+                        ? [
+                            {
+                              id: "l1",
+                              points: 1200,
+                              action_type: "purchase",
+                              earned_at: "2026-06-26T10:00:00Z",
+                              members: { first_name: "Sara", last_name: "K" },
+                            },
+                          ]
+                        : table === "loyalty_codes"
+                          ? [
+                              {
+                                id: "c1",
+                                created_at: "2026-06-26T11:00:00Z",
+                                members: { first_name: "Mina", last_name: "A" },
+                              },
+                            ]
+                          : [
+                              {
+                                id: "r1",
+                                completed_at: "2026-06-26T09:00:00Z",
+                                members: { first_name: "Zoya", last_name: "B" },
+                              },
+                            ],
+                    error: null,
+                  }),
+                ),
+              })),
+            })),
+          })),
+        })),
+      },
+    }));
+    const { getActivityFeed } = await import("./admin-data.server");
+    const feed = await getActivityFeed(10);
+    expect(feed.map((f) => f.id)).toEqual(["c1", "l1", "r1"]);
+    expect(feed[1]).toMatchObject({ kind: "earn", memberName: "Sara K" });
+  });
+});
