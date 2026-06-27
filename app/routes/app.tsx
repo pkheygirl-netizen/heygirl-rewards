@@ -1,13 +1,19 @@
 // app/routes/app.tsx
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { Outlet, useLocation, useNavigate } from "@remix-run/react";
+import {
+  Outlet,
+  useLoaderData,
+  useLocation,
+  useNavigate,
+} from "@remix-run/react";
 import { Tabs } from "@shopify/polaris";
+import { AppProvider } from "@shopify/shopify-app-remix/react";
 import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
-  return json({});
+  return json({ apiKey: process.env.SHOPIFY_API_KEY ?? "" });
 };
 
 const TABS = [
@@ -22,6 +28,7 @@ const TABS = [
 ];
 
 export default function AdminLayout() {
+  const { apiKey } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -35,12 +42,14 @@ export default function AdminLayout() {
   );
 
   return (
-    <Tabs
-      tabs={TABS.map((t) => ({ id: t.id, content: t.content }))}
-      selected={selected}
-      onSelect={(i) => navigate(TABS[i].path)}
-    >
-      <Outlet />
-    </Tabs>
+    <AppProvider isEmbeddedApp apiKey={apiKey}>
+      <Tabs
+        tabs={TABS.map((t) => ({ id: t.id, content: t.content }))}
+        selected={selected}
+        onSelect={(i) => navigate(TABS[i].path)}
+      >
+        <Outlet />
+      </Tabs>
+    </AppProvider>
   );
 }
