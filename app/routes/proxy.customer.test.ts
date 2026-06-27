@@ -35,7 +35,8 @@ describe("proxy.customer loader", () => {
       tier_progress_diamond_threshold: 10000,
     });
     const res = await loader({ request: makeRequest(), params: {}, context: {} });
-    const body = await res.json();
+    // Loader returns a per-branch union; cast for assertion access.
+    const body = (await res.json()) as any;
     expect(body.loggedIn).toBe(false);
     expect(body.nudgeSettings).toBeDefined();
   });
@@ -63,7 +64,8 @@ describe("proxy.customer loader", () => {
       tier_progress_diamond_threshold: 10000,
     });
     const res = await loader({ request: makeRequest(), params: {}, context: {} });
-    const body = await res.json();
+    // Loader returns a per-branch union; cast for assertion access.
+    const body = (await res.json()) as any;
     expect(body.loggedIn).toBe(true);
     expect(body.member.balance).toBe(4500);
     expect(body.member.tier).toBe("silver");
