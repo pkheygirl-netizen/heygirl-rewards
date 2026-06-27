@@ -33,6 +33,13 @@ const shopify = shopifyApp({
   apiVersion: ApiVersion.April25,
   distribution: AppDistribution.SingleMerchant,
   sessionStorage: new SupabaseSessionStorage(),
+  // Use OAuth token exchange (managed install) instead of the auth-code flow.
+  // The auth-code flow exits the admin iframe to run OAuth, which caused an
+  // /auth/exit-iframe → /auth redirect loop on embedded load. Token exchange
+  // swaps the App Bridge session token for an access token with no iframe exit.
+  future: {
+    unstable_newEmbeddedAuthStrategy: true,
+  },
   // Billing scaffold — currently free. To activate paid plans, uncomment the
   // billing block below and add `await requireBillingOrRedirect(admin, [PLANS.FREE])`
   // in the app loader.
