@@ -55,6 +55,11 @@ export async function updateSettings(patch: Record<string, unknown>): Promise<vo
     if (allowed.has(k)) filtered[k] = v;
   }
   if (Object.keys(filtered).length === 0) throw new Error("no editable fields");
-  const { error } = await db.from("app_settings").update(filtered).eq("id", 1);
+  // Cast: `filtered` includes columns added in migration 006 that are not yet
+  // in the (stale) generated types. See get/updateSettings constraint.
+  const { error } = await db
+    .from("app_settings")
+    .update(filtered as never)
+    .eq("id", 1);
   if (error) throw error;
 }
