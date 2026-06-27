@@ -9,20 +9,44 @@ import { db } from "../db.server";
 const mockFrom = db.from as ReturnType<typeof vi.fn>;
 beforeEach(() => vi.clearAllMocks());
 
-test("birthdayDiscountPkr: silver → 250", () => {
-  expect(birthdayDiscountPkr("silver")).toBe(250);
+function mockEmptySettings() {
+  mockFrom.mockReturnValue({
+    select: vi.fn().mockReturnThis(),
+    eq: vi.fn().mockReturnThis(),
+    maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+  });
+}
+
+test("birthdayDiscountPkr: silver → 250 (default)", async () => {
+  mockEmptySettings();
+  expect(await birthdayDiscountPkr("silver")).toBe(250);
 });
 
-test("birthdayDiscountPkr: gold → 500", () => {
-  expect(birthdayDiscountPkr("gold")).toBe(500);
+test("birthdayDiscountPkr: gold → 500 (default)", async () => {
+  mockEmptySettings();
+  expect(await birthdayDiscountPkr("gold")).toBe(500);
 });
 
-test("birthdayDiscountPkr: diamond → 1000", () => {
-  expect(birthdayDiscountPkr("diamond")).toBe(1000);
+test("birthdayDiscountPkr: diamond → 1000 (default)", async () => {
+  mockEmptySettings();
+  expect(await birthdayDiscountPkr("diamond")).toBe(1000);
 });
 
-test("birthdayDiscountPkr: unknown tier → 250 (silver default)", () => {
-  expect(birthdayDiscountPkr("unknown")).toBe(250);
+test("birthdayDiscountPkr: unknown tier → 250 (silver default)", async () => {
+  mockEmptySettings();
+  expect(await birthdayDiscountPkr("unknown")).toBe(250);
+});
+
+test("birthdayDiscountPkr: reads override from settings", async () => {
+  mockFrom.mockReturnValue({
+    select: vi.fn().mockReturnThis(),
+    eq: vi.fn().mockReturnThis(),
+    maybeSingle: vi.fn().mockResolvedValue({
+      data: { birthday_reward_gold_pkr: 750 },
+      error: null,
+    }),
+  });
+  expect(await birthdayDiscountPkr("gold")).toBe(750);
 });
 
 test("awardBirthdayReward: returns already_awarded_this_month on duplicate", async () => {

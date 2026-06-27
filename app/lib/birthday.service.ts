@@ -22,10 +22,20 @@ const CREATE_DISCOUNT_CODE = `
   }
 `;
 
-export function birthdayDiscountPkr(tier: string): number {
-  if (tier === "diamond") return 1000;
-  if (tier === "gold") return 500;
-  return 250;
+function num(v: unknown, fallback: number): number {
+  return typeof v === "number" ? v : fallback;
+}
+
+export async function birthdayDiscountPkr(tier: string): Promise<number> {
+  const { data } = await db
+    .from("app_settings")
+    .select("*")
+    .eq("id", 1)
+    .maybeSingle();
+  const s = (data as Record<string, unknown>) ?? {};
+  if (tier === "diamond") return num(s.birthday_reward_diamond_pkr, 1000);
+  if (tier === "gold") return num(s.birthday_reward_gold_pkr, 500);
+  return num(s.birthday_reward_silver_pkr, 250);
 }
 
 export async function awardBirthdayReward(
@@ -62,7 +72,7 @@ export async function awardBirthdayReward(
     return { awarded: false, reason: "member_not_found" };
   }
 
-  const discountPkr = birthdayDiscountPkr(member.tier);
+  const discountPkr = await birthdayDiscountPkr(member.tier);
   const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
 
   const priceRuleResult = await shopifyGraphqlWithRetry<{
