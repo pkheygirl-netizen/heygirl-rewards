@@ -50,7 +50,7 @@ export async function getMemberDashboard(
   const { data: member } = await db
     .from("members")
     .select(
-      "id, first_name, tier, points_balance, lifetime_spend_paisa, referral_slug, birthday_month"
+      "id, first_name, tier, points_balance, lifetime_spend_pkr, referral_slug, birthday_month"
     )
     .eq("shopify_customer_id", shopifyCustomerId)
     .maybeSingle();
@@ -58,7 +58,8 @@ export async function getMemberDashboard(
   if (!member) return null;
 
   const activeCodes = await getActiveLoyaltyCodes(shopifyCustomerId);
-  const lifetimeSpend = Math.floor((member.lifetime_spend_paisa ?? 0) / 100);
+  // lifetime_spend_pkr is stored directly in rupees (PKR), not paisa.
+  const lifetimeSpend = member.lifetime_spend_pkr ?? 0;
 
   let nextTier: "gold" | "diamond" | null = null;
   let spendToNextTier = 0;
@@ -78,13 +79,11 @@ export async function getMemberDashboard(
     lifetimeSpend,
     nextTier,
     spendToNextTier,
-    activeCodes: (activeCodes ?? []).map(
-      (c: { code: string; discount_pkr: number; expires_at: string }) => ({
-        code: c.code,
-        discount_pkr: c.discount_pkr,
-        expires_at: c.expires_at,
-      })
-    ),
+    activeCodes: (activeCodes ?? []).map((c) => ({
+      code: c.code,
+      discount_pkr: c.discount_amount_pkr,
+      expires_at: c.expires_at ?? "",
+    })),
     referralSlug: member.referral_slug ?? null,
     birthdayMonth: member.birthday_month ?? null,
   };
@@ -108,9 +107,13 @@ export async function getPointsHistory(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let query: any = db
     .from("points_ledger")
-    .select("id, action_type, delta, balance_after, created_at", { count: "exact" })
+    // points_ledger stores the amount in `points` and the timestamp in
+    // `earned_at`; alias them to the widget's expected `delta`/`created_at`.
+    .select("id, action_type, delta:points, balance_after, created_at:earned_at", {
+      count: "exact",
+    })
     .eq("member_id", member.id)
-    .order("created_at", { ascending: false })
+    .order("earned_at", { ascending: false })
     .range(offset, offset + PAGE_SIZE - 1);
 
   const FILTER_MAP: Record<string, string[]> = {
@@ -145,14 +148,14 @@ export async function getReferralDashboard(
 ): Promise<ReferralDashboard | null> {
   const { data: member } = await db
     .from("members")
-    .select("id, referral_slug, is_influencer, custom_referral_rate")
+    .select("id, referral_slug, is_influencer, influencer_referral_rate")
     .eq("shopify_customer_id", shopifyCustomerId)
     .maybeSingle();
   if (!member || !member.referral_slug) return null;
 
   const { data: referrals, count } = await db
     .from("referrals")
-    .select("status, created_at, pts_awarded", { count: "exact" })
+    .select("status, created_at", { count: "exact" })
     .eq("referrer_member_id", member.id)
     .order("created_at", { ascending: false })
     .limit(20);
@@ -162,14 +165,17 @@ export async function getReferralDashboard(
     .from("referrals")
     .select("id", { count: "exact", head: true })
     .eq("referrer_member_id", member.id)
-    .eq("status", "rewarded");
+    .eq("status", "completed");
 
-  // totalPtsEarned is a rolling sum of the 20 most recent rewarded referrals (acceptable approximation)
-  const recentCompleted = (referrals ?? []).filter(
-    (r: { status: string }) => r.status === "rewarded"
-  );
-  const totalPts = recentCompleted.reduce(
-    (sum: number, r: { pts_awarded: number }) => sum + (r.pts_awarded ?? 0),
+  // referrals.points_awarded is a boolean flag, not an amount — the actual
+  // points earned live in points_ledger under the referral action types.
+  const { data: referralLedger } = await db
+    .from("points_ledger")
+    .select("points")
+    .eq("member_id", member.id)
+    .in("action_type", ["referral_earned", "referral_bonus"]);
+  const totalPts = (referralLedger ?? []).reduce(
+    (sum, r) => sum + (r.points ?? 0),
     0
   );
 
@@ -186,24 +192,28 @@ export async function getReferralDashboard(
       })
     ),
     isInfluencer: member.is_influencer ?? false,
-    customRate: member.custom_referral_rate ?? null,
+    customRate: member.influencer_referral_rate ?? null,
   };
 }
 
 export async function getNudgeSettings(): Promise<NudgeSettings> {
+  // The nudge config lives in individual boolean columns (there is no single
+  // `nudge_settings` JSON column). Map them to the widget's nudge1/2/3/5 shape
+  // (nudge4 = post-purchase is email-only and intentionally not surfaced here).
   const { data } = await db
     .from("app_settings")
-    .select("nudge_settings")
+    .select(
+      "nudge_account_creation_enabled, nudge_points_spending_enabled, nudge_reward_usage_enabled, nudge_tier_progress_enabled, tier_progress_gold_threshold_pkr, tier_progress_diamond_threshold_pkr"
+    )
     .eq("id", 1)
     .maybeSingle();
 
-  const s = (data?.nudge_settings as Partial<NudgeSettings>) ?? {};
   return {
-    nudge1_enabled: s.nudge1_enabled ?? true,
-    nudge2_enabled: s.nudge2_enabled ?? true,
-    nudge3_enabled: s.nudge3_enabled ?? true,
-    nudge5_enabled: s.nudge5_enabled ?? true,
-    tier_progress_gold_threshold: s.tier_progress_gold_threshold ?? 5000,
-    tier_progress_diamond_threshold: s.tier_progress_diamond_threshold ?? 10000,
+    nudge1_enabled: data?.nudge_account_creation_enabled ?? true,
+    nudge2_enabled: data?.nudge_points_spending_enabled ?? true,
+    nudge3_enabled: data?.nudge_reward_usage_enabled ?? true,
+    nudge5_enabled: data?.nudge_tier_progress_enabled ?? true,
+    tier_progress_gold_threshold: data?.tier_progress_gold_threshold_pkr ?? 5000,
+    tier_progress_diamond_threshold: data?.tier_progress_diamond_threshold_pkr ?? 10000,
   };
 }

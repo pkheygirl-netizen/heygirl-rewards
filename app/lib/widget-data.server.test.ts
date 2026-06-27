@@ -36,7 +36,7 @@ describe("getMemberDashboard", () => {
         first_name: "Aisha",
         tier: "silver",
         points_balance: 1200,
-        lifetime_spend_paisa: 2000000, // Rs.20,000
+        lifetime_spend_pkr: 20000, // Rs.20,000 (stored in rupees)
         referral_slug: "aisha-1234",
         birthday_month: 3,
       }) as never
@@ -56,7 +56,7 @@ describe("getMemberDashboard", () => {
         first_name: "Sara",
         tier: "diamond",
         points_balance: 50000,
-        lifetime_spend_paisa: 12000000, // Rs.120,000
+        lifetime_spend_pkr: 120000, // Rs.120,000 (stored in rupees)
         referral_slug: "sara-9999",
         birthday_month: null,
       }) as never
