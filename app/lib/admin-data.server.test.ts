@@ -118,3 +118,11 @@ describe("getActivityFeed", () => {
     expect(feed[1]).toMatchObject({ kind: "earn", memberName: "Sara K" });
   });
 });
+
+describe("getOverviewKpis", () => {
+  it("computes conversion rate as redeemed/issued, 0 when no issuance", async () => {
+    const { conversionRate } = await import("./admin-data.server");
+    expect(conversionRate(500, 1000)).toBe(0.5);
+    expect(conversionRate(500, 0)).toBe(0);
+  });
+});

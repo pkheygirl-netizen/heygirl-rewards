@@ -112,3 +112,77 @@ export async function getActivityFeed(limit = 20): Promise<ActivityItem[]> {
 
   return items.sort((a, b) => b.at.localeCompare(a.at)).slice(0, limit);
 }
+
+export function conversionRate(redeemed: number, issued: number): number {
+  if (issued <= 0) return 0;
+  return redeemed / issued;
+}
+
+function startOfTodayUtc(): string {
+  const d = new Date();
+  d.setUTCHours(0, 0, 0, 0);
+  return d.toISOString();
+}
+
+function startOfMonthUtc(): string {
+  const d = new Date();
+  d.setUTCDate(1);
+  d.setUTCHours(0, 0, 0, 0);
+  return d.toISOString();
+}
+
+export type OverviewKpis = {
+  todayNewMembers: number;
+  todayRedemptions: number;
+  todayPointsAwarded: number;
+  activeReferrals: number;
+  pointsRedeemedThisMonth: number;
+  redemptionConversionRate: number;
+  pointsIssuedThisMonth: number;
+};
+
+export async function getOverviewKpis(): Promise<OverviewKpis> {
+  const today = startOfTodayUtc();
+  const monthStart = startOfMonthUtc();
+
+  const [newMembers, redemptionsToday, refs] = await Promise.all([
+    db.from("members").select("*", { count: "exact", head: true }).gte("enrolled_at", today),
+    db
+      .from("loyalty_codes")
+      .select("*", { count: "exact", head: true })
+      .gte("created_at", today),
+    db.from("referrals").select("*", { count: "exact", head: true }).eq("status", "pending"),
+  ]);
+
+  const todayLedger = await db
+    .from("points_ledger")
+    .select("points, action_type, earned_at")
+    .gte("earned_at", today);
+  if (todayLedger.error) throw todayLedger.error;
+  const todayPointsAwarded = (todayLedger.data ?? [])
+    .filter((r) => (r.points as number) > 0)
+    .reduce((s, r) => s + (r.points as number), 0);
+
+  const monthLedger = await db
+    .from("points_ledger")
+    .select("points, action_type")
+    .gte("earned_at", monthStart);
+  if (monthLedger.error) throw monthLedger.error;
+  let issued = 0;
+  let redeemed = 0;
+  for (const r of monthLedger.data ?? []) {
+    const p = r.points as number;
+    if (p > 0) issued += p;
+    if (r.action_type === "redemption") redeemed += Math.abs(p);
+  }
+
+  return {
+    todayNewMembers: newMembers.count ?? 0,
+    todayRedemptions: redemptionsToday.count ?? 0,
+    todayPointsAwarded,
+    activeReferrals: refs.count ?? 0,
+    pointsRedeemedThisMonth: redeemed,
+    pointsIssuedThisMonth: issued,
+    redemptionConversionRate: conversionRate(redeemed, issued),
+  };
+}
