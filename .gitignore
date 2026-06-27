@@ -2,6 +2,19 @@ node_modules/
 build/
 .cache/
 .env
-.env.local
+.env.*
+!.env.example
 .shopify/
 *.log
+
+# Shopify app config holds the app's client_id / scopes / URLs — keep local only.
+# Commit shopify.app.example.toml (placeholder values) instead.
+shopify.app.toml
+shopify.app.*.toml
+!shopify.app.example.toml
+
+# Stray compiled JS siblings of TS sources (this repo builds from .ts on Render).
+# They shadow .tsx routes locally and cause Route-ID collisions — never commit them.
+app/**/*.js
+vite.config.js
+vitest.config.js

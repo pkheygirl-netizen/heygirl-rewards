@@ -1,13 +1,16 @@
+# Example Shopify app config. Copy to `shopify.app.toml` and fill in real values.
+# `shopify.app.toml` is gitignored (kept local only). The client_secret is NEVER
+# stored here — it lives in the environment (see .env.example / Render env vars).
 name = "HeyGirl Rewards"
-client_id = "a8f37fdc6a172e01ab94e0b6ce1898e2"
-application_url = "https://heygirl-rewards.onrender.com"
+client_id = "YOUR_SHOPIFY_CLIENT_ID"
+application_url = "https://your-app.onrender.com"
 embedded = true
 
 [access_scopes]
 scopes = "read_customers,write_customers,read_orders,read_discounts,write_discounts,read_script_tags,write_script_tags,read_products,write_products"
 
 [auth]
-redirect_urls = ["https://heygirl-rewards.onrender.com/auth/callback"]
+redirect_urls = ["https://your-app.onrender.com/auth/callback"]
 
 [webhooks]
 api_version = "2025-04"
@@ -53,6 +56,6 @@ automatically_update_urls_on_dev = true
 dev_store_url = ""
 
 [app_proxy]
-url = "https://heygirl-rewards.onrender.com/proxy"
+url = "https://your-app.onrender.com/proxy"
 subpath = "loyalty"
 prefix = "apps"
