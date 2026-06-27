@@ -16,24 +16,36 @@ export type Database = {
     Tables: {
       app_settings: {
         Row: {
+          birthday_reward_diamond_pkr: number
+          birthday_reward_gold_pkr: number
+          birthday_reward_silver_pkr: number
+          bonus_campaign_default_multiplier: number
           brand_color_primary: string
           brand_color_secondary: string
+          faqs: Json
           id: number
+          influencer_cta_link: string | null
           nudge_account_creation_enabled: boolean
           nudge_points_spending_enabled: boolean
           nudge_post_purchase_enabled: boolean
           nudge_reward_usage_enabled: boolean
           nudge_tier_progress_enabled: boolean
+          nudges_config: Json
           program_name: string
           purchase_points_rate: number
           redemption_tiers: Json
           referral_friend_discount_pkr: number
           referral_points: number
           review_points: number
+          shopify_email_injection_enabled: boolean
           signup_points: number
           silver_expiry_days: number
           social_points: number
+          social_points_facebook: number
+          social_points_instagram: number
+          social_points_youtube: number
           tagline: string
+          terms_and_conditions: string | null
           tier_diamond_threshold_pkr: number
           tier_gold_threshold_pkr: number
           tier_progress_diamond_threshold_pkr: number
@@ -45,24 +57,36 @@ export type Database = {
           whatsapp_provider: string | null
         }
         Insert: {
+          birthday_reward_diamond_pkr?: number
+          birthday_reward_gold_pkr?: number
+          birthday_reward_silver_pkr?: number
+          bonus_campaign_default_multiplier?: number
           brand_color_primary?: string
           brand_color_secondary?: string
+          faqs?: Json
           id?: number
+          influencer_cta_link?: string | null
           nudge_account_creation_enabled?: boolean
           nudge_points_spending_enabled?: boolean
           nudge_post_purchase_enabled?: boolean
           nudge_reward_usage_enabled?: boolean
           nudge_tier_progress_enabled?: boolean
+          nudges_config?: Json
           program_name?: string
           purchase_points_rate?: number
           redemption_tiers?: Json
           referral_friend_discount_pkr?: number
           referral_points?: number
           review_points?: number
+          shopify_email_injection_enabled?: boolean
           signup_points?: number
           silver_expiry_days?: number
           social_points?: number
+          social_points_facebook?: number
+          social_points_instagram?: number
+          social_points_youtube?: number
           tagline?: string
+          terms_and_conditions?: string | null
           tier_diamond_threshold_pkr?: number
           tier_gold_threshold_pkr?: number
           tier_progress_diamond_threshold_pkr?: number
@@ -74,24 +98,36 @@ export type Database = {
           whatsapp_provider?: string | null
         }
         Update: {
+          birthday_reward_diamond_pkr?: number
+          birthday_reward_gold_pkr?: number
+          birthday_reward_silver_pkr?: number
+          bonus_campaign_default_multiplier?: number
           brand_color_primary?: string
           brand_color_secondary?: string
+          faqs?: Json
           id?: number
+          influencer_cta_link?: string | null
           nudge_account_creation_enabled?: boolean
           nudge_points_spending_enabled?: boolean
           nudge_post_purchase_enabled?: boolean
           nudge_reward_usage_enabled?: boolean
           nudge_tier_progress_enabled?: boolean
+          nudges_config?: Json
           program_name?: string
           purchase_points_rate?: number
           redemption_tiers?: Json
           referral_friend_discount_pkr?: number
           referral_points?: number
           review_points?: number
+          shopify_email_injection_enabled?: boolean
           signup_points?: number
           silver_expiry_days?: number
           social_points?: number
+          social_points_facebook?: number
+          social_points_instagram?: number
+          social_points_youtube?: number
           tagline?: string
+          terms_and_conditions?: string | null
           tier_diamond_threshold_pkr?: number
           tier_gold_threshold_pkr?: number
           tier_progress_diamond_threshold_pkr?: number
