@@ -6,6 +6,7 @@ import {
 } from "@shopify/polaris";
 import { StackedAreaChart } from "@shopify/polaris-viz";
 import "@shopify/polaris-viz/build/esm/styles.css";
+import { ClientOnly } from "../components/ClientOnly";
 import { authenticate } from "../shopify.server";
 import {
   parseRange, getPointsFlowSeries, getTopEarners, getTopRedeemers,
@@ -70,13 +71,17 @@ export default function Analytics() {
               {data.flow.length === 0 ? (
                 <Text as="p" tone="subdued">No ledger activity in this range.</Text>
               ) : (
-                <StackedAreaChart
-                  data={[
-                    { name: "Issued", data: data.flow.map((d) => ({ key: d.date, value: d.issued })) },
-                    { name: "Redeemed", data: data.flow.map((d) => ({ key: d.date, value: d.redeemed })) },
-                    { name: "Expired", data: data.flow.map((d) => ({ key: d.date, value: d.expired })) },
-                  ]}
-                />
+                <ClientOnly fallback={<Text as="p" tone="subdued">Loading chart…</Text>}>
+                  {() => (
+                    <StackedAreaChart
+                      data={[
+                        { name: "Issued", data: data.flow.map((d) => ({ key: d.date, value: d.issued })) },
+                        { name: "Redeemed", data: data.flow.map((d) => ({ key: d.date, value: d.redeemed })) },
+                        { name: "Expired", data: data.flow.map((d) => ({ key: d.date, value: d.expired })) },
+                      ]}
+                    />
+                  )}
+                </ClientOnly>
               )}
             </BlockStack>
           </Box>

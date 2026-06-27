@@ -13,6 +13,7 @@ import {
 } from "@shopify/polaris";
 import { DonutChart, LineChart } from "@shopify/polaris-viz";
 import "@shopify/polaris-viz/build/esm/styles.css";
+import { ClientOnly } from "../components/ClientOnly";
 import { authenticate } from "../shopify.server";
 import { registerScriptTagAndPage } from "../lib/scripttag.server";
 import {
@@ -81,13 +82,17 @@ export default function Overview() {
                   {totalMembers === 0 ? (
                     <Text as="p" tone="subdued">No members yet.</Text>
                   ) : (
-                    <DonutChart
-                      data={[
-                        { name: "Silver", data: [{ key: "Silver", value: tiers.silver }] },
-                        { name: "Gold", data: [{ key: "Gold", value: tiers.gold }] },
-                        { name: "Diamond", data: [{ key: "Diamond", value: tiers.diamond }] },
-                      ]}
-                    />
+                    <ClientOnly fallback={<Text as="p" tone="subdued">Loading chart…</Text>}>
+                      {() => (
+                        <DonutChart
+                          data={[
+                            { name: "Silver", data: [{ key: "Silver", value: tiers.silver }] },
+                            { name: "Gold", data: [{ key: "Gold", value: tiers.gold }] },
+                            { name: "Diamond", data: [{ key: "Diamond", value: tiers.diamond }] },
+                          ]}
+                        />
+                      )}
+                    </ClientOnly>
                   )}
                 </BlockStack>
               </Box>
@@ -102,14 +107,18 @@ export default function Overview() {
                   {series.length === 0 ? (
                     <Text as="p" tone="subdued">No points issued in this range.</Text>
                   ) : (
-                    <LineChart
-                      data={[
-                        {
-                          name: "Points issued",
-                          data: series.map((p) => ({ key: p.date, value: p.points })),
-                        },
-                      ]}
-                    />
+                    <ClientOnly fallback={<Text as="p" tone="subdued">Loading chart…</Text>}>
+                      {() => (
+                        <LineChart
+                          data={[
+                            {
+                              name: "Points issued",
+                              data: series.map((p) => ({ key: p.date, value: p.points })),
+                            },
+                          ]}
+                        />
+                      )}
+                    </ClientOnly>
                   )}
                 </BlockStack>
               </Box>
