@@ -58,25 +58,38 @@ configure all program settings — replacing the current placeholder
 
 ### Plan 6A — Shell + core views
 - Admin nav shell layout (`app.tsx`) + Polaris navigation across all 9 tabs.
-- **Overview:** tier-breakdown donut, points-issued line chart, redemption conversion
-  rate, real-data activity feed (7d) with empty states.
-- **Members:** searchable/filterable table; customer detail drawer showing balance,
-  tier, lifetime spend, action log, referral stats; actions — manual adjust (+reason),
-  block/unblock, influencer tag, custom referral rate.
+- **Overview:** tier-breakdown donut, points-issued this-month-vs-last-month line chart,
+  points-redeemed + conversion rate, **active referrals in progress** count, **Today**
+  KPI row (new members, new redemptions, points awarded, orders with loyalty activity),
+  real-data activity feed (7d, ticker-style "Sara K. just earned 1,200 points · 2 min ago")
+  with empty states.
+- **Members:** search by name/email/phone/tier; filter by tier, enrolment date, points
+  range; customer detail drawer showing balance, tier, join date, lifetime spend, full
+  action log, referral stats, all referrals made by this customer; actions — manual
+  adjust (+mandatory reason), block/unblock, influencer tag, custom referral rate
+  (custom-rate field shown only for influencer-tagged members).
 
 ### Plan 6B — Operational tools
-- **Influencer:** per-influencer stats (clicks, conversions, rate, pts, Rs. equiv),
-  referral link edit, CSV export.
-- **Referrals:** all referral events with fraud flags highlighted; Review & Unblock action.
-- **Campaigns:** active campaign status, create/edit/delete (name, multiplier,
-  start/end date), history, points-ledger CSV export.
+- **Influencer:** list of influencer-tagged members; per-influencer stats (tier, custom
+  rate, clicks, conversions, conversion %, total pts earned, Rs. equiv), referral link
+  slug edit, quick points adjustment, CSV export.
+- **Referrals:** all referral events with status Pending/Completed/Flagged/Blocked;
+  fraud flags highlighted in red (IP match, address match) with Review & Unblock action;
+  filter by status + date range; performance summary (total referrals, conversion rate,
+  total rewards issued).
+- **Points & Campaigns:** full points ledger across all members (filterable, CSV export);
+  active campaign status; create/edit/delete campaigns (name, multiplier, start/end date+time);
+  campaign history.
 
 ### Plan 6C — Config + reporting
 - **Analytics:** members-by-tier-over-time, points issued/redeemed/expired, top
   earners/redeemers, most-popular redemption tier, referral funnel, influencer
   comparison; date ranges 7d/30d/90d/custom + CSV export.
-- **Nudges:** master toggle + per-nudge toggles and customisation (icon, title,
-  description with dynamic vars, button text, frequency, tier thresholds).
+- **Nudges:** master "disable all" toggle + per-nudge toggle (5 nudges); per-nudge
+  customisation (icon default/upload, title, description with dynamic vars
+  `{points_balance}`/`{reward_value}`/`{tier_gap}`, button text, display frequency
+  every-session/daily/weekly, tier-progress thresholds); live preview panel using current
+  brand colours.
 - **Settings:** full program config (see §4).
 
 ---
@@ -95,6 +108,10 @@ the relevant services to read these instead of hardcoded values:
   `birthday_reward_gold_pkr` (500), `birthday_reward_diamond_pkr` (1000).
   `birthday.service` reads these.
 - **Content** — `terms_and_conditions` TEXT, `faqs` JSONB (array of `{q, a}`).
+- **Misc Settings fields** — `bonus_campaign_default_multiplier` NUMERIC,
+  `influencer_cta_link` TEXT, `shopify_email_injection_enabled` BOOLEAN, WhatsApp
+  message templates (extend existing `wa_*` columns as needed). Tier thresholds and
+  `silver_expiry_days` already exist (Gold/Diamond never expire per business rules).
 - **Nudge customisation** — `nudges_config` JSONB keyed per nudge
   (`{ icon, title, description, button_text, frequency, tier_thresholds }`),
   consumed by the storefront widget data endpoint.
