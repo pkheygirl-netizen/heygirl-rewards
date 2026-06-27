@@ -14,6 +14,7 @@ import {
 import { DonutChart, LineChart } from "@shopify/polaris-viz";
 import "@shopify/polaris-viz/build/esm/styles.css";
 import { authenticate } from "../shopify.server";
+import { registerScriptTagAndPage } from "../lib/scripttag.server";
 import {
   getTierBreakdown,
   getPointsIssuedSeries,
@@ -22,7 +23,15 @@ import {
 } from "../lib/admin-data.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
+  const { admin } = await authenticate.admin(request);
+
+  // Self-heal the storefront widget script tag on each Overview load. The
+  // afterAuth hook only registers it at install time, so a host change (e.g.
+  // SHOPIFY_APP_URL moving from Railway to app.heygirl.pk) would otherwise
+  // leave a stale tag until reinstall. registerScriptTagAndPage is idempotent
+  // (it no-ops when the current URL is already registered) and non-fatal.
+  await registerScriptTagAndPage(admin);
+
   const to = new Date();
   const from = new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
   const [tiers, series, feed, kpis] = await Promise.all([
