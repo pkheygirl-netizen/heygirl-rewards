@@ -3,7 +3,8 @@ import type { CustomerResponse } from "./api";
 const TIER_DATA = [
   {
     key: "silver",
-    name: "🥈 Silver",
+    name: "◈ Silver",
+    color: "#9e9e9e",
     threshold: "Default",
     benefits: [
       "Earn 1 pt per Rs.1 spent",
@@ -15,7 +16,8 @@ const TIER_DATA = [
   },
   {
     key: "gold",
-    name: "🥇 Gold",
+    name: "★ Gold",
+    color: "#f9a825",
     threshold: "Rs.50,000 lifetime spend",
     benefits: [
       "Earn 1 pt per Rs.1 spent",
@@ -27,7 +29,8 @@ const TIER_DATA = [
   },
   {
     key: "diamond",
-    name: "💎 Diamond",
+    name: "◆ Diamond",
+    color: "#7b1fa2",
     threshold: "Rs.100,000 lifetime spend",
     benefits: [
       "Earn 1.2× points in birthday month",
@@ -59,8 +62,8 @@ export function renderTiersTab(panel: HTMLElement, data: CustomerResponse) {
         return `
         <div class="hg-tier-card ${isCurrentTier ? "hg-current-tier" : ""} ${isAchieved ? "hg-achieved-tier" : ""}">
           <div class="hg-tier-card-header">
-            <div class="hg-tier-name">${t.name}</div>
-            ${isCurrentTier ? `<span class="hg-current-badge">Your Tier</span>` : ""}
+            <div class="hg-tier-name" style="color:${t.color};">${t.name}</div>
+            ${isCurrentTier ? `<span class="hg-current-badge">Your Current Tier</span>` : ""}
             ${isAchieved ? `<span class="hg-achieved-badge">Achieved ✓</span>` : ""}
           </div>
           <div style="font-size:12px;color:#888;margin-bottom:8px;">Unlocks at: ${t.threshold}</div>
