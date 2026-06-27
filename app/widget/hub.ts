@@ -4,6 +4,7 @@ import { renderRewardsTab } from "./hub-rewards";
 import { renderHistoryTab } from "./hub-history";
 import { renderReferralsTab } from "./hub-referrals";
 import { renderTiersTab } from "./hub-tiers";
+import { escHtml } from "./utils";
 
 const TAB_LABELS = ["My Rewards", "History", "Referrals", "VIP Tiers"];
 
@@ -31,9 +32,9 @@ export function initHub(data: CustomerResponse) {
     <div class="hg-hub-header">
       <div class="hg-hub-header-top">
         <div>
-          <div class="hg-hub-name">Hi, ${member.firstName ?? "there"}!</div>
+          <div class="hg-hub-name">Hi, ${escHtml(member.firstName ?? "there")}!</div>
           <div class="hg-hub-balance">${member.balance.toLocaleString()} pts</div>
-          <span class="hg-hub-tier">${TIER_LABEL[member.tier] ?? member.tier}</span>
+          <span class="hg-hub-tier">${TIER_LABEL[member.tier] ?? escHtml(member.tier)}</span>
         </div>
         <button class="hg-hub-close" id="hg-hub-close" aria-label="Close">×</button>
       </div>

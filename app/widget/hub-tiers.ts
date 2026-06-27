@@ -1,4 +1,5 @@
 import type { CustomerResponse } from "./api";
+import { escHtml } from "./utils";
 
 const TIER_DATA = [
   {
@@ -51,8 +52,10 @@ export function renderTiersTab(panel: HTMLElement, data: CustomerResponse) {
 
   const { tier, lifetimeSpend, spendToNextTier, nextTier } = data.member;
 
-  const goldPct = Math.min(100, Math.round((lifetimeSpend / 50000) * 100));
-  const diamondPct = Math.min(100, Math.round((lifetimeSpend / 100000) * 100));
+  const goldThreshold = data.nudgeSettings?.tier_progress_gold_threshold ?? 50000;
+  const diamondThreshold = data.nudgeSettings?.tier_progress_diamond_threshold ?? 100000;
+  const goldPct = Math.min(100, Math.round((lifetimeSpend / goldThreshold) * 100));
+  const diamondPct = Math.min(100, Math.round((lifetimeSpend / diamondThreshold) * 100));
 
   panel.innerHTML = `
     <div class="hg-tier-cards">
@@ -80,13 +83,13 @@ export function renderTiersTab(panel: HTMLElement, data: CustomerResponse) {
         ${nextTier ? ` · Rs.${spendToNextTier.toLocaleString()} more to reach ${nextTier.charAt(0).toUpperCase() + nextTier.slice(1)}` : " · Maximum tier reached!"}
       </div>
       <div class="hg-progress-label">
-        <span>Silver → Gold (Rs.50,000)</span><span>${goldPct}%</span>
+        <span>Silver → Gold (Rs.${goldThreshold.toLocaleString()})</span><span>${goldPct}%</span>
       </div>
       <div class="hg-progress-track">
         <div class="hg-progress-fill" style="width:${goldPct}%;background:#f9a825;"></div>
       </div>
       <div class="hg-progress-label" style="margin-top:8px;">
-        <span>Gold → Diamond (Rs.100,000)</span><span>${diamondPct}%</span>
+        <span>Gold → Diamond (Rs.${diamondThreshold.toLocaleString()})</span><span>${diamondPct}%</span>
       </div>
       <div class="hg-progress-track">
         <div class="hg-progress-fill" style="width:${diamondPct}%;background:#7b1fa2;"></div>
