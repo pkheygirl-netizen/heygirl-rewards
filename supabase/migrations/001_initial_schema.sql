@@ -154,12 +154,15 @@ RETURNS TRIGGER AS $$
 BEGIN NEW.updated_at = NOW(); RETURN NEW; END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trg_members_updated_at ON members;
 CREATE TRIGGER trg_members_updated_at
   BEFORE UPDATE ON members FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
+DROP TRIGGER IF EXISTS trg_order_webhook_state_updated_at ON order_webhook_state;
 CREATE TRIGGER trg_order_webhook_state_updated_at
   BEFORE UPDATE ON order_webhook_state FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
+DROP TRIGGER IF EXISTS trg_app_settings_updated_at ON app_settings;
 CREATE TRIGGER trg_app_settings_updated_at
   BEFORE UPDATE ON app_settings FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 

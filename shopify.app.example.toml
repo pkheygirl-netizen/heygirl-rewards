@@ -3,14 +3,14 @@
 # stored here — it lives in the environment (see .env.example / Render env vars).
 name = "HeyGirl Rewards"
 client_id = "YOUR_SHOPIFY_CLIENT_ID"
-application_url = "https://your-app.onrender.com"
+application_url = "https://app.heygirl.pk"
 embedded = true
 
 [access_scopes]
 scopes = "read_customers,write_customers,read_orders,read_discounts,write_discounts,read_script_tags,write_script_tags,read_products,write_products"
 
 [auth]
-redirect_urls = ["https://your-app.onrender.com/auth/callback"]
+redirect_urls = ["https://app.heygirl.pk/auth/callback"]
 
 [webhooks]
 api_version = "2025-04"
@@ -56,6 +56,6 @@ automatically_update_urls_on_dev = true
 dev_store_url = ""
 
 [app_proxy]
-url = "https://your-app.onrender.com/proxy"
+url = "https://app.heygirl.pk/proxy"
 subpath = "loyalty"
 prefix = "apps"

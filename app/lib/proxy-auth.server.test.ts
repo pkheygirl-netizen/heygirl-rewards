@@ -3,46 +3,50 @@ import { describe, it, expect } from "vitest";
 import crypto from "node:crypto";
 import { extractProxyCustomerId } from "./proxy-auth.server";
 
-describe("extractProxyCustomerId", () => {
-  it("returns customer_id when Shopify signature is valid", () => {
-    // Shopify App Proxy signs: sorted params (excluding signature) joined as key=value&...
-    const secret = "test_secret";
-    const params = new URLSearchParams({
-      shop: "heygirl.myshopify.com",
-      path_prefix: "/apps/loyalty",
-      timestamp: "1700000000",
-      customer_id: "42",
-    });
-    // Sort params alphabetically by key, join as key=value\n, HMAC-SHA256 hex
-    const sorted = [...params.entries()].sort(([a], [b]) => a.localeCompare(b));
-    const message = sorted.map(([k, v]) => `${k}=${v}`).join("");
-    const sig = crypto.createHmac("sha256", secret).update(message).digest("hex");
-    params.set("signature", sig);
+function makeSignedUrl(params: Record<string, string>, secret: string): URL {
+  const sp = new URLSearchParams(params);
+  const sorted = [...sp.entries()].sort(([a], [b]) => a.localeCompare(b));
+  const message = sorted.map(([k, v]) => `${k}=${v}`).join("");
+  const sig = crypto.createHmac("sha256", secret).update(message).digest("hex");
+  sp.set("signature", sig);
+  return new URL(`https://heygirl-rewards.onrender.com/proxy/customer?${sp}`);
+}
 
-    const url = new URL(`https://heygirl-rewards.onrender.com/proxy/customer?${params}`);
-    const result = extractProxyCustomerId(url, secret);
-    expect(result).toBe("42");
+describe("extractProxyCustomerId", () => {
+  it("returns logged_in_customer_id when Shopify signature is valid", () => {
+    const secret = "test_secret";
+    const ts = String(Math.floor(Date.now() / 1000));
+    const url = makeSignedUrl(
+      { shop: "heygirl.myshopify.com", path_prefix: "/apps/loyalty", timestamp: ts, logged_in_customer_id: "42" },
+      secret,
+    );
+    expect(extractProxyCustomerId(url, secret)).toBe("42");
   });
 
   it("throws on invalid signature", () => {
     const url = new URL(
-      "https://heygirl-rewards.onrender.com/proxy/customer?shop=x&signature=bad&timestamp=1"
+      `https://heygirl-rewards.onrender.com/proxy/customer?shop=x&signature=bad&timestamp=${Math.floor(Date.now() / 1000)}`
     );
     expect(() => extractProxyCustomerId(url, "secret")).toThrow("invalid_proxy_signature");
   });
 
-  it("returns null when customer_id is absent (guest)", () => {
+  it("throws on stale timestamp (replay attack)", () => {
     const secret = "test_secret";
-    const params = new URLSearchParams({
-      shop: "heygirl.myshopify.com",
-      path_prefix: "/apps/loyalty",
-      timestamp: "1700000000",
-    });
-    const sorted = [...params.entries()].sort(([a], [b]) => a.localeCompare(b));
-    const message = sorted.map(([k, v]) => `${k}=${v}`).join("");
-    const sig = crypto.createHmac("sha256", secret).update(message).digest("hex");
-    params.set("signature", sig);
-    const url = new URL(`https://heygirl-rewards.onrender.com/proxy/customer?${params}`);
+    const staleTs = String(Math.floor(Date.now() / 1000) - 400); // outside 300s window
+    const url = makeSignedUrl(
+      { shop: "heygirl.myshopify.com", path_prefix: "/apps/loyalty", timestamp: staleTs },
+      secret,
+    );
+    expect(() => extractProxyCustomerId(url, secret)).toThrow("invalid_proxy_signature");
+  });
+
+  it("returns null when logged_in_customer_id is absent (guest)", () => {
+    const secret = "test_secret";
+    const ts = String(Math.floor(Date.now() / 1000));
+    const url = makeSignedUrl(
+      { shop: "heygirl.myshopify.com", path_prefix: "/apps/loyalty", timestamp: ts },
+      secret,
+    );
     expect(extractProxyCustomerId(url, secret)).toBeNull();
   });
 });

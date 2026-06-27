@@ -1,5 +1,6 @@
 // app/widget/embeds.ts
 import type { CustomerResponse } from "./api";
+import { escHtml } from "./utils";
 
 export function initProductEmbed(data: CustomerResponse) {
   if (document.getElementById("hg-product-embed")) return;
@@ -56,13 +57,12 @@ export function initCartInline(data: CustomerResponse) {
       const code = activeCodes[0];
       inline.innerHTML = `
         <div style="margin-bottom:6px;font-weight:600;">🎉 You have a Rs.${code.discount_pkr} reward ready!</div>
-        <div style="font-size:12px;color:#888;margin-bottom:8px;">Code: <strong>${code.code}</strong></div>
+        <div style="font-size:12px;color:#888;margin-bottom:8px;">Code: <strong>${escHtml(code.code)}</strong></div>
         <button class="hg-btn hg-btn-primary" id="hg-apply-code" style="margin:0;padding:8px;">Apply Code</button>
       `;
       setTimeout(() => {
         document.getElementById("hg-apply-code")?.addEventListener("click", () => {
-          // Navigate to cart with discount pre-filled (Shopify /discount/ redirect)
-          window.location.href = `/discount/${code.code}?redirect=/cart`;
+          window.location.href = `/discount/${encodeURIComponent(code.code)}?redirect=/cart`;
         });
       }, 0);
     } else if (balance >= 3000) {

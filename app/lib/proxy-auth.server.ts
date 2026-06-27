@@ -26,6 +26,12 @@ export function extractProxyCustomerId(url: URL, apiSecret: string): string | nu
     throw new Error("invalid_proxy_signature");
   }
 
-  const customerId = params.get("customer_id");
-  return customerId ?? null;
+  // Reject replayed requests — Shopify includes a signed timestamp param
+  const ts = Number(params.get("timestamp") ?? 0);
+  if (!ts || Math.abs(Date.now() / 1000 - ts) > 300) {
+    throw new Error("invalid_proxy_signature"); // reuse same error to avoid leaking reason
+  }
+
+  const customerId = params.get("logged_in_customer_id");
+  return customerId || null; // empty string → null (guest)
 }

@@ -72,6 +72,19 @@ export async function redeem(requestedPoints: number) {
   }
 }
 
+export async function trackReferralVisit(referralSlug: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${BASE}/referral`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ referralSlug }),
+    });
+    return res.ok;
+  } catch {
+    return false; // non-critical — don't block page load; keep slug for next authenticated load
+  }
+}
+
 export async function claimSocial(platform: "youtube" | "facebook" | "instagram") {
   try {
     const res = await fetch(`${BASE}/social`, {

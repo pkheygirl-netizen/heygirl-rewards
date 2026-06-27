@@ -45,6 +45,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         console.error("[orders-updated] enqueue failed:", enqueueErr);
         return new Response("enqueue failed", { status: 503 });
       }
+      // Mirror referral award — referral service is idempotent so safe to enqueue from both handlers
+      try {
+        await pointsQueue.add("award_referral", {
+          referredShopifyCustomerId: String(customerId),
+        });
+      } catch (refErr) {
+        console.error("[orders-updated] referral enqueue failed:", refErr);
+      }
     }
 
     // Mark any loyalty codes used on paid orders

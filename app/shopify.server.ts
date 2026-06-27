@@ -17,7 +17,7 @@ export const PLANS = {
 const shopify = shopifyApp({
   apiKey: process.env.SHOPIFY_API_KEY!,
   apiSecretKey: process.env.SHOPIFY_API_SECRET!,
-  appUrl: process.env.SHOPIFY_APP_URL ?? "https://heygirl-rewards.onrender.com",
+  appUrl: process.env.SHOPIFY_APP_URL ?? "https://app.heygirl.pk",
   scopes: process.env.SCOPES?.split(",") ?? [
     // Customer data — enrolment, PII, consent
     "read_customers", "write_customers",
