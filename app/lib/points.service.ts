@@ -203,6 +203,17 @@ async function settingValue(key: "signup_points" | "social_points", fallback: nu
   return typeof v === "number" ? v : fallback;
 }
 
+async function socialPointsForPlatform(
+  platform: "youtube" | "facebook" | "instagram",
+): Promise<number> {
+  const { data } = await db.from("app_settings").select("*").eq("id", 1).maybeSingle();
+  const s = (data as Record<string, unknown> | null) ?? {};
+  const perPlatform = s[`social_points_${platform}`];
+  if (typeof perPlatform === "number") return perPlatform;
+  if (typeof s.social_points === "number") return s.social_points;
+  return 1000;
+}
+
 export async function awardSignup(shopifyCustomerId: string): Promise<{ awarded: boolean }> {
   const customerId = String(shopifyCustomerId);
   const { data: member } = await db
@@ -244,8 +255,9 @@ export async function awardSocial(socialActionId: string): Promise<{ awarded: bo
   }
   if (row.status !== "pending") return { awarded: false }; // voided/awarded already
 
-  const points = await settingValue("social_points", 1000);
-  const ledgerType = mapSocialActionType(row.action_type as "youtube" | "facebook" | "instagram");
+  const platform = row.action_type as "youtube" | "facebook" | "instagram";
+  const points = await socialPointsForPlatform(platform);
+  const ledgerType = mapSocialActionType(platform);
   const { data, error } = await db.rpc("award_points", {
     p_member_id: row.member_id,
     p_action_type: ledgerType,
