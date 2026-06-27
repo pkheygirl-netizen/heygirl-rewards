@@ -1,5 +1,6 @@
 import { db } from "../db.server";
 import { notificationQueue } from "./queue.server";
+import { shopifyGraphqlWithRetry } from "./shopify-graphql.server";
 
 const TIER_RANK: Record<string, number> = { silver: 0, gold: 1, diamond: 2 };
 
@@ -110,6 +111,49 @@ export async function enrolMember(
     // else slug collision — retry with a new suffix
   }
   return { enrolled: false, reason: "slug_collision" };
+}
+
+const GET_CUSTOMER_PII = `#graphql
+  query GetCustomerPII($id: ID!) {
+    customer(id: $id) {
+      email
+      firstName
+      lastName
+    }
+  }`;
+
+/**
+ * Enrol a customer who is logged in on the storefront but has no member record
+ * yet. The App Proxy only gives us the numeric customer id, so we fetch the
+ * PII (email/name) from the Admin API. Consent is set to true: a logged-in
+ * customer opening/using the loyalty widget is treated as opt-in (product
+ * decision). Idempotent — enrolMember no-ops if the member already exists.
+ */
+export async function enrolLoggedInCustomer(
+  shopifyCustomerId: string,
+  admin: { graphql: (query: string, opts?: { variables?: Record<string, unknown> }) => Promise<{ json: () => Promise<unknown> }> },
+): Promise<{ enrolled: boolean; reason?: string }> {
+  let customer: { email: string | null; firstName: string | null; lastName: string | null } | null;
+  try {
+    const data = await shopifyGraphqlWithRetry<{
+      customer: { email: string | null; firstName: string | null; lastName: string | null } | null;
+    }>(admin, GET_CUSTOMER_PII, { id: `gid://shopify/Customer/${shopifyCustomerId}` });
+    customer = data.customer;
+  } catch (err) {
+    console.error("[enrolLoggedInCustomer] admin fetch failed:", err);
+    return { enrolled: false, reason: "admin_fetch_failed" };
+  }
+  if (!customer) return { enrolled: false, reason: "customer_not_found" };
+
+  return enrolMember(
+    {
+      id: shopifyCustomerId,
+      email: customer.email,
+      first_name: customer.firstName,
+      last_name: customer.lastName,
+    },
+    true, // using the storefront loyalty widget = opt-in consent
+  );
 }
 
 export function tierForSpend(lifetimeSpendPkr: number): "silver" | "gold" | "diamond" {
