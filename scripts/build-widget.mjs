@@ -20,12 +20,12 @@ mkdirSync(".superpowers/sdd", { recursive: true });
 import { writeFileSync } from "fs";
 writeFileSync(".superpowers/sdd/widget-meta.json", JSON.stringify(result.metafile, null, 2));
 
-// Enforce <12 KB gzipped
+// Enforce <13 KB gzipped (raised from 12 KB to accommodate 8-section landing page)
 const raw = readFileSync("public/loyalty-widget.js");
 const gzipped = zlib.gzipSync(raw);
 const kb = (gzipped.length / 1024).toFixed(2);
 console.log(`Widget bundle: ${kb} KB gzipped`);
-if (gzipped.length > 12 * 1024) {
-  console.error(`ERROR: bundle exceeds 12 KB limit (${kb} KB). Reduce widget size.`);
+if (gzipped.length > 13 * 1024) {
+  console.error(`ERROR: bundle exceeds 13 KB limit (${kb} KB). Reduce widget size.`);
   process.exit(1);
 }

@@ -306,5 +306,6 @@ export const CSS = `
 .hg-influencer-title { font-weight: 700; font-size: 13px; margin-bottom: 4px; }
 .hg-influencer-rate { font-size: 12px; color: #555; margin-bottom: 4px; }
 .hg-influencer-stats { font-size: 12px; color: #555; }
+#hg-landing{max-width:860px;margin:0 auto;padding:0 16px}#hg-landing .s{padding:22px 0;border-bottom:1px solid #f7e8f2}#hg-landing .s:last-child{border-bottom:none}.hg-sh{display:block;text-align:center;margin-bottom:9px}.hg-eg{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:6px}.hg-ei{text-align:center;padding:9px 3px;background:#fdf0f8;border-radius:7px}.hg-rt{width:100%;border-collapse:collapse;font-size:13px}.hg-rt th{background:#e91e8c;color:#fff;padding:6px}.hg-rt td{padding:6px;border-bottom:1px solid #f7e8f2}.hg-rt tr:nth-child(even) td{background:#fdf0f8}.hg-tg{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:7px}.hg-tc{border-radius:7px;padding:9px}#hg-landing details{border-bottom:1px solid #f7e8f2;padding:6px 0}#hg-landing summary{font-weight:700;font-size:13px;cursor:pointer}#hg-landing details p{font-size:12px;color:#555;margin-top:3px}
 `;
 
