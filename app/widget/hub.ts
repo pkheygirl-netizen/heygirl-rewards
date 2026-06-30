@@ -81,17 +81,72 @@ export function initHub(data: CustomerResponse) {
     if (e.target === overlay) closeHub();
   });
 
+  // ARIA: mark hub as a dialog
+  hub.setAttribute("role", "dialog");
+  hub.setAttribute("aria-modal", "true");
+  hub.setAttribute("aria-label", "Loyalty Rewards");
+  hub.setAttribute("tabindex", "-1");
+
+  // Focus trap helpers
+  const FOCUSABLE_SELECTOR =
+    'a[href], button:not([disabled]), input, select, textarea, [tabindex]:not([tabindex="-1"])';
+
+  let _keyHandler: ((e: KeyboardEvent) => void) | null = null;
+
+  function trapFocus(e: KeyboardEvent) {
+    if (e.key === "Escape") {
+      closeHub();
+      return;
+    }
+    if (e.key === "Tab") {
+      const focusable = hub.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR);
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  }
+
   // Expose global open function
-  (window as unknown as Record<string, unknown>).__hgOpenHub = (tab = 0) => {
+  (window as unknown as Record<string, unknown>).__hgOpenHub = (tab = 0, launcher?: HTMLElement) => {
     overlay.classList.add("hg-open");
     // Switch to requested tab
     const tabBtn = hub.querySelector(`[data-tab="${tab}"]`) as HTMLElement | null;
     if (tabBtn) tabBtn.click();
     document.body.style.overflow = "hidden";
+
+    // Store launcher to return focus on close
+    if (launcher) {
+      (overlay as unknown as Record<string, unknown>)._launcher = launcher;
+    }
+
+    // Move focus into the dialog
+    hub.focus();
+
+    // Attach key handler
+    if (_keyHandler) document.removeEventListener("keydown", _keyHandler);
+    _keyHandler = trapFocus;
+    document.addEventListener("keydown", _keyHandler);
   };
 
   function closeHub() {
     overlay.classList.remove("hg-open");
     document.body.style.overflow = "";
+
+    // Remove key handler
+    if (_keyHandler) {
+      document.removeEventListener("keydown", _keyHandler);
+      _keyHandler = null;
+    }
+
+    // Return focus to launcher
+    const launcher = (overlay as unknown as Record<string, unknown>)._launcher as HTMLElement | undefined;
+    if (launcher) launcher.focus();
   }
 }

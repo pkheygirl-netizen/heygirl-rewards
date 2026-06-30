@@ -102,8 +102,9 @@ export function renderPanel(data: CustomerResponse) {
   // Wire up hub button — opens full dashboard
   panel.querySelector("#hg-hub-btn")?.addEventListener("click", () => {
     const hubFn = (window as unknown as Record<string, unknown>).__hgOpenHub;
+    const launcher = document.getElementById("hg-launcher") as HTMLElement | null;
     if (typeof hubFn === "function") {
-      (hubFn as () => void)();
+      (hubFn as (tab: number, launcher?: HTMLElement) => void)(0, launcher ?? undefined);
     } else {
       // Fallback until Plan 5B is deployed
       window.location.href = "/pages/rewards";
@@ -113,8 +114,9 @@ export function renderPanel(data: CustomerResponse) {
 
   panel.querySelector("#hg-redeem-btn")?.addEventListener("click", () => {
     const hubFn = (window as unknown as Record<string, unknown>).__hgOpenHub;
+    const launcher = document.getElementById("hg-launcher") as HTMLElement | null;
     if (typeof hubFn === "function") {
-      (hubFn as (tab: number) => void)(0); // Tab 0 = My Rewards
+      (hubFn as (tab: number, launcher?: HTMLElement) => void)(0, launcher ?? undefined); // Tab 0 = My Rewards
     }
     panel.classList.remove("hg-open");
   });
