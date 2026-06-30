@@ -1,6 +1,7 @@
 import { db } from "../db.server";
 
 export const EDITABLE_KEYS = [
+  "program_enabled",
   "program_name",
   "brand_color_primary",
   "brand_color_secondary",

@@ -18,4 +18,14 @@ describe("updateSettings", () => {
     const { updateSettings } = await import("./admin-settings.server");
     await expect(updateSettings({ hacker_field: "x" } as any)).rejects.toThrow("no editable fields");
   });
+
+  it("allows program_enabled to be set", async () => {
+    const eq = vi.fn(() => Promise.resolve({ error: null }));
+    const update = vi.fn(() => ({ eq }));
+    vi.doMock("../db.server", () => ({ db: { from: vi.fn(() => ({ update })) } }));
+    vi.resetModules();
+    const { updateSettings } = await import("./admin-settings.server");
+    await updateSettings({ program_enabled: false } as any);
+    expect(update).toHaveBeenCalledWith({ program_enabled: false });
+  });
 });

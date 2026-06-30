@@ -217,3 +217,13 @@ export async function getNudgeSettings(): Promise<NudgeSettings> {
     tier_progress_diamond_threshold: data?.tier_progress_diamond_threshold_pkr ?? 10000,
   };
 }
+
+export async function getProgramEnabled(): Promise<boolean> {
+  const { data } = await db
+    .from("app_settings")
+    .select("program_enabled")
+    .eq("id", 1)
+    .maybeSingle();
+  // Default true so a missing row never blocks the widget
+  return (data as { program_enabled?: boolean } | null)?.program_enabled ?? true;
+}
