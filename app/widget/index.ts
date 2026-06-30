@@ -2,6 +2,7 @@
 import { CSS } from "./styles";
 import { fetchCustomer, trackReferralVisit, type CustomerResponse } from "./api";
 import { renderLauncher, renderPanel } from "./launcher";
+import { initPreview } from "./preview";
 import { initNudges } from "./nudges";
 import { initProductEmbed, initCartInline } from "./embeds";
 import { initHub } from "./hub";
@@ -54,8 +55,14 @@ import { renderLandingPage } from "./landing";
 
       if (pageType !== "rewards") {
         renderLauncher(data);
-        renderPanel(data);
-        initHub(data);
+        if (data.loggedIn && data.member) {
+          renderPanel(data);
+          initHub(data);
+        } else {
+          // Logged-out: clicking the launcher opens an in-page preview overlay
+          // instead of navigating straight to the account page.
+          initPreview(data);
+        }
       }
 
       if (data.nudgeSettings) {

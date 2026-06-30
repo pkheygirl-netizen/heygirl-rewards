@@ -16,9 +16,16 @@ export function renderLauncher(data: CustomerResponse) {
   btn.className = "hg-loading";
 
   if (!data.loggedIn || !data.member) {
+    btn.classList.add("hg-gold");
     btn.innerHTML = `<span class="hg-icon">🎁</span><span>Join &amp; Earn</span>`;
     btn.addEventListener("click", () => {
-      window.location.href = "/account/register";
+      const w = window as unknown as Record<string, unknown>;
+      if (typeof w.__hgTogglePreview === "function") {
+        (w.__hgTogglePreview as () => void)();
+      } else {
+        // Fallback if the preview module failed to init.
+        window.location.href = "/account/register";
+      }
     });
   } else {
     const { tier, balance } = data.member;
