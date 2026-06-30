@@ -234,6 +234,7 @@ export async function awardPurchase(input: {
   );
   if (points <= 0) return { awarded: false, points: 0 };
 
+  const basisRupees = (input.orderTotalPaisa - input.shippingPaisa - input.taxPaisa) / 100;
   const { data, error } = await db.rpc("award_points", {
     p_member_id: member.id,
     p_action_type: "purchase",
@@ -241,17 +242,16 @@ export async function awardPurchase(input: {
     p_points: points,
     p_expires_at: expiresAtForMember(member.tier) ?? undefined,
     p_shopify_order_id: String(input.shopifyOrderId),
-    p_reason_note: undefined,
-  });
+    p_purchase_amount_pkr: basisRupees,
+  } as Parameters<typeof db.rpc>[1]);
   if (error) throw error;
-  const awarded = data?.[0]?.awarded ?? false;
+  const awarded = (data as Array<{ awarded: boolean; new_lifetime_spend_pkr: number }> | null)?.[0]?.awarded ?? false;
   if (!awarded) return { awarded: false, points: 0 };
 
-  // NOTE: read-modify-write race — safe for MVP (single Shopify store, low concurrency)
-  // Fix before high-concurrency: move lifetime_spend_pkr += into the award_points RPC
-  const basisRupees = (input.orderTotalPaisa - input.shippingPaisa - input.taxPaisa) / 100;
-  const newSpend = Number(member.lifetime_spend_pkr) + basisRupees;
-  await db.from("members").update({ lifetime_spend_pkr: newSpend }).eq("id", member.id);
+  const newSpend = Number(
+    (data as Array<{ new_lifetime_spend_pkr: number }> | null)?.[0]?.new_lifetime_spend_pkr
+      ?? (Number(member.lifetime_spend_pkr) + basisRupees)
+  );
   await checkAndUpgradeTier(member.id, newSpend, member.tier);
   return { awarded: true, points };
 }
@@ -365,28 +365,7 @@ export async function awardRefund(input: {
   const awarded = data?.[0]?.awarded ?? false;
   if (!awarded) return { awarded: false, deducted: 0 };
 
-  // NOTE: FIFO decrement is not atomic with RPC — concurrent refunds may over/under-decrement
-  // points_remaining. Balance (via RPC) remains correct; points_remaining can drift.
-  // Fix before high-concurrency: move FIFO decrement into the award_points RPC.
-  // Decrement points_remaining FIFO across purchase tranches
-  let remaining = clawback;
-  const { data: tranches } = await db
-    .from("points_ledger")
-    .select("id, points_remaining")
-    .eq("member_id", member.id)
-    .eq("action_type", "purchase")
-    .eq("expired", false)
-    .gt("points_remaining", 0)
-    .order("earned_at", { ascending: true });
-  for (const t of tranches ?? []) {
-    if (remaining <= 0) break;
-    const take = Math.min(t.points_remaining ?? 0, remaining);
-    await db
-      .from("points_ledger")
-      .update({ points_remaining: (t.points_remaining ?? 0) - take })
-      .eq("id", t.id);
-    remaining -= take;
-  }
+  // RPC now handles FIFO decrement of points_remaining atomically inside award_points
   return { awarded: true, deducted: clawback };
 }
 
@@ -421,7 +400,7 @@ export async function expireSilverPoints(
     });
     if (error) throw error;
     if (data?.[0]?.awarded) {
-      await db.from("points_ledger").update({ points_remaining: 0, expired: true }).eq("id", t.id);
+      // RPC atomically marks points_remaining = 0, expired = true on the source tranche
       affected.add(t.member_id);
       total += amount;
     }
