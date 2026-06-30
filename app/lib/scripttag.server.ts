@@ -1,6 +1,17 @@
 // app/lib/scripttag.server.ts
-const WIDGET_URL = `${process.env.SHOPIFY_APP_URL ?? "https://app.heygirl.pk"}/loyalty-widget.js`;
+// The widget asset is served with a long immutable cache and a STABLE filename,
+// so a bare /loyalty-widget.js URL would let browsers + Shopify's CDN keep an old
+// bundle for up to a year. Append a per-deploy version query so each deploy yields
+// a fresh URL that busts those caches (and makes immutable caching correct). The
+// self-heal logic below replaces the old tag with the new versioned one on the
+// next admin load.
 const WIDGET_FILENAME = "/loyalty-widget.js";
+const WIDGET_VERSION =
+  process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 8) ??
+  process.env.WIDGET_VERSION ??
+  "2026-06-30";
+const WIDGET_BASE = `${process.env.SHOPIFY_APP_URL ?? "https://app.heygirl.pk"}${WIDGET_FILENAME}`;
+const WIDGET_URL = `${WIDGET_BASE}?v=${WIDGET_VERSION}`;
 const REWARDS_PAGE_HANDLE = "rewards";
 
 const LIST_SCRIPT_TAGS = `
@@ -51,10 +62,11 @@ async function ensureScriptTag(admin: { graphql: (q: string, o?: object) => Prom
   const res = await admin.graphql(LIST_SCRIPT_TAGS);
   const { data } = await res.json() as { data: { scriptTags: { edges: { node: { id: string; src: string } }[] } } };
 
-  // Remove stale HeyGirl widget tags pointing at a previous host (e.g. old Render URL),
-  // so a host migration doesn't leave a dead, 404-ing script tag in the storefront.
+  // Remove stale HeyGirl widget tags: a previous host (e.g. old Render URL) OR a
+  // previous version query. Match on the filename path (ignoring any ?v= query) so
+  // both bare and older-versioned tags are replaced by the current WIDGET_URL.
   const stale = data.scriptTags.edges.filter(
-    (e) => e.node.src.endsWith(WIDGET_FILENAME) && e.node.src !== WIDGET_URL,
+    (e) => e.node.src.includes(WIDGET_FILENAME) && e.node.src !== WIDGET_URL,
   );
   for (const s of stale) {
     await admin.graphql(DELETE_SCRIPT_TAG, { variables: { id: s.node.id } });
