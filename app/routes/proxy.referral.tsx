@@ -19,7 +19,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   if (!customerId) return json({ error: "not_logged_in" }, { status: 403, headers: { ...CORS, "Cache-Control": "no-store" } });
 
   const programEnabled = await getProgramEnabled();
-  if (!programEnabled) return json({ error: "program_disabled" }, { status: 200, headers: { ...CORS, "Cache-Control": "no-store" } });
+  if (!programEnabled) return json({ error: "program_disabled" }, { status: 423, headers: { ...CORS, "Cache-Control": "no-store" } });
 
   const data = await getReferralDashboard(customerId);
   return json(data, { headers: { ...CORS, "Cache-Control": "no-store" } });
@@ -39,7 +39,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (request.method !== "POST") return json({ error: "method_not_allowed" }, { status: 405, headers: CORS });
 
   const programEnabledAction = await getProgramEnabled();
-  if (!programEnabledAction) return json({ error: "program_disabled" }, { status: 200, headers: { ...CORS, "Cache-Control": "no-store" } });
+  if (!programEnabledAction) return json({ error: "program_disabled" }, { status: 423, headers: { ...CORS, "Cache-Control": "no-store" } });
 
   const url = new URL(request.url);
   let customerId: string | null;

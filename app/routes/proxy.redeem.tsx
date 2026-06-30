@@ -22,7 +22,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (request.method !== "POST") return json({ error: "method_not_allowed" }, { status: 405, headers: CORS });
 
   const programEnabled = await getProgramEnabled();
-  if (!programEnabled) return json({ error: "program_disabled" }, { status: 200, headers: { ...CORS, "Cache-Control": "no-store" } });
+  if (!programEnabled) return json({ error: "program_disabled" }, { status: 423, headers: { ...CORS, "Cache-Control": "no-store" } });
 
   const url = new URL(request.url);
   let customerId: string | null;
@@ -42,9 +42,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const { requestedPoints } = body;
   if (!requestedPoints) return json({ error: "missing_fields" }, { status: 400, headers: CORS });
-  const pointsNum = Number(requestedPoints);
-  if (!Number.isInteger(pointsNum) || pointsNum < 1 || pointsNum > 100000) {
-    return json({ error: "invalid_amount" }, { status: 400, headers: CORS });
+  if (!Number.isInteger(Number(requestedPoints)) || Number(requestedPoints) < 3000) {
+    return json({ error: "below_minimum" }, { status: 400, headers: { ...CORS, "Cache-Control": "no-store" } });
   }
 
   let admin: Awaited<ReturnType<typeof unauthenticated.admin>>["admin"];

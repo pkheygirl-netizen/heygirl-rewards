@@ -21,7 +21,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (request.method !== "POST") return json({ error: "method_not_allowed" }, { status: 405, headers: CORS });
 
   const programEnabled = await getProgramEnabled();
-  if (!programEnabled) return json({ error: "program_disabled" }, { status: 200, headers: { ...CORS, "Cache-Control": "no-store" } });
+  if (!programEnabled) return json({ error: "program_disabled" }, { status: 423, headers: { ...CORS, "Cache-Control": "no-store" } });
 
   const url = new URL(request.url);
   let customerId: string | null;
