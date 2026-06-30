@@ -29,6 +29,9 @@ const shopify = shopifyApp({
     "read_script_tags", "write_script_tags",
     // Products — create/manage hidden reward room products
     "read_products", "write_products",
+    // Online Store content — auto-create the /pages/rewards landing page
+    // (pages query + pageCreate require content scope)
+    "read_content", "write_content",
   ],
   apiVersion: ApiVersion.April25,
   distribution: AppDistribution.SingleMerchant,
