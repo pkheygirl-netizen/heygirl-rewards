@@ -1,6 +1,6 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { useLoaderData, useActionData, useSubmit, useNavigation } from "@remix-run/react";
+import { useLoaderData, useActionData, useSubmit, useNavigation, useFetcher } from "@remix-run/react";
 import { useState } from "react";
 import {
   Page, Card, FormLayout, TextField, Checkbox, Button, Banner, BlockStack, Box, Text,
@@ -41,6 +41,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     wa_referral_template: String(form.get("wa_referral_template") ?? ""),
     shopify_email_injection_enabled: form.get("shopify_email_injection_enabled") === "true",
     terms_and_conditions: String(form.get("terms_and_conditions") ?? ""),
+    program_enabled: form.get("program_enabled") === "true",
   };
   try {
     await updateSettings(patch);
@@ -60,6 +61,7 @@ export default function Settings() {
   const submit = useSubmit();
   const nav = useNavigation();
   const saving = nav.state === "submitting";
+  const programFetcher = useFetcher();
 
   // Controlled string fields keyed by form field name.
   const [fields, setFields] = useState<Record<string, string>>({
@@ -92,9 +94,20 @@ export default function Settings() {
       ? true
       : Boolean(settings.shopify_email_injection_enabled),
   );
+  const [programEnabled, setProgramEnabled] = useState(
+    settings.program_enabled === undefined ? true : Boolean(settings.program_enabled),
+  );
 
   const set = (name: string) => (value: string) =>
     setFields((f) => ({ ...f, [name]: value }));
+
+  const handleProgramEnabledChange = (checked: boolean) => {
+    setProgramEnabled(checked);
+    programFetcher.submit(
+      { program_enabled: String(checked) },
+      { method: "post" },
+    );
+  };
 
   const onSave = () => {
     submit(
@@ -122,6 +135,19 @@ export default function Settings() {
       <BlockStack gap="400">
         {actionData?.ok ? <Banner tone="success">Settings saved.</Banner> : null}
         {actionData && !actionData.ok ? <Banner tone="critical">{actionData.error}</Banner> : null}
+
+        <Card>
+          <Box padding="400">
+            <BlockStack gap="200">
+              <Text as="h2" variant="headingMd">Program status</Text>
+              <Checkbox
+                label="Rewards program active"
+                checked={programEnabled}
+                onChange={handleProgramEnabledChange}
+              />
+            </BlockStack>
+          </Box>
+        </Card>
 
         <Card>
           <Box padding="400">
