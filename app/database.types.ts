@@ -31,6 +31,7 @@ export type Database = {
           nudge_reward_usage_enabled: boolean
           nudge_tier_progress_enabled: boolean
           nudges_config: Json
+          program_enabled: boolean
           program_name: string
           purchase_points_rate: number
           redemption_tiers: Json
@@ -72,6 +73,7 @@ export type Database = {
           nudge_reward_usage_enabled?: boolean
           nudge_tier_progress_enabled?: boolean
           nudges_config?: Json
+          program_enabled?: boolean
           program_name?: string
           purchase_points_rate?: number
           redemption_tiers?: Json
@@ -113,6 +115,7 @@ export type Database = {
           nudge_reward_usage_enabled?: boolean
           nudge_tier_progress_enabled?: boolean
           nudges_config?: Json
+          program_enabled?: boolean
           program_name?: string
           purchase_points_rate?: number
           redemption_tiers?: Json
@@ -562,21 +565,39 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      award_points: {
-        Args: {
-          p_action_type: string
-          p_expires_at?: string
-          p_member_id: string
-          p_points: number
-          p_reason_note?: string
-          p_reference_id: string
-          p_shopify_order_id?: string
-        }
-        Returns: {
-          awarded: boolean
-          new_balance: number
-        }[]
-      }
+      award_points:
+        | {
+            Args: {
+              p_action_type: string
+              p_expires_at?: string
+              p_member_id: string
+              p_points: number
+              p_reason_note?: string
+              p_reference_id: string
+              p_shopify_order_id?: string
+            }
+            Returns: {
+              awarded: boolean
+              new_balance: number
+            }[]
+          }
+        | {
+            Args: {
+              p_action_type: string
+              p_expires_at?: string
+              p_member_id: string
+              p_points: number
+              p_purchase_amount_pkr?: number
+              p_reason_note?: string
+              p_reference_id: string
+              p_shopify_order_id?: string
+            }
+            Returns: {
+              awarded: boolean
+              new_balance: number
+              new_lifetime_spend_pkr: number
+            }[]
+          }
     }
     Enums: {
       [_ in never]: never
