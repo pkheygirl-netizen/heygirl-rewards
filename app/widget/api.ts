@@ -4,6 +4,7 @@
 const BASE = "/apps/loyalty";
 
 export type CustomerResponse = {
+  programEnabled?: boolean;
   loggedIn: boolean;
   member?: {
     memberId: string;

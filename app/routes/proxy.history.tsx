@@ -2,7 +2,7 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import { extractProxyCustomerId } from "../lib/proxy-auth.server";
-import { getPointsHistory } from "../lib/widget-data.server";
+import { getPointsHistory, getProgramEnabled } from "../lib/widget-data.server";
 
 const CORS = { "Access-Control-Allow-Origin": "https://heygirl.pk" };
 
@@ -14,10 +14,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   } catch {
     return json({ error: "unauthorized" }, { status: 401, headers: CORS });
   }
-  if (!customerId) return json({ error: "not_logged_in" }, { status: 403, headers: CORS });
+  if (!customerId) return json({ error: "not_logged_in" }, { status: 403, headers: { ...CORS, "Cache-Control": "no-store" } });
+
+  const programEnabled = await getProgramEnabled();
+  if (!programEnabled) return json({ items: [], total: 0, programEnabled: false }, { headers: { ...CORS, "Cache-Control": "no-store" } });
 
   const page = Number(url.searchParams.get("page") ?? "1");
   const filterType = url.searchParams.get("type") ?? null;
   const result = await getPointsHistory(customerId, Math.max(1, page), filterType);
-  return json(result, { headers: CORS });
+  return json(result, { headers: { ...CORS, "Cache-Control": "no-store" } });
 };

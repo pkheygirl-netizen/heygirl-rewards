@@ -33,6 +33,7 @@ import { renderLandingPage } from "./landing";
       const pageType = detectPage();
       const data: CustomerResponse | null = await fetchCustomer();
       if (!data) return;
+      if (data.programEnabled === false) return; // program paused — hide widget entirely
 
       // Referral attribution spans sessions: a friend clicks heygirl.pk?ref=SLUG while
       // logged OUT, signs up (losing the ?ref= param), then returns logged in. So we

@@ -3,6 +3,7 @@ import type { ActionFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import { extractProxyCustomerId } from "../lib/proxy-auth.server";
 import { redeemPoints } from "../lib/redemption.service";
+import { getProgramEnabled } from "../lib/widget-data.server";
 import { unauthenticated } from "../shopify.server";
 
 const CORS = { "Access-Control-Allow-Origin": "https://heygirl.pk" };
@@ -19,6 +20,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
   }
   if (request.method !== "POST") return json({ error: "method_not_allowed" }, { status: 405, headers: CORS });
+
+  const programEnabled = await getProgramEnabled();
+  if (!programEnabled) return json({ error: "program_disabled" }, { status: 200, headers: { ...CORS, "Cache-Control": "no-store" } });
 
   const url = new URL(request.url);
   let customerId: string | null;
@@ -38,6 +42,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const { requestedPoints } = body;
   if (!requestedPoints) return json({ error: "missing_fields" }, { status: 400, headers: CORS });
+  const pointsNum = Number(requestedPoints);
+  if (!Number.isInteger(pointsNum) || pointsNum < 1 || pointsNum > 100000) {
+    return json({ error: "invalid_amount" }, { status: 400, headers: CORS });
+  }
 
   let admin: Awaited<ReturnType<typeof unauthenticated.admin>>["admin"];
   try {

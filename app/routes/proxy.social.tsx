@@ -3,6 +3,7 @@ import type { ActionFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import { extractProxyCustomerId } from "../lib/proxy-auth.server";
 import { socialQueue } from "../lib/queue.server";
+import { getProgramEnabled } from "../lib/widget-data.server";
 
 const CORS = { "Access-Control-Allow-Origin": "https://heygirl.pk" };
 
@@ -18,6 +19,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
   }
   if (request.method !== "POST") return json({ error: "method_not_allowed" }, { status: 405, headers: CORS });
+
+  const programEnabled = await getProgramEnabled();
+  if (!programEnabled) return json({ error: "program_disabled" }, { status: 200, headers: { ...CORS, "Cache-Control": "no-store" } });
 
   const url = new URL(request.url);
   let customerId: string | null;

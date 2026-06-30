@@ -2,7 +2,7 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import { extractProxyCustomerId } from "../lib/proxy-auth.server";
-import { getReferralDashboard } from "../lib/widget-data.server";
+import { getReferralDashboard, getProgramEnabled } from "../lib/widget-data.server";
 import { recordReferralVisit } from "../lib/referrals.service";
 import { db } from "../db.server";
 
@@ -16,10 +16,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   } catch {
     return json({ error: "unauthorized" }, { status: 401, headers: CORS });
   }
-  if (!customerId) return json({ error: "not_logged_in" }, { status: 403, headers: CORS });
+  if (!customerId) return json({ error: "not_logged_in" }, { status: 403, headers: { ...CORS, "Cache-Control": "no-store" } });
+
+  const programEnabled = await getProgramEnabled();
+  if (!programEnabled) return json({ error: "program_disabled" }, { status: 200, headers: { ...CORS, "Cache-Control": "no-store" } });
 
   const data = await getReferralDashboard(customerId);
-  return json(data, { headers: CORS });
+  return json(data, { headers: { ...CORS, "Cache-Control": "no-store" } });
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -34,6 +37,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
   }
   if (request.method !== "POST") return json({ error: "method_not_allowed" }, { status: 405, headers: CORS });
+
+  const programEnabledAction = await getProgramEnabled();
+  if (!programEnabledAction) return json({ error: "program_disabled" }, { status: 200, headers: { ...CORS, "Cache-Control": "no-store" } });
 
   const url = new URL(request.url);
   let customerId: string | null;

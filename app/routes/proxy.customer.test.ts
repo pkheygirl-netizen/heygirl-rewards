@@ -6,6 +6,7 @@ vi.mock("../lib/proxy-auth.server", () => ({
 vi.mock("../lib/widget-data.server", () => ({
   getMemberDashboard: vi.fn(),
   getNudgeSettings: vi.fn(),
+  getProgramEnabled: vi.fn().mockResolvedValue(true),
 }));
 vi.mock("../lib/points.service", () => ({
   enrolLoggedInCustomer: vi.fn(),
@@ -15,7 +16,7 @@ vi.mock("../shopify.server", () => ({
 }));
 
 import { extractProxyCustomerId } from "../lib/proxy-auth.server";
-import { getMemberDashboard, getNudgeSettings } from "../lib/widget-data.server";
+import { getMemberDashboard, getNudgeSettings, getProgramEnabled } from "../lib/widget-data.server";
 import { enrolLoggedInCustomer } from "../lib/points.service";
 import { unauthenticated } from "../shopify.server";
 import { loader } from "./proxy.customer";
@@ -138,5 +139,13 @@ describe("proxy.customer loader", () => {
     const body = (await res.json()) as any;
     expect(body.loggedIn).toBe(true);
     expect(body.member).toBeNull();
+  });
+
+  it("returns programEnabled:false when program is disabled", async () => {
+    vi.mocked(getProgramEnabled).mockResolvedValueOnce(false);
+    const res = await loader({ request: makeRequest(), params: {}, context: {} });
+    const body = (await res.json()) as any;
+    expect(body.programEnabled).toBe(false);
+    expect(body.loggedIn).toBe(false);
   });
 });
