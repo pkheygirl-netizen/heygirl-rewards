@@ -1,5 +1,5 @@
 import { db } from "../db.server";
-import { notificationQueue } from "./queue.server";
+import { notificationQueue, pointsQueue } from "./queue.server";
 import { shopifyGraphqlWithRetry } from "./shopify-graphql.server";
 
 const TIER_RANK: Record<string, number> = { silver: 0, gold: 1, diamond: 2 };
@@ -145,7 +145,7 @@ export async function enrolLoggedInCustomer(
   }
   if (!customer) return { enrolled: false, reason: "customer_not_found" };
 
-  return enrolMember(
+  const result = await enrolMember(
     {
       id: shopifyCustomerId,
       email: customer.email,
@@ -154,6 +154,21 @@ export async function enrolLoggedInCustomer(
     },
     true, // using the storefront loyalty widget = opt-in consent
   );
+
+  // Award the signup bonus for newly-enrolled members. The customers/enable
+  // webhook only fires for account activations, which never happens for a
+  // customer who self-enrols by opening the widget, so award it here too.
+  // awardSignup is idempotent (award_points dedupes on member+signup+customerId),
+  // so a later customers/enable enqueue cannot double-award.
+  if (result.enrolled) {
+    try {
+      await pointsQueue.add("award_signup_points", { shopifyCustomerId });
+    } catch (err) {
+      console.error("[enrolLoggedInCustomer] signup enqueue failed:", err);
+    }
+  }
+
+  return result;
 }
 
 export function tierForSpend(lifetimeSpendPkr: number): "silver" | "gold" | "diamond" {
