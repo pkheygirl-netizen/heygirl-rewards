@@ -141,7 +141,8 @@ export default function Settings() {
             <BlockStack gap="200">
               <Text as="h2" variant="headingMd">Program status</Text>
               <Checkbox
-                label="Rewards program active"
+                label="Loyalty program enabled"
+                helpText="When off, the widget is hidden and customers cannot earn social points or redeem rewards. Purchase points still accumulate in the background."
                 checked={programEnabled}
                 onChange={handleProgramEnabledChange}
               />
