@@ -17,7 +17,7 @@ export function initProductEmbed(data: CustomerResponse) {
   embed.className = "hg-widget";
 
   if (!data.loggedIn) {
-    embed.innerHTML = `<span>🎁</span> <a href="/account/login" style="color:#e91e8c;text-decoration:underline;">Sign in to earn ${ptsEarnable.toLocaleString()} pts</a> on this purchase`;
+    embed.innerHTML = `<span>🎁</span> <a href="/account/login" style="color:#9c7600;text-decoration:underline;">Sign in to earn ${ptsEarnable.toLocaleString()} pts</a> on this purchase`;
   } else {
     embed.innerHTML = `<span>🎁</span> Earn <span class="hg-pts">${ptsEarnable.toLocaleString()} pts</span> on this purchase`;
   }
@@ -41,7 +41,7 @@ export function initCartInline(data: CustomerResponse) {
   inline.className = "hg-widget";
 
   if (!data.loggedIn || !data.member) {
-    inline.innerHTML = `<span>🎁</span> <a href="/account/login" style="color:#e91e8c;">Sign in</a> to earn &amp; redeem rewards.`;
+    inline.innerHTML = `<span>🎁</span> <a href="/account/login" style="color:#9c7600;">Sign in</a> to earn &amp; redeem rewards.`;
   } else {
     const { balance, activeCodes } = data.member;
     // Check if a loyalty code is already applied in cart

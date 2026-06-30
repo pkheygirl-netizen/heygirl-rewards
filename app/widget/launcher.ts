@@ -84,7 +84,7 @@ export function renderPanel(data: CustomerResponse) {
         <div class="hg-progress-fill" style="width:${diamondPct}%"></div>
       </div>
       ${member.activeCodes.length > 0 ? `
-        <div style="margin-bottom:8px;font-size:13px;color:#e91e8c;font-weight:600;">
+        <div style="margin-bottom:8px;font-size:13px;color:#9c7600;font-weight:600;">
           🎉 You have ${member.activeCodes.length} active reward${member.activeCodes.length > 1 ? "s" : ""}!
         </div>` : ""}
       <button class="hg-btn hg-btn-primary" id="hg-redeem-btn">Redeem Points</button>
@@ -128,10 +128,14 @@ export function renderPanel(data: CustomerResponse) {
     });
   });
 
-  // Close on outside click
+  // Close on outside click. Use launcher.contains() (not e.target !== launcher)
+  // so clicks on the launcher's child spans (tier badge, points) don't count as
+  // "outside" — otherwise togglePanel opens the panel and this handler closes it
+  // again on the same click, making the badge/points appear unclickable.
   document.addEventListener("click", (e) => {
     const launcher = document.getElementById("hg-launcher");
-    if (!panel.contains(e.target as Node) && e.target !== launcher) {
+    const target = e.target as Node;
+    if (!panel.contains(target) && !(launcher && launcher.contains(target))) {
       panel.classList.remove("hg-open");
     }
   });

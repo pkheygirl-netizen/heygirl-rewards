@@ -50,7 +50,7 @@ export function renderRewardsTab(panel: HTMLElement, data: CustomerResponse) {
         <span>${diamondPct}%</span>
       </div>
       <div class="hg-progress-track">
-        <div class="hg-progress-fill" style="width:${diamondPct}%;background:linear-gradient(90deg,#9c27b0,#e91e8c)"></div>
+        <div class="hg-progress-fill" style="width:${diamondPct}%;background:linear-gradient(90deg,#9c27b0,#e8ad00)"></div>
       </div>
       ${member.nextTier ? `<div style="font-size:12px;color:rgba(255,255,255,0.8);margin-top:4px;">Rs.${member.spendToNextTier.toLocaleString()} more to reach ${member.nextTier}</div>` : `<div style="font-size:12px;color:rgba(255,255,255,0.8);margin-top:4px;">You've reached the top tier! 🎉</div>`}
     </div>
