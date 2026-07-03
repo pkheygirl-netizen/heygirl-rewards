@@ -16,6 +16,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 export const action = async ({ request }: ActionFunctionArgs) => {
   await authenticate.admin(request);
   const form = await request.formData();
+
+  // The program on/off toggle submits on its own (intent=toggle_program) with only
+  // the program_enabled field. Handle it as a partial update — the full patch below
+  // reads every field via form.get(), which would blank all other settings to
+  // ""/0 if applied to a toggle-only submission.
+  if (form.get("intent") === "toggle_program") {
+    try {
+      await updateSettings({ program_enabled: form.get("program_enabled") === "true" });
+      return json({ ok: true, error: undefined as string | undefined });
+    } catch (e) {
+      return json({ ok: false, error: (e as Error).message }, { status: 400 });
+    }
+  }
+
   const patch: Record<string, unknown> = {
     program_name: String(form.get("program_name") ?? ""),
     tagline: String(form.get("tagline") ?? ""),
@@ -104,7 +118,7 @@ export default function Settings() {
   const handleProgramEnabledChange = (checked: boolean) => {
     setProgramEnabled(checked);
     programFetcher.submit(
-      { program_enabled: String(checked) },
+      { intent: "toggle_program", program_enabled: String(checked) },
       { method: "post" },
     );
   };
@@ -115,6 +129,7 @@ export default function Settings() {
         ...fields,
         whatsapp_enabled: String(whatsappEnabled),
         shopify_email_injection_enabled: String(emailInjection),
+        program_enabled: String(programEnabled),
       },
       { method: "post" },
     );

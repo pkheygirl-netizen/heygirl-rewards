@@ -8,12 +8,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   console.log(`[webhook] ${topic} from ${shop}`);
   const customer = payload as { id?: string | number; email?: string | null; first_name?: string | null; last_name?: string | null };
   if (customer?.id) {
-    enrolMember({ ...customer, id: customer.id }).catch((err) =>
-      console.error("[customers-enable] enrol error:", err)
-    );
-    pointsQueue.add("award_signup_points", { shopifyCustomerId: String(customer.id) }).catch((err) =>
-      console.error("[customers-enable] enqueue error:", err)
-    );
+    const id = customer.id;
+    // Fire-and-forget to keep the webhook response under Shopify's 5s limit, but
+    // enrol BEFORE enqueuing signup points — the award_signup_points worker looks
+    // up the member row, which must exist first or the points are silently lost.
+    (async () => {
+      await enrolMember({ ...customer, id });
+      await pointsQueue.add("award_signup_points", { shopifyCustomerId: String(id) });
+    })().catch((err) => console.error("[customers-enable] background error:", err));
   }
   return new Response(null, { status: 200 });
 };

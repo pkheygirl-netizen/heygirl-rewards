@@ -19,29 +19,29 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       },
     });
   }
-  if (request.method !== "POST") return json({ error: "method_not_allowed" }, { status: 405, headers: CORS });
-
-  const programEnabled = await getProgramEnabled();
-  if (!programEnabled) return json({ error: "program_disabled" }, { status: 423, headers: { ...CORS, "Cache-Control": "no-store" } });
+  if (request.method !== "POST") return json({ error: "method_not_allowed" }, { status: 405, headers: { ...CORS, "Cache-Control": "no-store" } });
 
   const url = new URL(request.url);
   let customerId: string | null;
   try {
     customerId = extractProxyCustomerId(url, process.env.SHOPIFY_API_SECRET!);
   } catch {
-    return json({ error: "unauthorized" }, { status: 401, headers: CORS });
+    return json({ error: "unauthorized" }, { status: 401, headers: { ...CORS, "Cache-Control": "no-store" } });
   }
-  if (!customerId) return json({ error: "not_logged_in" }, { status: 403, headers: CORS });
+  if (!customerId) return json({ error: "not_logged_in" }, { status: 403, headers: { ...CORS, "Cache-Control": "no-store" } });
+
+  const programEnabled = await getProgramEnabled();
+  if (!programEnabled) return json({ error: "program_disabled" }, { status: 423, headers: { ...CORS, "Cache-Control": "no-store" } });
 
   let body: { requestedPoints?: number };
   try {
     body = await request.json();
   } catch {
-    return json({ error: "invalid_json" }, { status: 400, headers: CORS });
+    return json({ error: "invalid_json" }, { status: 400, headers: { ...CORS, "Cache-Control": "no-store" } });
   }
 
   const { requestedPoints } = body;
-  if (!requestedPoints) return json({ error: "missing_fields" }, { status: 400, headers: CORS });
+  if (!requestedPoints) return json({ error: "missing_fields" }, { status: 400, headers: { ...CORS, "Cache-Control": "no-store" } });
   if (!Number.isInteger(Number(requestedPoints)) || Number(requestedPoints) < 3000) {
     return json({ error: "below_minimum" }, { status: 400, headers: { ...CORS, "Cache-Control": "no-store" } });
   }
@@ -53,14 +53,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     ));
   } catch (err) {
     console.error("[proxy.redeem] admin auth failed:", err);
-    return json({ error: "admin_auth_failed" }, { status: 500, headers: CORS });
+    return json({ error: "admin_auth_failed" }, { status: 500, headers: { ...CORS, "Cache-Control": "no-store" } });
   }
 
   try {
     const result = await redeemPoints({ shopifyCustomerId: customerId, requestedPoints: Number(requestedPoints), admin });
-    return json(result, { status: result.redeemed ? 200 : 400, headers: CORS });
+    return json(result, { status: result.redeemed ? 200 : 400, headers: { ...CORS, "Cache-Control": "no-store" } });
   } catch (err) {
     console.error("[proxy.redeem] error:", err);
-    return json({ error: "internal_error" }, { status: 500, headers: CORS });
+    return json({ error: "internal_error" }, { status: 500, headers: { ...CORS, "Cache-Control": "no-store" } });
   }
 };

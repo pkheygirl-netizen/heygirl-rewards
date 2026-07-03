@@ -12,7 +12,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   try {
     customerId = extractProxyCustomerId(url, process.env.SHOPIFY_API_SECRET!);
   } catch {
-    return json({ error: "unauthorized" }, { status: 401, headers: CORS });
+    return json({ error: "unauthorized" }, { status: 401, headers: { ...CORS, "Cache-Control": "no-store" } });
   }
   if (!customerId) return json({ error: "not_logged_in" }, { status: 403, headers: { ...CORS, "Cache-Control": "no-store" } });
 

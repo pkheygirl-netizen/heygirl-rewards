@@ -11,16 +11,16 @@ const CORS = { "Access-Control-Allow-Origin": "https://heygirl.pk" };
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
 
-  const programEnabled = await getProgramEnabled();
-  if (!programEnabled) {
-    return json({ programEnabled: false, loggedIn: false, nudgeSettings: null }, { headers: { ...CORS, "Cache-Control": "no-store" } });
-  }
-
   let customerId: string | null;
   try {
     customerId = extractProxyCustomerId(url, process.env.SHOPIFY_API_SECRET!);
   } catch {
     return json({ error: "unauthorized" }, { status: 401, headers: { ...CORS, "Cache-Control": "no-store" } });
+  }
+
+  const programEnabled = await getProgramEnabled();
+  if (!programEnabled) {
+    return json({ programEnabled: false, loggedIn: false, nudgeSettings: null }, { headers: { ...CORS, "Cache-Control": "no-store" } });
   }
 
   const nudgeSettings = await getNudgeSettings();
