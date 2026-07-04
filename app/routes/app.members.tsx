@@ -1,7 +1,7 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import { useLoaderData, useSearchParams, useFetcher, Form } from "@remix-run/react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Page,
   Card,
@@ -16,6 +16,7 @@ import {
   Button,
   Banner,
   Box,
+  Pagination,
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import {
@@ -33,10 +34,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const query = url.searchParams.get("q") ?? "";
   const tier = (url.searchParams.get("tier") as Tier | "") || undefined;
   const detailId = url.searchParams.get("detail");
+  const page = Math.max(0, Number(url.searchParams.get("page") ?? 0) || 0);
 
-  const { members, total } = await searchMembers({ query, tier });
+  const { members, total } = await searchMembers({ query, tier, page });
   const detail = detailId ? await getMemberDetail(detailId) : null;
-  return json({ members, total, query, tier: tier ?? "", detail });
+  return json({ members, total, query, tier: tier ?? "", detail, page });
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -70,16 +72,49 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 function tierBadge(tier: string) {
-  const tone = tier === "diamond" ? "info" : tier === "gold" ? "warning" : undefined;
-  return <Badge tone={tone as any}>{tier}</Badge>;
+  const tone: "info" | "warning" | undefined =
+    tier === "diamond" ? "info" : tier === "gold" ? "warning" : undefined;
+  return <Badge tone={tone}>{tier}</Badge>;
 }
 
 export default function Members() {
-  const { members, total, query, tier, detail } = useLoaderData<typeof loader>();
+  const { members, total, query, tier, detail, page } = useLoaderData<typeof loader>();
   const [params, setParams] = useSearchParams();
   const fetcher = useFetcher<{ ok: boolean; error?: string }>();
   const [reason, setReason] = useState("");
   const [points, setPoints] = useState("");
+  const [rate, setRate] = useState("");
+  const [confirmBlock, setConfirmBlock] = useState(false);
+  const PAGE_SIZE = 25;
+
+  // Keep the influencer-rate field in sync with the selected member (W8: was
+  // hard-wired read-only via onChange={() => {}}).
+  useEffect(() => {
+    setRate(String(detail?.member?.influencer_referral_rate ?? ""));
+  }, [detail?.member?.id, detail?.member?.influencer_referral_rate]);
+
+  // Gate fix: disarm the block confirmation whenever the selected member
+  // changes (or the modal closes) — an armed confirm must never carry over
+  // to a different member.
+  useEffect(() => {
+    setConfirmBlock(false);
+  }, [detail?.member?.id]);
+
+  // Success feedback + field reset after a mutation lands (W9).
+  useEffect(() => {
+    if (fetcher.state === "idle" && fetcher.data?.ok) {
+      setPoints("");
+      setReason("");
+      setConfirmBlock(false);
+      (window as { shopify?: { toast?: { show: (m: string) => void } } }).shopify?.toast?.show("Saved");
+    }
+  }, [fetcher.state, fetcher.data]);
+
+  const setPage = (p: number) => {
+    const next = new URLSearchParams(params);
+    if (p > 0) next.set("page", String(p)); else next.delete("page");
+    setParams(next);
+  };
 
   const openDetail = (id: string) => {
     const next = new URLSearchParams(params);
@@ -87,6 +122,7 @@ export default function Members() {
     setParams(next);
   };
   const closeDetail = () => {
+    setConfirmBlock(false);
     const next = new URLSearchParams(params);
     next.delete("detail");
     setParams(next);
@@ -106,6 +142,7 @@ export default function Members() {
                 onChange={(v) => {
                   const next = new URLSearchParams(params);
                   if (v) next.set("q", v); else next.delete("q");
+                  next.delete("page"); // new search → first page
                   setParams(next);
                 }}
                 placeholder="Name or email"
@@ -125,6 +162,7 @@ export default function Members() {
                 onChange={(v) => {
                   const next = new URLSearchParams(params);
                   if (v) next.set("tier", v); else next.delete("tier");
+                  next.delete("page"); // new filter → first page
                   setParams(next);
                 }}
               />
@@ -165,6 +203,19 @@ export default function Members() {
             </IndexTable.Row>
           ))}
         </IndexTable>
+        {total > PAGE_SIZE ? (
+          <Box padding="300">
+            <InlineStack align="center">
+              <Pagination
+                label={`${page * PAGE_SIZE + 1}–${Math.min((page + 1) * PAGE_SIZE, total)} of ${total}`}
+                hasPrevious={page > 0}
+                onPrevious={() => setPage(page - 1)}
+                hasNext={(page + 1) * PAGE_SIZE < total}
+                onNext={() => setPage(page + 1)}
+              />
+            </InlineStack>
+          </Box>
+        ) : null}
       </Card>
 
       {detail?.member ? (
@@ -220,14 +271,28 @@ export default function Members() {
               </Card>
 
               <InlineStack gap="200">
-                <fetcher.Form method="post">
-                  <input type="hidden" name="intent" value="block" />
-                  <input type="hidden" name="memberId" value={detail.member.id} />
-                  <input type="hidden" name="blocked" value={String(!detail.member.is_blocked)} />
-                  <Button submit tone={detail.member.is_blocked ? undefined : "critical"}>
-                    {detail.member.is_blocked ? "Unblock" : "Block"}
+                {detail.member.is_blocked ? (
+                  <fetcher.Form method="post">
+                    <input type="hidden" name="intent" value="block" />
+                    <input type="hidden" name="memberId" value={detail.member.id} />
+                    <input type="hidden" name="blocked" value="false" />
+                    <Button submit>Unblock</Button>
+                  </fetcher.Form>
+                ) : confirmBlock ? (
+                  <InlineStack gap="200">
+                    <fetcher.Form method="post">
+                      <input type="hidden" name="intent" value="block" />
+                      <input type="hidden" name="memberId" value={detail.member.id} />
+                      <input type="hidden" name="blocked" value="true" />
+                      <Button submit tone="critical" variant="primary">Confirm block</Button>
+                    </fetcher.Form>
+                    <Button onClick={() => setConfirmBlock(false)}>Cancel</Button>
+                  </InlineStack>
+                ) : (
+                  <Button tone="critical" onClick={() => setConfirmBlock(true)}>
+                    Block member…
                   </Button>
-                </fetcher.Form>
+                )}
                 <fetcher.Form method="post">
                   <input type="hidden" name="intent" value="influencer" />
                   <input type="hidden" name="memberId" value={detail.member.id} />
@@ -249,10 +314,10 @@ export default function Members() {
                       name="rate"
                       type="number"
                       autoComplete="off"
-                      value={String(detail.member.influencer_referral_rate ?? "")}
-                      onChange={() => {}}
+                      value={rate}
+                      onChange={setRate}
                     />
-                    <Button submit>Save rate</Button>
+                    <Button submit disabled={rate === ""}>Save rate</Button>
                   </InlineStack>
                 </fetcher.Form>
               ) : null}

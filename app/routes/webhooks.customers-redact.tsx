@@ -12,7 +12,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (!customerId) return new Response(null, { status: 200 });
     await redactCustomer(String(customerId));
   } catch (err) {
+    // Non-2xx so Shopify retries — a failed redaction must not be swallowed (W3).
     console.error("[customers-redact] error:", err);
+    return new Response(null, { status: 500 });
   }
   return new Response(null, { status: 200 });
 };

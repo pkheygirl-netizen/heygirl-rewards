@@ -59,7 +59,7 @@ export async function awardBirthdayReward(
 
   const { data: member } = await db
     .from("members")
-    .select("tier, email")
+    .select("tier, email, shopify_customer_id")
     .eq("id", memberId)
     .maybeSingle();
   if (!member) {
@@ -86,7 +86,8 @@ export async function awardBirthdayReward(
       target: "LINE_ITEM",
       valueType: "FIXED_AMOUNT",
       value: String(-discountPkr),
-      customerSelection: { forAllCustomers: true },
+      // I5: pin to owner so a shared code can't consume the reward
+      customerSelection: { customerIdsToAdd: [`gid://shopify/Customer/${member.shopify_customer_id}`] },
       usageLimit: 1,
       startsAt: now.toISOString(),
       endsAt: expiresAt,

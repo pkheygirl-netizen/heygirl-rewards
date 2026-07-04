@@ -22,6 +22,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       await pointsQueue.add("award_refund", {
         shopifyCustomerId: String(customerId),
         refundId: String(refund.id),
+        shopifyOrderId: refund.order_id != null ? String(refund.order_id) : null,
         refundedMerchandisePaisa: merchandisePaisa,
       });
     } catch (enqueueErr) {

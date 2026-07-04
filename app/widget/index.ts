@@ -1,7 +1,7 @@
 // app/widget/index.ts
 import { CSS } from "./styles";
 import { fetchCustomer, trackReferralVisit, type CustomerResponse } from "./api";
-import { renderLauncher, renderPanel } from "./launcher";
+import { renderLauncher, renderPanel, renderSkeletonLauncher, removeLauncher } from "./launcher";
 import { initPreview } from "./preview";
 import { initNudges } from "./nudges";
 import { initProductEmbed, initCartInline } from "./embeds";
@@ -31,9 +31,14 @@ import { renderLandingPage } from "./landing";
     try {
       injectCSS();
       const pageType = detectPage();
+      // W12: paint the skeleton launcher BEFORE the network round-trip so the
+      // button doesn't pop in late; hydrated (or removed) once data arrives.
+      if (pageType !== "rewards") renderSkeletonLauncher();
       const data: CustomerResponse | null = await fetchCustomer();
-      if (!data) return;
-      if (data.programEnabled === false) return; // program paused — hide widget entirely
+      if (!data || data.programEnabled === false) {
+        removeLauncher(); // no data / program paused — hide widget entirely
+        return;
+      }
 
       // Referral attribution spans sessions: a friend clicks heygirl.pk?ref=SLUG while
       // logged OUT, signs up (losing the ?ref= param), then returns logged in. So we
@@ -74,13 +79,22 @@ import { renderLandingPage } from "./landing";
       if (pageType === "cart") initCartInline(data);
       if (pageType === "rewards") renderLandingPage(data);
     } catch {
-      // fail silently
+      // fail silently — but never leave a dead skeleton button behind
+      try { removeLauncher(); } catch { /* noop */ }
     }
   }
 
+  // W12: boot on idle, never in the load-critical window. requestIdleCallback
+  // with a 3s timeout; setTimeout fallback for Safari.
+  function boot() {
+    const ric = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => void }).requestIdleCallback;
+    if (typeof ric === "function") ric(() => void init(), { timeout: 3000 });
+    else setTimeout(() => void init(), 200);
+  }
+
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", init);
+    document.addEventListener("DOMContentLoaded", boot);
   } else {
-    init();
+    boot();
   }
 })();

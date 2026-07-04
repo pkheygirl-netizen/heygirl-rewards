@@ -56,7 +56,7 @@ export const CSS = `
 .hg-panel-body { padding: 16px; }
 
 /* ---- Progress bars ---- */
-.hg-progress-label { display: flex; justify-content: space-between; font-size: 12px; color: #888; margin-bottom: 4px; }
+.hg-progress-label { display: flex; justify-content: space-between; font-size: 12px; color: #6b6b6b; margin-bottom: 4px; }
 .hg-progress-track { background: #f6ecc9; border-radius: 4px; height: 6px; margin-bottom: 12px; overflow: hidden; }
 .hg-progress-fill { background: #e8ad00; height: 100%; border-radius: 4px; transition: width 0.5s ease; }
 
@@ -76,7 +76,7 @@ export const CSS = `
   background: #f6ecc9; border-radius: 8px; padding: 10px 12px;
   font-size: 13px;
 }
-.hg-referral-link { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #888; }
+.hg-referral-link { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #666666; }
 .hg-copy-btn { background: #e8ad00; color: #1a1a1a; border: none; border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; white-space: nowrap; }
 
 /* ---- Nudges ---- */
@@ -90,7 +90,7 @@ export const CSS = `
 @keyframes hg-slide-up { from{transform:translateY(20px);opacity:0} to{transform:translateY(0);opacity:1} }
 .hg-nudge-close {
   position: absolute; top: 8px; right: 10px; background: none; border: none;
-  font-size: 18px; cursor: pointer; color: #888; line-height: 1;
+  font-size: 18px; cursor: pointer; color: #6b6b6b; line-height: 1;
 }
 .hg-nudge-title { font-weight: 700; font-size: 14px; margin-bottom: 6px; color: #1a1a1a; }
 .hg-nudge-body { font-size: 13px; color: #555; margin-bottom: 12px; }
@@ -180,7 +180,7 @@ export const CSS = `
 .hg-redeem-tile.hg-disabled { opacity: 0.4; cursor: not-allowed; }
 .hg-redeem-tile .hg-tile-pts { font-size: 13px; font-weight: 700; color: #9c7600; }
 .hg-redeem-tile .hg-tile-val { font-size: 15px; font-weight: 800; color: #1a1a1a; margin: 4px 0; }
-.hg-redeem-tile .hg-tile-label { font-size: 10px; color: #888; }
+.hg-redeem-tile .hg-tile-label { font-size: 10px; color: #666666; }
 
 /* History list */
 .hg-history-filter {
@@ -219,7 +219,7 @@ export const CSS = `
 .hg-referral-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 16px; }
 .hg-stat-card { background: #f6ecc9; border-radius: 8px; padding: 10px; text-align: center; }
 .hg-stat-val { font-size: 20px; font-weight: 800; color: #9c7600; }
-.hg-stat-label { font-size: 11px; color: #888; margin-top: 2px; }
+.hg-stat-label { font-size: 11px; color: #666666; margin-top: 2px; }
 
 /* My Rewards tab */
 .hg-rewards-hero {
@@ -269,7 +269,7 @@ export const CSS = `
   padding: 2px 8px; font-size: 11px; font-weight: 600; white-space: nowrap;
 }
 .hg-achieved-badge {
-  background: #f6ecc9; color: #888; border-radius: 20px;
+  background: #f6ecc9; color: #666666; border-radius: 20px;
   padding: 2px 8px; font-size: 11px; font-weight: 600; white-space: nowrap;
 }
 .hg-tier-benefit { font-size: 12px; color: #555; margin: 3px 0; }
@@ -277,15 +277,15 @@ export const CSS = `
 
 /* ---- Hub Tab 3: Referrals ---- */
 .hg-referral-link-card { background: #fdf6e3; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
-.hg-referral-url { background: #fff; border: 1px solid #ead9a0; border-radius: 8px; padding: 10px; font-size: 12px; color: #888; word-break: break-all; margin-bottom: 10px; }
+.hg-referral-url { background: #fff; border: 1px solid #ead9a0; border-radius: 8px; padding: 10px; font-size: 12px; color: #6b6b6b; word-break: break-all; margin-bottom: 10px; }
 .hg-btn { border: none; border-radius: 8px; padding: 9px 14px; font-size: 12px; font-weight: 700; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
 .hg-btn-wa { background: #25d366; color: #fff; flex: 1; }
 .hg-btn-copy { background: #e8ad00; color: #1a1a1a; flex: 1; }
 .hg-stats-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 20px; }
 .hg-stat-box { background: #f6ecc9; border-radius: 10px; padding: 10px 6px; text-align: center; }
 .hg-stat-num { font-size: 20px; font-weight: 800; color: #9c7600; }
-.hg-stat-lbl { font-size: 11px; color: #888; margin-top: 2px; }
-.hg-social-note { font-size: 12px; color: #888; margin-bottom: 10px; }
+.hg-stat-lbl { font-size: 11px; color: #666666; margin-top: 2px; }
+.hg-social-note { font-size: 12px; color: #6b6b6b; margin-bottom: 10px; }
 .hg-social-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
 .hg-social-row { display: flex; justify-content: space-between; align-items: center; background: #fdf6e3; border-radius: 10px; padding: 10px 12px; }
 .hg-social-label { font-size: 13px; font-weight: 600; }
@@ -298,10 +298,10 @@ export const CSS = `
 .hg-msg-err { color: #c62828; }
 .hg-history-section { margin-bottom: 16px; }
 .hg-history-label { font-weight: 600; font-size: 13px; }
-.hg-history-date { font-size: 11px; color: #888; margin-top: 2px; }
+.hg-history-date { font-size: 11px; color: #6b6b6b; margin-top: 2px; }
 .hg-status-badge { font-size: 12px; text-transform: capitalize; padding: 3px 10px; border-radius: 20px; background: #f6ecc9; color: #9c7600; }
 .hg-status-rewarded { background: #e8f5e9; color: #2e7d32; }
-.hg-empty-state { font-size: 13px; color: #aaa; text-align: center; padding: 16px 0; }
+.hg-empty-state { font-size: 13px; color: #767676; text-align: center; padding: 16px 0; }
 .hg-influencer-badge { background: #fff8e1; border: 1px solid #ffe082; border-radius: 10px; padding: 14px; margin-top: 16px; }
 .hg-influencer-title { font-weight: 700; font-size: 13px; margin-bottom: 4px; }
 .hg-influencer-rate { font-size: 12px; color: #555; margin-bottom: 4px; }
@@ -362,7 +362,7 @@ export const CSS = `
 .hg-pv-ic { font-size: 22px; width: 30px; text-align: center; flex-shrink: 0; line-height: 1; }
 .hg-pv-row-main { flex: 1; min-width: 0; }
 .hg-pv-row-title { font-size: 14px; font-weight: 600; color: #1a1a1a; }
-.hg-pv-row-sub { font-size: 13px; color: #9ca3af; margin-top: 1px; }
+.hg-pv-row-sub { font-size: 13px; color: #6b7280; margin-top: 1px; }
 .hg-pv-chev { color: #c0c0c0; font-size: 18px; flex-shrink: 0; }
 .hg-pv-pill { background: #eef0f4; border-radius: 10px; padding: 13px; text-align: center; font-size: 13px; color: #4b5563; margin: 6px 0 14px; }
 .hg-pv-sub-title { font-size: 16px; font-weight: 800; margin: 4px 2px 10px; color: #1a1a1a; }

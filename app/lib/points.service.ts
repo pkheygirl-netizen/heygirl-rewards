@@ -337,6 +337,7 @@ export async function awardSocial(socialActionId: string): Promise<{ awarded: bo
 export async function awardRefund(input: {
   shopifyCustomerId: string;
   refundId: string;
+  shopifyOrderId?: string | null;
   refundedMerchandisePaisa: number;
 }): Promise<{ awarded: boolean; deducted: number }> {
   const customerId = String(input.shopifyCustomerId);
@@ -350,8 +351,31 @@ export async function awardRefund(input: {
     return { awarded: false, deducted: 0 };
   }
 
-  const clawback = roundClawback(input.refundedMerchandisePaisa / 100);
+  let clawback = roundClawback(input.refundedMerchandisePaisa / 100);
   if (clawback <= 0) return { awarded: false, deducted: 0 };
+
+  // W6 (2026-07-03 review): never claw back more than the order actually earned.
+  // Covers orders that never earned points (pre-install, fulfilled-unpaid,
+  // blocked member) and campaign-multiplier orders — cap at the sum of positive
+  // purchase ledger rows for this order, minus what earlier partial refunds of
+  // the same order already deducted.
+  if (input.shopifyOrderId) {
+    const orderId = String(input.shopifyOrderId);
+    const { data: rows } = await db
+      .from("points_ledger")
+      .select("action_type, points")
+      .eq("member_id", member.id)
+      .eq("shopify_order_id", orderId)
+      .in("action_type", ["purchase", "refund_deduction"]);
+    const earned = (rows ?? [])
+      .filter((r) => r.action_type === "purchase" && r.points > 0)
+      .reduce((s, r) => s + r.points, 0);
+    const alreadyClawed = (rows ?? [])
+      .filter((r) => r.action_type === "refund_deduction")
+      .reduce((s, r) => s - r.points, 0); // negative rows → positive total
+    clawback = Math.min(clawback, Math.max(0, earned - alreadyClawed));
+    if (clawback <= 0) return { awarded: false, deducted: 0 };
+  }
 
   // Idempotent negative award first; if duplicate refund id, stop (no double FIFO decrement)
   const { data, error } = await db.rpc("award_points", {
@@ -359,6 +383,7 @@ export async function awardRefund(input: {
     p_action_type: "refund_deduction",
     p_reference_id: String(input.refundId),
     p_points: -clawback,
+    p_shopify_order_id: input.shopifyOrderId ? String(input.shopifyOrderId) : undefined,
     p_reason_note: "refund",
   });
   if (error) throw error;
@@ -379,7 +404,9 @@ export async function expireSilverPoints(
     .eq("action_type", "purchase")
     .eq("expired", false)
     .gt("points_remaining", 0)
-    .lt("expires_at", iso);
+    .lt("expires_at", iso)
+    .order("expires_at", { ascending: true })
+    .limit(500); // W7: bound per cron run; next run picks up the remainder
 
   // NOTE: FIFO decrement is not atomic with RPC — concurrent expiry runs may over/under-decrement
   // points_remaining. Balance (via RPC) remains correct; points_remaining can drift.

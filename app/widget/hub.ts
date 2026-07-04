@@ -38,14 +38,14 @@ export function initHub(data: CustomerResponse) {
         </div>
         <button class="hg-hub-close" id="hg-hub-close" aria-label="Close">×</button>
       </div>
-      <div class="hg-tabs">
+      <div class="hg-tabs" role="tablist" aria-label="Loyalty sections">
         ${TAB_LABELS.map((label, i) => `
-          <button class="hg-tab${i === 0 ? " hg-active" : ""}" data-tab="${i}">${label}</button>
+          <button class="hg-tab${i === 0 ? " hg-active" : ""}" data-tab="${i}" role="tab" id="hg-tab-${i}" aria-selected="${i === 0}" aria-controls="hg-panel-${i}">${label}</button>
         `).join("")}
       </div>
     </div>
     <div class="hg-hub-body">
-      ${TAB_LABELS.map((_, i) => `<div class="hg-tab-panel${i === 0 ? " hg-active" : ""}" id="hg-panel-${i}"></div>`).join("")}
+      ${TAB_LABELS.map((_, i) => `<div class="hg-tab-panel${i === 0 ? " hg-active" : ""}" id="hg-panel-${i}" role="tabpanel" aria-labelledby="hg-tab-${i}"></div>`).join("")}
     </div>
   `;
 
@@ -60,8 +60,12 @@ export function initHub(data: CustomerResponse) {
   hub.querySelectorAll(".hg-tab").forEach((btn) => {
     btn.addEventListener("click", () => {
       const tab = Number((btn as HTMLElement).dataset.tab);
-      hub.querySelectorAll(".hg-tab").forEach((b) => b.classList.remove("hg-active"));
+      hub.querySelectorAll(".hg-tab").forEach((b) => {
+        b.classList.remove("hg-active");
+        b.setAttribute("aria-selected", "false");
+      });
       btn.classList.add("hg-active");
+      btn.setAttribute("aria-selected", "true");
       hub.querySelectorAll(".hg-tab-panel").forEach((p) => p.classList.remove("hg-active"));
       const panel = document.getElementById(`hg-panel-${tab}`)!;
       panel.classList.add("hg-active");
@@ -92,6 +96,10 @@ export function initHub(data: CustomerResponse) {
     'a[href], button:not([disabled]), input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
   let _keyHandler: ((e: KeyboardEvent) => void) | null = null;
+  // Store/restore the theme's own overflow value — resetting to "" would clobber
+  // a theme scroll-lock script that had set it before we opened.
+  let _prevOverflow = "";
+  let _isOpen = false;
 
   function trapFocus(e: KeyboardEvent) {
     if (e.key === "Escape") {
@@ -119,6 +127,10 @@ export function initHub(data: CustomerResponse) {
     // Switch to requested tab
     const tabBtn = hub.querySelector(`[data-tab="${tab}"]`) as HTMLElement | null;
     if (tabBtn) tabBtn.click();
+    // Capture only on a real closed→open transition — a re-open while already
+    // open would capture our own "hidden" and wedge the scroll-lock on close.
+    if (!_isOpen) _prevOverflow = document.body.style.overflow;
+    _isOpen = true;
     document.body.style.overflow = "hidden";
 
     // Store launcher to return focus on close
@@ -137,7 +149,8 @@ export function initHub(data: CustomerResponse) {
 
   function closeHub() {
     overlay.classList.remove("hg-open");
-    document.body.style.overflow = "";
+    document.body.style.overflow = _prevOverflow;
+    _isOpen = false;
 
     // Remove key handler
     if (_keyHandler) {

@@ -170,7 +170,27 @@ export function initPreview(_data: CustomerResponse) {
   }
 
   function onKeydown(e: KeyboardEvent) {
-    if (e.key === "Escape") close();
+    if (e.key === "Escape") {
+      close();
+      return;
+    }
+    // W13: trap Tab inside the overlay while it visually dominates the page
+    // (same pattern as the hub dialog).
+    if (e.key === "Tab") {
+      const focusable = overlay.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input, select, textarea, [role="button"], [tabindex]:not([tabindex="-1"])',
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
   }
 
   function open() {

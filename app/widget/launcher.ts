@@ -8,15 +8,34 @@ const TIER_LABEL: Record<string, string> = {
   diamond: "◆ Diamond",
 };
 
-export function renderLauncher(data: CustomerResponse) {
+// W12: paint a skeleton button immediately so the launcher doesn't pop in
+// seconds late on slow networks — renderLauncher() hydrates it in place.
+export function renderSkeletonLauncher() {
   if (document.getElementById("hg-launcher")) return;
-
   const btn = document.createElement("button");
+  btn.id = "hg-launcher";
+  btn.className = "hg-loading";
+  btn.setAttribute("aria-label", "Loyalty rewards");
+  btn.innerHTML = `<span class="hg-icon">◈</span>`;
+  document.body.appendChild(btn);
+}
+
+export function removeLauncher() {
+  document.getElementById("hg-launcher")?.remove();
+}
+
+export function renderLauncher(data: CustomerResponse) {
+  const existing = document.getElementById("hg-launcher") as HTMLButtonElement | null;
+  // Already hydrated → nothing to do; a bare skeleton gets hydrated in place.
+  if (existing && !existing.classList.contains("hg-loading")) return;
+
+  const btn = existing ?? document.createElement("button");
   btn.id = "hg-launcher";
   btn.className = "hg-loading";
 
   if (!data.loggedIn || !data.member) {
     btn.classList.add("hg-gold");
+    btn.setAttribute("aria-label", "Join the loyalty program");
     btn.innerHTML = `<span class="hg-icon">🎁</span><span>Join &amp; Earn</span>`;
     btn.addEventListener("click", () => {
       const w = window as unknown as Record<string, unknown>;
@@ -30,6 +49,10 @@ export function renderLauncher(data: CustomerResponse) {
   } else {
     const { tier, balance } = data.member;
     btn.className = "";
+    // W13: accessible name + expanded state for the panel it controls.
+    btn.setAttribute("aria-label", "Open loyalty rewards panel");
+    btn.setAttribute("aria-expanded", "false");
+    btn.setAttribute("aria-haspopup", "dialog");
     btn.innerHTML = `
       <span class="hg-icon">◈</span>
       <span class="hg-badge">${TIER_LABEL[tier] ?? tier}</span>
@@ -38,7 +61,7 @@ export function renderLauncher(data: CustomerResponse) {
     btn.addEventListener("click", togglePanel);
   }
 
-  document.body.appendChild(btn);
+  if (!existing) document.body.appendChild(btn);
 
   // Skeleton → real: remove loading class after 1.5s max
   setTimeout(() => btn.classList.remove("hg-loading"), 1500);
@@ -48,6 +71,16 @@ function togglePanel() {
   const panel = document.getElementById("hg-panel");
   if (!panel) return;
   panel.classList.toggle("hg-open");
+  document
+    .getElementById("hg-launcher")
+    ?.setAttribute("aria-expanded", String(panel.classList.contains("hg-open")));
+}
+
+// Gate fix: every close path must also sync aria-expanded, or screen readers
+// are told the panel is still open.
+function closePanel() {
+  document.getElementById("hg-panel")?.classList.remove("hg-open");
+  document.getElementById("hg-launcher")?.setAttribute("aria-expanded", "false");
 }
 
 export function renderPanel(data: CustomerResponse) {
@@ -109,7 +142,7 @@ export function renderPanel(data: CustomerResponse) {
       // Fallback until Plan 5B is deployed
       window.location.href = "/pages/rewards";
     }
-    panel.classList.remove("hg-open");
+    closePanel();
   });
 
   panel.querySelector("#hg-redeem-btn")?.addEventListener("click", () => {
@@ -118,7 +151,7 @@ export function renderPanel(data: CustomerResponse) {
     if (typeof hubFn === "function") {
       (hubFn as (tab: number, launcher?: HTMLElement) => void)(0, launcher ?? undefined); // Tab 0 = My Rewards
     }
-    panel.classList.remove("hg-open");
+    closePanel();
   });
 
   // Copy referral link
@@ -138,7 +171,7 @@ export function renderPanel(data: CustomerResponse) {
     const launcher = document.getElementById("hg-launcher");
     const target = e.target as Node;
     if (!panel.contains(target) && !(launcher && launcher.contains(target))) {
-      panel.classList.remove("hg-open");
+      closePanel();
     }
   });
 }

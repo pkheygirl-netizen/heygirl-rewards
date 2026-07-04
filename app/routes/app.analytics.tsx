@@ -14,6 +14,7 @@ import {
 } from "../lib/admin-analytics.server";
 import { getTierBreakdown } from "../lib/admin-data.server";
 import { getInfluencers } from "../lib/admin-influencers.server";
+import { downloadCsv } from "../lib/csv-download.client";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
@@ -41,7 +42,7 @@ export default function Analytics() {
   return (
     <Page
       title="Analytics"
-      primaryAction={{ content: "Export CSV", url: `/app/analytics/export.csv?range=${data.range}` }}
+      primaryAction={{ content: "Export CSV", onAction: () => void downloadCsv(`/app/analytics/export.csv?range=${data.range}`, "analytics.csv") }}
     >
       <BlockStack gap="400">
         <Card>

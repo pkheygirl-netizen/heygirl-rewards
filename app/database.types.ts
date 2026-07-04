@@ -173,6 +173,36 @@ export type Database = {
         }
         Relationships: []
       }
+      gdpr_requests: {
+        Row: {
+          created_at: string
+          id: string
+          payload: Json | null
+          shopify_customer_id: string | null
+          status: string
+          type: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          payload?: Json | null
+          shopify_customer_id?: string | null
+          status?: string
+          type: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          payload?: Json | null
+          shopify_customer_id?: string | null
+          status?: string
+          type?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       loyalty_codes: {
         Row: {
           code: string

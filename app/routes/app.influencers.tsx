@@ -10,6 +10,7 @@ import {
   getInfluencers, updateReferralSlug, type InfluencerRow,
 } from "../lib/admin-influencers.server";
 import { adjustPoints } from "../lib/admin-members.server";
+import { downloadCsv } from "../lib/csv-download.client";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
@@ -59,7 +60,7 @@ export default function Influencers() {
   return (
     <Page
       title="Influencers"
-      primaryAction={{ content: "Export CSV", url: "/app/influencers/export.csv", external: false }}
+      primaryAction={{ content: "Export CSV", onAction: () => void downloadCsv("/app/influencers/export.csv", "influencers.csv") }}
     >
       {fetcher.data && !fetcher.data.ok ? (
         <Box paddingBlockEnd="300"><Banner tone="critical">{fetcher.data.error}</Banner></Box>

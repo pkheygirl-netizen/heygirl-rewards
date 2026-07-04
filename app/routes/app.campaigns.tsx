@@ -9,6 +9,7 @@ import { authenticate } from "../shopify.server";
 import {
   listCampaigns, createCampaign, updateCampaign, deleteCampaign,
 } from "../lib/admin-campaigns.server";
+import { downloadCsv } from "../lib/csv-download.client";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
@@ -53,7 +54,7 @@ export default function Campaigns() {
     <Page
       title="Points & Campaigns"
       primaryAction={{ content: "New campaign", onAction: () => setOpen(true) }}
-      secondaryActions={[{ content: "Export ledger CSV", url: "/app/campaigns/ledger.csv" }]}
+      secondaryActions={[{ content: "Export ledger CSV", onAction: () => void downloadCsv("/app/campaigns/ledger.csv", "points-ledger.csv") }]}
     >
       <BlockStack gap="400">
         {fetcher.data && !fetcher.data.ok ? <Banner tone="critical">{fetcher.data.error}</Banner> : null}

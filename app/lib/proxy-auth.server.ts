@@ -13,8 +13,10 @@ export function extractProxyCustomerId(url: URL, apiSecret: string): string | nu
   const receivedSig = params.get("signature") ?? "";
   params.delete("signature");
 
-  const sorted = [...params.entries()].sort(([a], [b]) => a.localeCompare(b));
-  const message = sorted.map(([k, v]) => `${k}=${v}`).join("");
+  // Shopify joins repeated params as "key=v1,v2" — build from unique keys + getAll,
+  // not per-entry, or any multi-value param fails verification (W1, 2026-07-03 review).
+  const keys = [...new Set([...params.keys()])].sort((a, b) => a.localeCompare(b));
+  const message = keys.map((k) => `${k}=${params.getAll(k).join(",")}`).join("");
   const expected = crypto.createHmac("sha256", apiSecret).update(message).digest("hex");
 
   const sigBuf = Buffer.from(receivedSig, "hex");

@@ -1,7 +1,7 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import { useLoaderData, useActionData, useSubmit, useNavigation, useFetcher } from "@remix-run/react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Page, Card, FormLayout, TextField, Checkbox, Button, Banner, BlockStack, Box, Text,
 } from "@shopify/polaris";
@@ -23,8 +23,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // ""/0 if applied to a toggle-only submission.
   if (form.get("intent") === "toggle_program") {
     try {
-      await updateSettings({ program_enabled: form.get("program_enabled") === "true" });
-      return json({ ok: true, error: undefined as string | undefined });
+      const enabled = form.get("program_enabled") === "true";
+      await updateSettings({ program_enabled: enabled });
+      return json({ ok: true, enabled, error: undefined as string | undefined });
     } catch (e) {
       return json({ ok: false, error: (e as Error).message }, { status: 400 });
     }
@@ -122,6 +123,24 @@ export default function Settings() {
       { method: "post" },
     );
   };
+
+  // W11: the toggle was optimistic with the fetcher result never rendered — a
+  // failed save left the checkbox lying about the live program state. Revert on
+  // failure, confirm on success (this switch hides the whole storefront widget).
+  useEffect(() => {
+    if (programFetcher.state !== "idle" || !programFetcher.data) return;
+    const result = programFetcher.data as { ok?: boolean; enabled?: boolean };
+    const toast = (window as { shopify?: { toast?: { show: (m: string, o?: { isError?: boolean }) => void } } }).shopify?.toast;
+    if (result.ok) {
+      // Echoed `enabled` reflects the state that was actually saved, not the
+      // current checkbox (which may have been re-toggled meanwhile).
+      toast?.show(result.enabled ? "Program enabled" : "Program disabled");
+    } else {
+      setProgramEnabled((prev) => !prev); // revert optimistic flip
+      toast?.show("Could not update program status", { isError: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [programFetcher.state, programFetcher.data]);
 
   const onSave = () => {
     submit(

@@ -1,4 +1,4 @@
-"use strict";var __LOYALTY_WIDGET__=(()=>{var R=`
+"use strict";var __LOYALTY_WIDGET__=(()=>{var T=`
 /* ---- Reset ---- */
 .hg-widget * { box-sizing: border-box; margin: 0; padding: 0; font-family: inherit; }
 
@@ -53,7 +53,7 @@
 .hg-panel-body { padding: 16px; }
 
 /* ---- Progress bars ---- */
-.hg-progress-label { display: flex; justify-content: space-between; font-size: 12px; color: #888; margin-bottom: 4px; }
+.hg-progress-label { display: flex; justify-content: space-between; font-size: 12px; color: #6b6b6b; margin-bottom: 4px; }
 .hg-progress-track { background: #f6ecc9; border-radius: 4px; height: 6px; margin-bottom: 12px; overflow: hidden; }
 .hg-progress-fill { background: #e8ad00; height: 100%; border-radius: 4px; transition: width 0.5s ease; }
 
@@ -73,7 +73,7 @@
   background: #f6ecc9; border-radius: 8px; padding: 10px 12px;
   font-size: 13px;
 }
-.hg-referral-link { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #888; }
+.hg-referral-link { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #666666; }
 .hg-copy-btn { background: #e8ad00; color: #1a1a1a; border: none; border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; white-space: nowrap; }
 
 /* ---- Nudges ---- */
@@ -87,7 +87,7 @@
 @keyframes hg-slide-up { from{transform:translateY(20px);opacity:0} to{transform:translateY(0);opacity:1} }
 .hg-nudge-close {
   position: absolute; top: 8px; right: 10px; background: none; border: none;
-  font-size: 18px; cursor: pointer; color: #888; line-height: 1;
+  font-size: 18px; cursor: pointer; color: #6b6b6b; line-height: 1;
 }
 .hg-nudge-title { font-weight: 700; font-size: 14px; margin-bottom: 6px; color: #1a1a1a; }
 .hg-nudge-body { font-size: 13px; color: #555; margin-bottom: 12px; }
@@ -177,7 +177,7 @@
 .hg-redeem-tile.hg-disabled { opacity: 0.4; cursor: not-allowed; }
 .hg-redeem-tile .hg-tile-pts { font-size: 13px; font-weight: 700; color: #9c7600; }
 .hg-redeem-tile .hg-tile-val { font-size: 15px; font-weight: 800; color: #1a1a1a; margin: 4px 0; }
-.hg-redeem-tile .hg-tile-label { font-size: 10px; color: #888; }
+.hg-redeem-tile .hg-tile-label { font-size: 10px; color: #666666; }
 
 /* History list */
 .hg-history-filter {
@@ -216,7 +216,7 @@
 .hg-referral-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 16px; }
 .hg-stat-card { background: #f6ecc9; border-radius: 8px; padding: 10px; text-align: center; }
 .hg-stat-val { font-size: 20px; font-weight: 800; color: #9c7600; }
-.hg-stat-label { font-size: 11px; color: #888; margin-top: 2px; }
+.hg-stat-label { font-size: 11px; color: #666666; margin-top: 2px; }
 
 /* My Rewards tab */
 .hg-rewards-hero {
@@ -266,7 +266,7 @@
   padding: 2px 8px; font-size: 11px; font-weight: 600; white-space: nowrap;
 }
 .hg-achieved-badge {
-  background: #f6ecc9; color: #888; border-radius: 20px;
+  background: #f6ecc9; color: #666666; border-radius: 20px;
   padding: 2px 8px; font-size: 11px; font-weight: 600; white-space: nowrap;
 }
 .hg-tier-benefit { font-size: 12px; color: #555; margin: 3px 0; }
@@ -274,15 +274,15 @@
 
 /* ---- Hub Tab 3: Referrals ---- */
 .hg-referral-link-card { background: #fdf6e3; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
-.hg-referral-url { background: #fff; border: 1px solid #ead9a0; border-radius: 8px; padding: 10px; font-size: 12px; color: #888; word-break: break-all; margin-bottom: 10px; }
+.hg-referral-url { background: #fff; border: 1px solid #ead9a0; border-radius: 8px; padding: 10px; font-size: 12px; color: #6b6b6b; word-break: break-all; margin-bottom: 10px; }
 .hg-btn { border: none; border-radius: 8px; padding: 9px 14px; font-size: 12px; font-weight: 700; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
 .hg-btn-wa { background: #25d366; color: #fff; flex: 1; }
 .hg-btn-copy { background: #e8ad00; color: #1a1a1a; flex: 1; }
 .hg-stats-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 20px; }
 .hg-stat-box { background: #f6ecc9; border-radius: 10px; padding: 10px 6px; text-align: center; }
 .hg-stat-num { font-size: 20px; font-weight: 800; color: #9c7600; }
-.hg-stat-lbl { font-size: 11px; color: #888; margin-top: 2px; }
-.hg-social-note { font-size: 12px; color: #888; margin-bottom: 10px; }
+.hg-stat-lbl { font-size: 11px; color: #666666; margin-top: 2px; }
+.hg-social-note { font-size: 12px; color: #6b6b6b; margin-bottom: 10px; }
 .hg-social-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
 .hg-social-row { display: flex; justify-content: space-between; align-items: center; background: #fdf6e3; border-radius: 10px; padding: 10px 12px; }
 .hg-social-label { font-size: 13px; font-weight: 600; }
@@ -295,10 +295,10 @@
 .hg-msg-err { color: #c62828; }
 .hg-history-section { margin-bottom: 16px; }
 .hg-history-label { font-weight: 600; font-size: 13px; }
-.hg-history-date { font-size: 11px; color: #888; margin-top: 2px; }
+.hg-history-date { font-size: 11px; color: #6b6b6b; margin-top: 2px; }
 .hg-status-badge { font-size: 12px; text-transform: capitalize; padding: 3px 10px; border-radius: 20px; background: #f6ecc9; color: #9c7600; }
 .hg-status-rewarded { background: #e8f5e9; color: #2e7d32; }
-.hg-empty-state { font-size: 13px; color: #aaa; text-align: center; padding: 16px 0; }
+.hg-empty-state { font-size: 13px; color: #767676; text-align: center; padding: 16px 0; }
 .hg-influencer-badge { background: #fff8e1; border: 1px solid #ffe082; border-radius: 10px; padding: 14px; margin-top: 16px; }
 .hg-influencer-title { font-weight: 700; font-size: 13px; margin-bottom: 4px; }
 .hg-influencer-rate { font-size: 12px; color: #555; margin-bottom: 4px; }
@@ -359,59 +359,59 @@
 .hg-pv-ic { font-size: 22px; width: 30px; text-align: center; flex-shrink: 0; line-height: 1; }
 .hg-pv-row-main { flex: 1; min-width: 0; }
 .hg-pv-row-title { font-size: 14px; font-weight: 600; color: #1a1a1a; }
-.hg-pv-row-sub { font-size: 13px; color: #9ca3af; margin-top: 1px; }
+.hg-pv-row-sub { font-size: 13px; color: #6b7280; margin-top: 1px; }
 .hg-pv-chev { color: #c0c0c0; font-size: 18px; flex-shrink: 0; }
 .hg-pv-pill { background: #eef0f4; border-radius: 10px; padding: 13px; text-align: center; font-size: 13px; color: #4b5563; margin: 6px 0 14px; }
 .hg-pv-sub-title { font-size: 16px; font-weight: 800; margin: 4px 2px 10px; color: #1a1a1a; }
-`;var x="/apps/loyalty";async function S(){try{let e=await fetch(`${x}/customer`);return e.ok?await e.json():null}catch{return null}}async function $(e=1,t=null){try{let o=new URLSearchParams({page:String(e)});t&&o.set("type",t);let r=await fetch(`${x}/history?${o}`);return r.ok?await r.json():{items:[],total:0}}catch{return{items:[],total:0}}}async function T(){try{let e=await fetch(`${x}/referral`);return e.ok?await e.json():null}catch{return null}}async function H(e){try{return await(await fetch(`${x}/redeem`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({requestedPoints:e})})).json()}catch{return{redeemed:!1,error:"network_error"}}}async function C(e){try{return(await fetch(`${x}/referral`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({referralSlug:e})})).ok}catch{return!1}}async function _(e){try{return await(await fetch(`${x}/social`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({platform:e})})).json()}catch{return{queued:!1}}}function m(e){return e.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}var M={silver:"\u25C8 Silver",gold:"\u2605 Gold",diamond:"\u25C6 Diamond"};function z(e){if(document.getElementById("hg-launcher"))return;let t=document.createElement("button");if(t.id="hg-launcher",t.className="hg-loading",!e.loggedIn||!e.member)t.classList.add("hg-gold"),t.innerHTML='<span class="hg-icon">\u{1F381}</span><span>Join &amp; Earn</span>',t.addEventListener("click",()=>{let o=window;typeof o.__hgTogglePreview=="function"?o.__hgTogglePreview():window.location.href="/account/register"});else{let{tier:o,balance:r}=e.member;t.className="",t.innerHTML=`
+`;var x="/apps/loyalty";async function $(){try{let e=await fetch(`${x}/customer`);return e.ok?await e.json():null}catch{return null}}async function H(e=1,o=null){try{let t=new URLSearchParams({page:String(e)});o&&t.set("type",o);let n=await fetch(`${x}/history?${t}`);return n.ok?await n.json():{items:[],total:0}}catch{return{items:[],total:0}}}async function C(){try{let e=await fetch(`${x}/referral`);return e.ok?await e.json():null}catch{return null}}async function _(e){try{return await(await fetch(`${x}/redeem`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({requestedPoints:e})})).json()}catch{return{redeemed:!1,error:"network_error"}}}async function M(e){try{return(await fetch(`${x}/referral`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({referralSlug:e})})).ok}catch{return!1}}async function z(e){try{return await(await fetch(`${x}/social`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({platform:e})})).json()}catch{return{queued:!1}}}function b(e){return e.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}var P={silver:"\u25C8 Silver",gold:"\u2605 Gold",diamond:"\u25C6 Diamond"};function I(){if(document.getElementById("hg-launcher"))return;let e=document.createElement("button");e.id="hg-launcher",e.className="hg-loading",e.setAttribute("aria-label","Loyalty rewards"),e.innerHTML='<span class="hg-icon">\u25C8</span>',document.body.appendChild(e)}function S(){document.getElementById("hg-launcher")?.remove()}function A(e){let o=document.getElementById("hg-launcher");if(o&&!o.classList.contains("hg-loading"))return;let t=o??document.createElement("button");if(t.id="hg-launcher",t.className="hg-loading",!e.loggedIn||!e.member)t.classList.add("hg-gold"),t.setAttribute("aria-label","Join the loyalty program"),t.innerHTML='<span class="hg-icon">\u{1F381}</span><span>Join &amp; Earn</span>',t.addEventListener("click",()=>{let n=window;typeof n.__hgTogglePreview=="function"?n.__hgTogglePreview():window.location.href="/account/register"});else{let{tier:n,balance:i}=e.member;t.className="",t.setAttribute("aria-label","Open loyalty rewards panel"),t.setAttribute("aria-expanded","false"),t.setAttribute("aria-haspopup","dialog"),t.innerHTML=`
       <span class="hg-icon">\u25C8</span>
-      <span class="hg-badge">${M[o]??o}</span>
-      <span>${r.toLocaleString()} pts</span>
-    `,t.addEventListener("click",X)}document.body.appendChild(t),setTimeout(()=>t.classList.remove("hg-loading"),1500)}function X(){let e=document.getElementById("hg-panel");e&&e.classList.toggle("hg-open")}function P(e){if(document.getElementById("hg-panel")||!e.loggedIn||!e.member)return;let{member:t}=e,o=document.createElement("div");o.id="hg-panel",o.className="hg-widget";let r=Math.min(100,Math.floor(t.lifetimeSpend/5e4*100)),n=Math.min(100,Math.floor(t.lifetimeSpend/1e5*100)),a=t.referralSlug?`heygirl.pk?ref=${t.referralSlug}`:"";o.innerHTML=`
+      <span class="hg-badge">${P[n]??n}</span>
+      <span>${i.toLocaleString()} pts</span>
+    `,t.addEventListener("click",te)}o||document.body.appendChild(t),setTimeout(()=>t.classList.remove("hg-loading"),1500)}function te(){let e=document.getElementById("hg-panel");e&&(e.classList.toggle("hg-open"),document.getElementById("hg-launcher")?.setAttribute("aria-expanded",String(e.classList.contains("hg-open"))))}function E(){document.getElementById("hg-panel")?.classList.remove("hg-open"),document.getElementById("hg-launcher")?.setAttribute("aria-expanded","false")}function N(e){if(document.getElementById("hg-panel")||!e.loggedIn||!e.member)return;let{member:o}=e,t=document.createElement("div");t.id="hg-panel",t.className="hg-widget";let n=Math.min(100,Math.floor(o.lifetimeSpend/5e4*100)),i=Math.min(100,Math.floor(o.lifetimeSpend/1e5*100)),r=o.referralSlug?`heygirl.pk?ref=${o.referralSlug}`:"";t.innerHTML=`
     <div class="hg-panel-header">
-      <div class="hg-name">Hi, ${m(t.firstName??"there")}!</div>
-      <span class="hg-tier">${M[t.tier]??t.tier}</span>
-      <div class="hg-balance">${t.balance.toLocaleString()} pts</div>
+      <div class="hg-name">Hi, ${b(o.firstName??"there")}!</div>
+      <span class="hg-tier">${P[o.tier]??o.tier}</span>
+      <div class="hg-balance">${o.balance.toLocaleString()} pts</div>
     </div>
     <div class="hg-panel-body">
       <div class="hg-progress-label">
-        <span>Silver \u2192 Gold</span><span>${r}%</span>
-      </div>
-      <div class="hg-progress-track">
-        <div class="hg-progress-fill" style="width:${r}%"></div>
-      </div>
-      <div class="hg-progress-label">
-        <span>Gold \u2192 Diamond</span><span>${n}%</span>
+        <span>Silver \u2192 Gold</span><span>${n}%</span>
       </div>
       <div class="hg-progress-track">
         <div class="hg-progress-fill" style="width:${n}%"></div>
       </div>
-      ${t.activeCodes.length>0?`
+      <div class="hg-progress-label">
+        <span>Gold \u2192 Diamond</span><span>${i}%</span>
+      </div>
+      <div class="hg-progress-track">
+        <div class="hg-progress-fill" style="width:${i}%"></div>
+      </div>
+      ${o.activeCodes.length>0?`
         <div style="margin-bottom:8px;font-size:13px;color:#9c7600;font-weight:600;">
-          \u{1F389} You have ${t.activeCodes.length} active reward${t.activeCodes.length>1?"s":""}!
+          \u{1F389} You have ${o.activeCodes.length} active reward${o.activeCodes.length>1?"s":""}!
         </div>`:""}
       <button class="hg-btn hg-btn-primary" id="hg-redeem-btn">Redeem Points</button>
       <button class="hg-btn hg-btn-secondary" id="hg-hub-btn">View Full Dashboard \u2192</button>
-      ${a?`
+      ${r?`
         <div class="hg-referral-row">
-          <span class="hg-referral-link">${a}</span>
+          <span class="hg-referral-link">${r}</span>
           <button class="hg-copy-btn" id="hg-copy-ref">Copy</button>
         </div>`:""}
     </div>
-  `,document.body.appendChild(o),o.querySelector("#hg-hub-btn")?.addEventListener("click",()=>{let s=window.__hgOpenHub,l=document.getElementById("hg-launcher");typeof s=="function"?s(0,l??void 0):window.location.href="/pages/rewards",o.classList.remove("hg-open")}),o.querySelector("#hg-redeem-btn")?.addEventListener("click",()=>{let s=window.__hgOpenHub,l=document.getElementById("hg-launcher");typeof s=="function"&&s(0,l??void 0),o.classList.remove("hg-open")}),o.querySelector("#hg-copy-ref")?.addEventListener("click",s=>{let l=s.currentTarget;navigator.clipboard?.writeText(`https://${a}`).then(()=>{l.textContent="Copied!",setTimeout(()=>{l.textContent="Copy"},2e3)})}),document.addEventListener("click",s=>{let l=document.getElementById("hg-launcher"),p=s.target;!o.contains(p)&&!(l&&l.contains(p))&&o.classList.remove("hg-open")})}var Z="/account/register",ee="/account/login",te=[{icon:"\u{1F464}",title:"Sign up",sub:"1,000 HeyGirl Points"},{icon:"\u25B6\uFE0F",title:"Subscribe on YouTube",sub:"1,000 HeyGirl Points"},{icon:"\u{1F6CD}\uFE0F",title:"Place an order",sub:"1 HeyGirl Point for every Rs1 spent"},{icon:"\u{1F4F7}",title:"Follow on Instagram",sub:"1,000 HeyGirl Points"},{icon:"\u{1F44D}",title:"Like on Facebook",sub:"1,000 HeyGirl Points"},{icon:"\u{1F517}",title:"Share on Facebook",sub:"1,000 HeyGirl Points"},{icon:"\u2B50",title:"Post a review",sub:"3,000 HeyGirl Points"},{icon:"\u{1F382}",title:"Celebrate a birthday",sub:"Birthday reward coupon"}],oe=[{icon:"\u{1F4B5}",value:"Rs100 off coupon",pts:"3,000 HeyGirl Points"},{icon:"\u{1F4B5}",value:"Rs250 off coupon",pts:"6,000 HeyGirl Points"},{icon:"\u{1F4B5}",value:"Rs500 off coupon",pts:"11,500 HeyGirl Points"},{icon:"\u{1F4B5}",value:"Rs1,000 off coupon",pts:"22,000 HeyGirl Points"},{icon:"\u{1F4B5}",value:"Rs5,000 off coupon",pts:"100,000 HeyGirl Points"},{icon:"\u{1F4B5}",value:"Rs10,000 off coupon",pts:"180,000 HeyGirl Points"}],w=`<a href="${Z}" class="hg-pv-btn">Join now</a>
-  <p class="hg-pv-signin">Already have an account? <a href="${ee}">Sign in</a></p>`;function re(){return te.map(e=>`<div class="hg-pv-row">
+  `,document.body.appendChild(t),t.querySelector("#hg-hub-btn")?.addEventListener("click",()=>{let d=window.__hgOpenHub,p=document.getElementById("hg-launcher");typeof d=="function"?d(0,p??void 0):window.location.href="/pages/rewards",E()}),t.querySelector("#hg-redeem-btn")?.addEventListener("click",()=>{let d=window.__hgOpenHub,p=document.getElementById("hg-launcher");typeof d=="function"&&d(0,p??void 0),E()}),t.querySelector("#hg-copy-ref")?.addEventListener("click",d=>{let p=d.currentTarget;navigator.clipboard?.writeText(`https://${r}`).then(()=>{p.textContent="Copied!",setTimeout(()=>{p.textContent="Copy"},2e3)})}),document.addEventListener("click",d=>{let p=document.getElementById("hg-launcher"),l=d.target;!t.contains(l)&&!(p&&p.contains(l))&&E()})}var oe="/account/register",ne="/account/login",re=[{icon:"\u{1F464}",title:"Sign up",sub:"1,000 HeyGirl Points"},{icon:"\u25B6\uFE0F",title:"Subscribe on YouTube",sub:"1,000 HeyGirl Points"},{icon:"\u{1F6CD}\uFE0F",title:"Place an order",sub:"1 HeyGirl Point for every Rs1 spent"},{icon:"\u{1F4F7}",title:"Follow on Instagram",sub:"1,000 HeyGirl Points"},{icon:"\u{1F44D}",title:"Like on Facebook",sub:"1,000 HeyGirl Points"},{icon:"\u{1F517}",title:"Share on Facebook",sub:"1,000 HeyGirl Points"},{icon:"\u2B50",title:"Post a review",sub:"3,000 HeyGirl Points"},{icon:"\u{1F382}",title:"Celebrate a birthday",sub:"Birthday reward coupon"}],ie=[{icon:"\u{1F4B5}",value:"Rs100 off coupon",pts:"3,000 HeyGirl Points"},{icon:"\u{1F4B5}",value:"Rs250 off coupon",pts:"6,000 HeyGirl Points"},{icon:"\u{1F4B5}",value:"Rs500 off coupon",pts:"11,500 HeyGirl Points"},{icon:"\u{1F4B5}",value:"Rs1,000 off coupon",pts:"22,000 HeyGirl Points"},{icon:"\u{1F4B5}",value:"Rs5,000 off coupon",pts:"100,000 HeyGirl Points"},{icon:"\u{1F4B5}",value:"Rs10,000 off coupon",pts:"180,000 HeyGirl Points"}],w=`<a href="${oe}" class="hg-pv-btn">Join now</a>
+  <p class="hg-pv-signin">Already have an account? <a href="${ne}">Sign in</a></p>`;function ae(){return re.map(e=>`<div class="hg-pv-row">
       <span class="hg-pv-ic">${e.icon}</span>
       <div class="hg-pv-row-main">
         <div class="hg-pv-row-title">${e.title}</div>
         <div class="hg-pv-row-sub">${e.sub}</div>
       </div>
-    </div>`).join("")}function ne(){return oe.map(e=>`<div class="hg-pv-row">
+    </div>`).join("")}function se(){return ie.map(e=>`<div class="hg-pv-row">
       <span class="hg-pv-ic">${e.icon}</span>
       <div class="hg-pv-row-main">
         <div class="hg-pv-row-title">${e.value}</div>
         <div class="hg-pv-row-sub">${e.pts}</div>
       </div>
-    </div>`).join("")}function I(e){if(document.getElementById("hg-preview"))return;let t=document.createElement("div");t.id="hg-preview",t.className="hg-widget",t.innerHTML=`
+    </div>`).join("")}function q(e){if(document.getElementById("hg-preview"))return;let o=document.createElement("div");o.id="hg-preview",o.className="hg-widget",o.innerHTML=`
     <div class="hg-pv-head">
       <button class="hg-pv-back" id="hg-pv-back" aria-label="Back" style="display:none">\u2039</button>
       <div class="hg-pv-head-titles">
@@ -464,7 +464,7 @@
       <!-- Ways to earn screen -->
       <div class="hg-pv-screen" id="hg-pv-earn">
         <div class="hg-pv-sub-title">Ways to earn</div>
-        <div class="hg-pv-card">${re()}</div>
+        <div class="hg-pv-card">${ae()}</div>
         <div class="hg-pv-pill">Join now for free to start earning</div>
         ${w}
       </div>
@@ -472,81 +472,81 @@
       <!-- Ways to redeem screen -->
       <div class="hg-pv-screen" id="hg-pv-redeem">
         <div class="hg-pv-sub-title">Ways to redeem</div>
-        <div class="hg-pv-card">${ne()}</div>
+        <div class="hg-pv-card">${se()}</div>
         ${w}
       </div>
-    </div>`,document.body.appendChild(t);let o=t.querySelector(".hg-pv-body"),r=t.querySelector("#hg-pv-back"),n=t.querySelector("#hg-pv-eyebrow"),a=t.querySelector("#hg-pv-title"),s={main:t.querySelector("#hg-pv-main"),earn:t.querySelector("#hg-pv-earn"),redeem:t.querySelector("#hg-pv-redeem")};function l(d){Object.values(s).forEach(b=>b.classList.remove("hg-active")),s[d].classList.add("hg-active");let i=d==="main";r.style.display=i?"none":"flex",n.style.display=i?"block":"none",a.classList.toggle("hg-pv-title-lg",i),o.scrollTop=0,i||r.focus()}function p(d){let i=document.getElementById("hg-launcher");i&&(d?(i.classList.add("hg-x"),i.innerHTML='<span class="hg-pv-x">\u2715</span>',i.setAttribute("aria-label","Close rewards preview")):(i.classList.remove("hg-x"),i.innerHTML='<span class="hg-icon">\u{1F381}</span><span>Join &amp; Earn</span>',i.setAttribute("aria-label","Open HeyGirl Rewards")))}function g(d){d.key==="Escape"&&h()}function c(){l("main"),t.classList.add("hg-open"),p(!0),document.addEventListener("keydown",g),t.querySelector("#hg-pv-close")?.focus()}function h(){t.classList.remove("hg-open"),p(!1),document.removeEventListener("keydown",g),document.getElementById("hg-launcher")?.focus()}function u(d,i){let b=t.querySelector(d);b?.addEventListener("click",()=>l(i)),b?.addEventListener("keydown",v=>{(v.key==="Enter"||v.key===" ")&&(v.preventDefault(),l(i))})}u("#hg-pv-go-earn","earn"),u("#hg-pv-go-redeem","redeem"),r.addEventListener("click",()=>l("main")),t.querySelector("#hg-pv-close")?.addEventListener("click",h);let f=window;f.__hgOpenPreview=c,f.__hgClosePreview=h,f.__hgTogglePreview=()=>t.classList.contains("hg-open")?h():c()}var N="hg_nudge1_shown",q="hg_nudge5_shown";function B(e,t){let o=e.nudgeSettings;if(o.nudge1_enabled&&!e.loggedIn&&!localStorage.getItem(N)&&setTimeout(()=>ie(),3e3),t==="cart"&&e.loggedIn&&e.member){let{balance:r,activeCodes:n}=e.member;o.nudge3_enabled&&n.length>0?se(n[0]):o.nudge2_enabled&&r>=3e3&&ae(r)}if(o.nudge5_enabled&&e.loggedIn&&e.member&&(t==="product"||t==="other")&&!sessionStorage.getItem(q)){let{member:r}=e;r.nextTier==="gold"&&r.spendToNextTier<=o.tier_progress_gold_threshold?A(`Only Rs.${r.spendToNextTier.toLocaleString()} away from Gold tier!`):r.nextTier==="diamond"&&r.spendToNextTier<=o.tier_progress_diamond_threshold&&A(`Only Rs.${r.spendToNextTier.toLocaleString()} away from Diamond tier!`)}}function ie(){let e=k("Earn points on every purchase","Sign up free and start earning Rs. rewards on every order at HeyGirl.pk.","Join & Earn","hg-nudge-br",()=>{window.location.href="/account/register"});document.body.appendChild(e),localStorage.setItem(N,"1")}function ae(e){let t=j();if(!t)return;let o=k(`You have ${e.toLocaleString()} pts to spend`,"Redeem your points for a discount before checking out.","Redeem Now","hg-nudge-cart",()=>{let r=window.__hgOpenHub;typeof r=="function"&&r(0)});t.insertAdjacentElement("beforebegin",o)}function se(e){let t=j();if(!t)return;let o=k(`You have an unused Rs.${e.discount_pkr} reward!`,`Apply code <strong>${m(e.code)}</strong> at checkout to save.`,"Copy Code","hg-nudge-cart",()=>{navigator.clipboard?.writeText(e.code)});t.insertAdjacentElement("beforebegin",o)}function A(e){let t=k("You're close to the next tier!",e,"View Tiers","hg-nudge-header",()=>{window.location.href="/pages/rewards"});document.body.prepend(t),sessionStorage.setItem(q,"1")}function j(){return document.querySelector(".cart__ctas")??document.querySelector('[name="checkout"]')?.closest("div")??document.querySelector(".cart")}function k(e,t,o,r,n){let a=document.createElement("div");return a.className=`hg-nudge hg-widget ${r}`,a.innerHTML=`
+    </div>`,document.body.appendChild(o);let t=o.querySelector(".hg-pv-body"),n=o.querySelector("#hg-pv-back"),i=o.querySelector("#hg-pv-eyebrow"),r=o.querySelector("#hg-pv-title"),d={main:o.querySelector("#hg-pv-main"),earn:o.querySelector("#hg-pv-earn"),redeem:o.querySelector("#hg-pv-redeem")};function p(s){Object.values(d).forEach(m=>m.classList.remove("hg-active")),d[s].classList.add("hg-active");let a=s==="main";n.style.display=a?"none":"flex",i.style.display=a?"block":"none",r.classList.toggle("hg-pv-title-lg",a),t.scrollTop=0,a||n.focus()}function l(s){let a=document.getElementById("hg-launcher");a&&(s?(a.classList.add("hg-x"),a.innerHTML='<span class="hg-pv-x">\u2715</span>',a.setAttribute("aria-label","Close rewards preview")):(a.classList.remove("hg-x"),a.innerHTML='<span class="hg-icon">\u{1F381}</span><span>Join &amp; Earn</span>',a.setAttribute("aria-label","Open HeyGirl Rewards")))}function f(s){if(s.key==="Escape"){g();return}if(s.key==="Tab"){let a=o.querySelectorAll('a[href], button:not([disabled]), input, select, textarea, [role="button"], [tabindex]:not([tabindex="-1"])');if(a.length===0)return;let m=a[0],v=a[a.length-1];s.shiftKey&&document.activeElement===m?(s.preventDefault(),v.focus()):!s.shiftKey&&document.activeElement===v&&(s.preventDefault(),m.focus())}}function u(){p("main"),o.classList.add("hg-open"),l(!0),document.addEventListener("keydown",f),o.querySelector("#hg-pv-close")?.focus()}function g(){o.classList.remove("hg-open"),l(!1),document.removeEventListener("keydown",f),document.getElementById("hg-launcher")?.focus()}function c(s,a){let m=o.querySelector(s);m?.addEventListener("click",()=>p(a)),m?.addEventListener("keydown",v=>{(v.key==="Enter"||v.key===" ")&&(v.preventDefault(),p(a))})}c("#hg-pv-go-earn","earn"),c("#hg-pv-go-redeem","redeem"),n.addEventListener("click",()=>p("main")),o.querySelector("#hg-pv-close")?.addEventListener("click",g);let h=window;h.__hgOpenPreview=u,h.__hgClosePreview=g,h.__hgTogglePreview=()=>o.classList.contains("hg-open")?g():u()}var j="hg_nudge1_shown",D="hg_nudge5_shown";function G(e,o){let t=e.nudgeSettings;if(t.nudge1_enabled&&!e.loggedIn&&!localStorage.getItem(j)&&setTimeout(()=>de(),3e3),o==="cart"&&e.loggedIn&&e.member){let{balance:n,activeCodes:i}=e.member;t.nudge3_enabled&&i.length>0?ce(i[0]):t.nudge2_enabled&&n>=3e3&&le(n)}if(t.nudge5_enabled&&e.loggedIn&&e.member&&(o==="product"||o==="other")&&!sessionStorage.getItem(D)){let{member:n}=e;n.nextTier==="gold"&&n.spendToNextTier<=t.tier_progress_gold_threshold?B(`Only Rs.${n.spendToNextTier.toLocaleString()} away from Gold tier!`):n.nextTier==="diamond"&&n.spendToNextTier<=t.tier_progress_diamond_threshold&&B(`Only Rs.${n.spendToNextTier.toLocaleString()} away from Diamond tier!`)}}function de(){let e=k("Earn points on every purchase","Sign up free and start earning Rs. rewards on every order at HeyGirl.pk.","Join & Earn","hg-nudge-br",()=>{window.location.href="/account/register"});document.body.appendChild(e),localStorage.setItem(j,"1")}function le(e){let o=O();if(!o)return;let t=k(`You have ${e.toLocaleString()} pts to spend`,"Redeem your points for a discount before checking out.","Redeem Now","hg-nudge-cart",()=>{let n=window.__hgOpenHub;typeof n=="function"&&n(0)});o.insertAdjacentElement("beforebegin",t)}function ce(e){let o=O();if(!o)return;let t=k(`You have an unused Rs.${e.discount_pkr} reward!`,`Apply code <strong>${b(e.code)}</strong> at checkout to save.`,"Copy Code","hg-nudge-cart",()=>{navigator.clipboard?.writeText(e.code)});o.insertAdjacentElement("beforebegin",t)}function B(e){setTimeout(()=>{if(document.querySelector(".hg-nudge-br"))return;let o=k("You're close to the next tier!",e,"View Tiers","hg-nudge-br",()=>{window.location.href="/pages/rewards"});document.body.appendChild(o)},3e3),sessionStorage.setItem(D,"1")}function O(){return document.querySelector(".cart__ctas")??document.querySelector('[name="checkout"]')?.closest("div")??document.querySelector(".cart")}function k(e,o,t,n,i){let r=document.createElement("div");return r.className=`hg-nudge hg-widget ${n}`,r.innerHTML=`
     <button class="hg-nudge-close" aria-label="Close">\xD7</button>
     <div class="hg-nudge-title">${e}</div>
-    <div class="hg-nudge-body">${t}</div>
-    <button class="hg-btn hg-btn-primary">${o}</button>
-  `,a.querySelector(".hg-nudge-close")?.addEventListener("click",()=>a.remove()),a.querySelector(".hg-btn")?.addEventListener("click",()=>{n(),a.remove()}),a}function D(e){if(document.getElementById("hg-product-embed"))return;let t=window.ShopifyAnalytics?.meta?.product?.price??0,r=Math.floor(t/100),n=document.createElement("div");n.id="hg-product-embed",n.className="hg-widget",e.loggedIn?n.innerHTML=`<span>\u{1F381}</span> Earn <span class="hg-pts">${r.toLocaleString()} pts</span> on this purchase`:n.innerHTML=`<span>\u{1F381}</span> <a href="/account/login" style="color:#9c7600;text-decoration:underline;">Sign in to earn ${r.toLocaleString()} pts</a> on this purchase`;let a=document.querySelector(".price__container")??document.querySelector(".product__info-wrapper .price")??document.querySelector("[data-product-price]");a&&a.insertAdjacentElement("afterend",n)}function G(e){if(document.getElementById("hg-cart-inline"))return;let t=document.createElement("div");if(t.id="hg-cart-inline",t.className="hg-widget",!e.loggedIn||!e.member)t.innerHTML='<span>\u{1F381}</span> <a href="/account/login" style="color:#9c7600;">Sign in</a> to earn &amp; redeem rewards.';else{let{balance:r,activeCodes:n}=e.member,a=de(),s=a.some(p=>p.startsWith("REWARD-")),l=a.some(p=>!p.startsWith("REWARD-"));if(s)t.innerHTML="<span>\u2705</span> Your loyalty reward is applied. Enjoy the savings!";else if(l)t.innerHTML="<span>\u2139\uFE0F</span> A discount is already applied. Loyalty codes cannot stack.";else if(n.length>0){let p=n[0];t.innerHTML=`
-        <div style="margin-bottom:6px;font-weight:600;">\u{1F389} You have a Rs.${p.discount_pkr} reward ready!</div>
-        <div style="font-size:12px;color:#888;margin-bottom:8px;">Code: <strong>${m(p.code)}</strong></div>
+    <div class="hg-nudge-body">${o}</div>
+    <button class="hg-btn hg-btn-primary">${t}</button>
+  `,r.querySelector(".hg-nudge-close")?.addEventListener("click",()=>r.remove()),r.querySelector(".hg-btn")?.addEventListener("click",()=>{i(),r.remove()}),r}function Y(e){if(document.getElementById("hg-product-embed"))return;let o=window.ShopifyAnalytics?.meta?.product?.price??0,n=Math.floor(o/100),i=document.createElement("div");i.id="hg-product-embed",i.className="hg-widget",e.loggedIn?i.innerHTML=`<span>\u{1F381}</span> Earn <span class="hg-pts">${n.toLocaleString()} pts</span> on this purchase`:i.innerHTML=`<span>\u{1F381}</span> <a href="/account/login" style="color:#9c7600;text-decoration:underline;">Sign in to earn ${n.toLocaleString()} pts</a> on this purchase`;let r=document.querySelector(".price__container")??document.querySelector(".product__info-wrapper .price")??document.querySelector("[data-product-price]");r&&r.insertAdjacentElement("afterend",i)}function F(e){if(document.getElementById("hg-cart-inline"))return;let o=document.createElement("div");if(o.id="hg-cart-inline",o.className="hg-widget",!e.loggedIn||!e.member)o.innerHTML='<span>\u{1F381}</span> <a href="/account/login" style="color:#9c7600;">Sign in</a> to earn &amp; redeem rewards.';else{let{balance:n,activeCodes:i}=e.member,r=pe(),d=r.some(l=>l.startsWith("REWARD-")),p=r.some(l=>!l.startsWith("REWARD-"));if(d)o.innerHTML="<span>\u2705</span> Your loyalty reward is applied. Enjoy the savings!";else if(p)o.innerHTML="<span>\u2139\uFE0F</span> A discount is already applied. Loyalty codes cannot stack.";else if(i.length>0){let l=i[0];o.innerHTML=`
+        <div style="margin-bottom:6px;font-weight:600;">\u{1F389} You have a Rs.${l.discount_pkr} reward ready!</div>
+        <div style="font-size:12px;color:#888;margin-bottom:8px;">Code: <strong>${b(l.code)}</strong></div>
         <button class="hg-btn hg-btn-primary" id="hg-apply-code" style="margin:0;padding:8px;">Apply Code</button>
-      `,setTimeout(()=>{document.getElementById("hg-apply-code")?.addEventListener("click",()=>{window.location.href=`/discount/${encodeURIComponent(p.code)}?redirect=/cart`})},0)}else if(r>=3e3)t.innerHTML=`
-        <div style="margin-bottom:4px;font-weight:600;">\u{1F48E} You have ${r.toLocaleString()} pts to redeem!</div>
+      `,setTimeout(()=>{document.getElementById("hg-apply-code")?.addEventListener("click",()=>{window.location.href=`/discount/${encodeURIComponent(l.code)}?redirect=/cart`})},0)}else if(n>=3e3)o.innerHTML=`
+        <div style="margin-bottom:4px;font-weight:600;">\u{1F48E} You have ${n.toLocaleString()} pts to redeem!</div>
         <div style="font-size:12px;color:#888;margin-bottom:8px;">Earn a reward code and apply it here.</div>
         <button class="hg-btn hg-btn-secondary" id="hg-open-redeem" style="margin:0;padding:8px;">Redeem Points</button>
-      `,setTimeout(()=>{document.getElementById("hg-open-redeem")?.addEventListener("click",()=>{let p=window.__hgOpenHub;typeof p=="function"&&p(0)})},0);else{let p=3e3-r;t.innerHTML=`<span>\u{1F381}</span> Earn <strong>${p.toLocaleString()} more pts</strong> to unlock your first reward.`}}let o=document.querySelector('[name="checkout"]')??document.querySelector(".cart__checkout");o&&o.insertAdjacentElement("beforebegin",t)}function de(){let e=window.Shopify?.checkout;return e?.discount?.applicable&&e.discount.code?[e.discount.code]:[]}var le=[{points:3e3,discount_pkr:100},{points:6e3,discount_pkr:250},{points:11500,discount_pkr:500},{points:22e3,discount_pkr:1e3},{points:1e5,discount_pkr:5e3},{points:18e4,discount_pkr:1e4}],ce=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"],pe={silver:"Rs.250 gift code",gold:"Rs.500 gift code",diamond:"Rs.1,000 code + 1.2\xD7 points all month"};function O(e,t){if(!t.member){e.innerHTML="<p style='color:#888;padding:20px 0;'>Please log in to view rewards.</p>";return}let{member:o}=t,r=new Date().getMonth()+1,n=t.nudgeSettings?.tier_progress_gold_threshold??5e4,a=t.nudgeSettings?.tier_progress_diamond_threshold??1e5,s=Math.min(100,Math.round(o.lifetimeSpend/n*100)),l=Math.min(100,Math.round(o.lifetimeSpend/a*100)),p=`
+      `,setTimeout(()=>{document.getElementById("hg-open-redeem")?.addEventListener("click",()=>{let l=window.__hgOpenHub;typeof l=="function"&&l(0)})},0);else{let l=3e3-n;o.innerHTML=`<span>\u{1F381}</span> Earn <strong>${l.toLocaleString()} more pts</strong> to unlock your first reward.`}}let t=document.querySelector('[name="checkout"]')??document.querySelector(".cart__checkout");t&&t.insertAdjacentElement("beforebegin",o)}function pe(){let e=window.Shopify?.checkout;return e?.discount?.applicable&&e.discount.code?[e.discount.code]:[]}var ge=[{points:3e3,discount_pkr:100},{points:6e3,discount_pkr:250},{points:11500,discount_pkr:500},{points:22e3,discount_pkr:1e3},{points:1e5,discount_pkr:5e3},{points:18e4,discount_pkr:1e4}],he=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"],ue={silver:"Rs.250 gift code",gold:"Rs.500 gift code",diamond:"Rs.1,000 code + 1.2\xD7 points all month"};function W(e,o){if(!o.member){e.innerHTML="<p style='color:#888;padding:20px 0;'>Please log in to view rewards.</p>";return}let{member:t}=o,n=new Date().getMonth()+1,i=o.nudgeSettings?.tier_progress_gold_threshold??5e4,r=o.nudgeSettings?.tier_progress_diamond_threshold??1e5,d=Math.min(100,Math.round(t.lifetimeSpend/i*100)),p=Math.min(100,Math.round(t.lifetimeSpend/r*100)),l=`
     <div class="hg-rewards-hero">
-      <div class="hg-rewards-pts">${o.balance.toLocaleString()}</div>
+      <div class="hg-rewards-pts">${t.balance.toLocaleString()}</div>
       <div class="hg-rewards-pts-label">points available</div>
       <div class="hg-progress-label" style="margin-top:14px;">
-        <span>\u2605 Gold (Rs.${n.toLocaleString()})</span>
-        <span>${s}%</span>
+        <span>\u2605 Gold (Rs.${i.toLocaleString()})</span>
+        <span>${d}%</span>
       </div>
       <div class="hg-progress-track">
-        <div class="hg-progress-fill" style="width:${s}%"></div>
+        <div class="hg-progress-fill" style="width:${d}%"></div>
       </div>
       <div class="hg-progress-label">
-        <span>\u25C6 Diamond (Rs.${a.toLocaleString()})</span>
-        <span>${l}%</span>
+        <span>\u25C6 Diamond (Rs.${r.toLocaleString()})</span>
+        <span>${p}%</span>
       </div>
       <div class="hg-progress-track">
-        <div class="hg-progress-fill" style="width:${l}%;background:linear-gradient(90deg,#9c27b0,#e8ad00)"></div>
+        <div class="hg-progress-fill" style="width:${p}%;background:linear-gradient(90deg,#9c27b0,#e8ad00)"></div>
       </div>
-      ${o.nextTier?`<div style="font-size:12px;color:rgba(255,255,255,0.8);margin-top:4px;">Rs.${o.spendToNextTier.toLocaleString()} more to reach ${o.nextTier}</div>`:`<div style="font-size:12px;color:rgba(255,255,255,0.8);margin-top:4px;">You've reached the top tier! \u{1F389}</div>`}
+      ${t.nextTier?`<div style="font-size:12px;color:rgba(255,255,255,0.8);margin-top:4px;">Rs.${t.spendToNextTier.toLocaleString()} more to reach ${t.nextTier}</div>`:`<div style="font-size:12px;color:rgba(255,255,255,0.8);margin-top:4px;">You've reached the top tier! \u{1F389}</div>`}
     </div>
-  `,g=o.activeCodes.length>0?`<div class="hg-section">
+  `,f=t.activeCodes.length>0?`<div class="hg-section">
         <div class="hg-section-title">\u{1F389} Active Rewards</div>
-        ${o.activeCodes.map(d=>{let i=m(d.code);return`
+        ${t.activeCodes.map(s=>{let a=b(s.code);return`
           <div class="hg-active-code-row">
             <div>
-              <strong>${i}</strong>
-              <div style="color:#888;font-size:11px;">Rs.${d.discount_pkr} off &middot; expires ${new Date(d.expires_at).toLocaleDateString()}</div>
+              <strong>${a}</strong>
+              <div style="color:#888;font-size:11px;">Rs.${s.discount_pkr} off &middot; expires ${new Date(s.expires_at).toLocaleDateString()}</div>
             </div>
-            <button class="hg-copy-btn hg-copy-code" data-code="${i}">Copy</button>
+            <button class="hg-copy-btn hg-copy-code" data-code="${a}">Copy</button>
           </div>`}).join("")}
       </div>`:`<div class="hg-section">
         <div class="hg-section-title">Active Rewards</div>
         <p style="color:#888;font-size:13px;text-align:center;padding:12px 0;">No active codes \u2014 redeem points below!</p>
-      </div>`,c=le.map(d=>{let i=o.balance>=d.points,b=d.points%1e3===500?`${(d.points/1e3).toFixed(1)}k`:`${d.points/1e3}k`;return`
-      <div class="hg-redeem-tile${i?"":" hg-disabled"}" data-points="${d.points}" data-pkr="${d.discount_pkr}" role="button" tabindex="${i?0:-1}">
-        <div class="hg-tile-pts">${b} pts</div>
-        <div class="hg-tile-val">Rs.${d.discount_pkr.toLocaleString()}</div>
-        <div class="hg-tile-label">${i?"Tap to redeem":`Need ${(d.points-o.balance).toLocaleString()} more`}</div>
-      </div>`}).join(""),h=o.birthdayMonth&&o.birthdayMonth===r?`<div class="hg-birthday-card">
+      </div>`,u=ge.map(s=>{let a=t.balance>=s.points,m=s.points%1e3===500?`${(s.points/1e3).toFixed(1)}k`:`${s.points/1e3}k`;return`
+      <div class="hg-redeem-tile${a?"":" hg-disabled"}" data-points="${s.points}" data-pkr="${s.discount_pkr}" role="button" tabindex="${a?0:-1}">
+        <div class="hg-tile-pts">${m} pts</div>
+        <div class="hg-tile-val">Rs.${s.discount_pkr.toLocaleString()}</div>
+        <div class="hg-tile-label">${a?"Tap to redeem":`Need ${(s.points-t.balance).toLocaleString()} more`}</div>
+      </div>`}).join(""),g=t.birthdayMonth&&t.birthdayMonth===n?`<div class="hg-birthday-card">
         <div style="font-weight:700;font-size:15px;margin-bottom:6px;">\u{1F382} Happy Birthday Month!</div>
         <div style="font-size:13px;color:#555;">
-          Your ${ce[o.birthdayMonth-1]} reward: <strong>${pe[o.tier]??"a special gift"}</strong>
+          Your ${he[t.birthdayMonth-1]} reward: <strong>${ue[t.tier]??"a special gift"}</strong>
         </div>
-      </div>`:"",u=`
+      </div>`:"",c=`
     <div class="hg-reward-room">
       <div style="font-size:16px;font-weight:700;margin-bottom:4px;">\u{1F3C6} Reward Room</div>
       <div style="font-size:13px;color:#aaa;margin-bottom:12px;">Exclusive products redeemable with points \u2014 coming soon!</div>
       <button class="hg-btn hg-reward-room-btn">Enter Reward Room \u2192</button>
     </div>`;e.innerHTML=`
-    ${p}
-    ${g}
+    ${l}
+    ${f}
     <div class="hg-section">
       <div class="hg-section-title">Redeem Points</div>
-      <div class="hg-redeem-grid" id="hg-redeem-grid">${c}</div>
+      <div class="hg-redeem-grid" id="hg-redeem-grid">${u}</div>
       <div id="hg-redeem-msg" class="hg-redeem-msg"></div>
     </div>
-    ${h}
-    ${u}
-  `,e.querySelectorAll(".hg-copy-code").forEach(d=>{d.addEventListener("click",()=>{let i=d.dataset.code??"";navigator.clipboard?.writeText(i).catch(()=>{}),d.textContent="Copied!",setTimeout(()=>{d.textContent="Copy"},2e3)})});let f=e.querySelector("#hg-redeem-msg");e.querySelectorAll(".hg-redeem-tile:not(.hg-disabled)").forEach(d=>{d.addEventListener("click",async()=>{let i=Number(d.dataset.points),b=Number(d.dataset.pkr);f.textContent="Generating your reward code\u2026",f.style.color="#888",d.classList.add("hg-disabled");let v=await H(i);if(v.redeemed&&v.code){let y=m(v.code),Q=v.discount_pkr??b;f.innerHTML=`\u2705 Code <strong>${y}</strong> \u2014 Rs.${Q.toLocaleString()} off! <button class="hg-copy-btn hg-copy-result" data-code="${y}">Copy</button>`,f.style.color="#2e7d32";let E=document.querySelector(".hg-hub-balance");E&&(E.textContent=`${Math.max(0,o.balance-i).toLocaleString()} pts`),o.balance=Math.max(0,o.balance-i);let L=f.querySelector(".hg-copy-result");L?.addEventListener("click",()=>{navigator.clipboard?.writeText(v.code).catch(()=>{}),L.textContent="Copied!",setTimeout(()=>{L.textContent="Copy"},2e3)})}else f.textContent=`Failed: ${v.error??"unknown error"}`,f.style.color="#c62828",d.classList.remove("hg-disabled")})}),e.querySelector(".hg-reward-room-btn")?.addEventListener("click",d=>{if(d.preventDefault(),e.querySelector(".hg-coming-soon-tip"))return;let b=document.createElement("div");b.className="hg-coming-soon-tip",b.textContent="Coming Soon! \u{1F680}",d.currentTarget.insertAdjacentElement("afterend",b),setTimeout(()=>b.remove(),2500)})}var ge={purchase:"Purchase Reward",social_youtube:"YouTube (pending)",social_facebook:"Facebook (pending)",social_instagram:"Instagram (pending)",redemption:"Redeemed",referral:"Referral Bonus",signup:"Welcome Bonus",birthday:"Birthday Reward",adjustment:"Manual Adjustment",expiry:"Points Expired"},he={purchase:"\u{1F6CD}\uFE0F",social_youtube:"\u25B6\uFE0F",social_facebook:"\u{1F44D}",social_instagram:"\u{1F4F8}",redemption:"\u{1F381}",referral:"\u{1F465}",signup:"\u{1F389}",birthday:"\u{1F382}",adjustment:"\u270F\uFE0F",expiry:"\u23F0"},ue=[{key:null,label:"All"},{key:"purchase",label:"Purchases"},{key:"social",label:"Social"},{key:"redemption",label:"Redemptions"},{key:"referral",label:"Referrals"},{key:"other",label:"Other"}];function me(e){let t=Date.now()-new Date(e).getTime(),o=Math.floor(t/864e5);if(o===0)return"Today";if(o===1)return"Yesterday";if(o<30)return`${o} days ago`;let r=Math.floor(o/30);if(r<12)return`${r} month${r>1?"s":""} ago`;let n=Math.floor(r/12);return`${n} year${n>1?"s":""} ago`}function Y(){return Array.from({length:5},()=>`
+    ${g}
+    ${c}
+  `,e.querySelectorAll(".hg-copy-code").forEach(s=>{s.addEventListener("click",()=>{let a=s.dataset.code??"";navigator.clipboard?.writeText(a).catch(()=>{}),s.textContent="Copied!",setTimeout(()=>{s.textContent="Copy"},2e3)})});let h=e.querySelector("#hg-redeem-msg");e.querySelectorAll(".hg-redeem-tile:not(.hg-disabled)").forEach(s=>{s.addEventListener("click",async()=>{let a=Number(s.dataset.points),m=Number(s.dataset.pkr);h.textContent="Generating your reward code\u2026",h.style.color="#888",s.classList.add("hg-disabled");let v=await _(a);if(v.redeemed&&v.code){let y=b(v.code),ee=v.discount_pkr??m;h.innerHTML=`\u2705 Code <strong>${y}</strong> \u2014 Rs.${ee.toLocaleString()} off! <button class="hg-copy-btn hg-copy-result" data-code="${y}">Copy</button>`,h.style.color="#2e7d32";let R=document.querySelector(".hg-hub-balance");R&&(R.textContent=`${Math.max(0,t.balance-a).toLocaleString()} pts`),t.balance=Math.max(0,t.balance-a);let L=h.querySelector(".hg-copy-result");L?.addEventListener("click",()=>{navigator.clipboard?.writeText(v.code).catch(()=>{}),L.textContent="Copied!",setTimeout(()=>{L.textContent="Copy"},2e3)})}else h.textContent=`Failed: ${v.error??"unknown error"}`,h.style.color="#c62828",s.classList.remove("hg-disabled")})}),e.querySelector(".hg-reward-room-btn")?.addEventListener("click",s=>{if(s.preventDefault(),e.querySelector(".hg-coming-soon-tip"))return;let m=document.createElement("div");m.className="hg-coming-soon-tip",m.textContent="Coming Soon! \u{1F680}",s.currentTarget.insertAdjacentElement("afterend",m),setTimeout(()=>m.remove(),2500)})}var me={purchase:"Purchase Reward",social_youtube:"YouTube (pending)",social_facebook:"Facebook (pending)",social_instagram:"Instagram (pending)",redemption:"Redeemed",referral:"Referral Bonus",signup:"Welcome Bonus",birthday:"Birthday Reward",adjustment:"Manual Adjustment",expiry:"Points Expired"},be={purchase:"\u{1F6CD}\uFE0F",social_youtube:"\u25B6\uFE0F",social_facebook:"\u{1F44D}",social_instagram:"\u{1F4F8}",redemption:"\u{1F381}",referral:"\u{1F465}",signup:"\u{1F389}",birthday:"\u{1F382}",adjustment:"\u270F\uFE0F",expiry:"\u23F0"},fe=[{key:null,label:"All"},{key:"purchase",label:"Purchases"},{key:"social",label:"Social"},{key:"redemption",label:"Redemptions"},{key:"referral",label:"Referrals"},{key:"other",label:"Other"}];function ve(e){let o=Date.now()-new Date(e).getTime(),t=Math.floor(o/864e5);if(t===0)return"Today";if(t===1)return"Yesterday";if(t<30)return`${t} days ago`;let n=Math.floor(t/30);if(n<12)return`${n} month${n>1?"s":""} ago`;let i=Math.floor(n/12);return`${i} year${i>1?"s":""} ago`}function J(){return Array.from({length:5},()=>`
     <div class="hg-history-item hg-skeleton-row">
       <div style="display:flex;align-items:center;gap:8px;">
         <div class="hg-skel" style="width:28px;height:28px;border-radius:50%;"></div>
@@ -559,66 +559,66 @@
         <div class="hg-skel" style="width:60px;height:12px;border-radius:4px;"></div>
       </div>
     </div>
-  `).join("")}function F(e,t){e.innerHTML=`
+  `).join("")}function U(e,o){e.innerHTML=`
     <div class="hg-history-filter" id="hg-history-filter">
-      ${ue.map((a,s)=>`
-        <button class="hg-filter-btn${s===0?" hg-active":""}" data-type="${a.key??""}">
-          ${m(a.label)}
+      ${fe.map((r,d)=>`
+        <button class="hg-filter-btn${d===0?" hg-active":""}" data-type="${r.key??""}">
+          ${b(r.label)}
         </button>
       `).join("")}
     </div>
-    <div id="hg-history-list">${Y()}</div>
+    <div id="hg-history-list">${J()}</div>
     <div class="hg-pagination" id="hg-history-pagination"></div>
-  `;let o=1,r=null;async function n(a,s){let l=e.querySelector("#hg-history-list"),p=e.querySelector("#hg-history-pagination");l.innerHTML=Y(),p.innerHTML="";let{items:g,total:c}=await $(a,s);if(g.length===0){l.innerHTML='<p style="color:#888;font-size:13px;text-align:center;padding:32px 0;">No history yet \u2014 start earning points!</p>';return}l.innerHTML=g.map(u=>{let f=ge[u.action_type]??m(u.action_type),d=he[u.action_type]??"\u2B50",i=u.delta>=0,b=u.reason_note?`<div style="font-size:11px;color:#888;">${m(u.reason_note)}</div>`:"";return`
+  `;let t=1,n=null;async function i(r,d){let p=e.querySelector("#hg-history-list"),l=e.querySelector("#hg-history-pagination");p.innerHTML=J(),l.innerHTML="";let{items:f,total:u}=await H(r,d);if(f.length===0){p.innerHTML='<p style="color:#888;font-size:13px;text-align:center;padding:32px 0;">No history yet \u2014 start earning points!</p>';return}p.innerHTML=f.map(c=>{let h=me[c.action_type]??b(c.action_type),s=be[c.action_type]??"\u2B50",a=c.delta>=0,m=c.reason_note?`<div style="font-size:11px;color:#888;">${b(c.reason_note)}</div>`:"";return`
         <div class="hg-history-item">
           <div style="display:flex;align-items:center;gap:8px;">
-            <span style="font-size:18px;line-height:1;">${d}</span>
+            <span style="font-size:18px;line-height:1;">${s}</span>
             <div>
-              <div style="font-weight:600;font-size:13px;">${f}</div>
-              <div style="font-size:11px;color:#888;">${me(u.created_at)}</div>
-              ${b}
+              <div style="font-weight:600;font-size:13px;">${h}</div>
+              <div style="font-size:11px;color:#888;">${ve(c.created_at)}</div>
+              ${m}
             </div>
           </div>
-          <div class="hg-history-delta ${i?"hg-positive":"hg-negative"}">
-            ${i?"+":""}${u.delta.toLocaleString()} pts
+          <div class="hg-history-delta ${a?"hg-positive":"hg-negative"}">
+            ${a?"+":""}${c.delta.toLocaleString()} pts
           </div>
         </div>
-      `}).join("");let h=Math.ceil(c/50);h>1&&(p.innerHTML=`
-        <button class="hg-page-btn" id="hg-hist-prev" ${a<=1?"disabled":""}>\u2190 Prev</button>
-        <span style="font-size:13px;padding:6px 8px;">Page ${a} of ${h}</span>
-        <button class="hg-page-btn" id="hg-hist-next" ${a>=h?"disabled":""}>Next \u2192</button>
-      `,p.querySelector("#hg-hist-prev")?.addEventListener("click",()=>{o--,n(o,r)}),p.querySelector("#hg-hist-next")?.addEventListener("click",()=>{o++,n(o,r)}))}e.querySelector("#hg-history-filter")?.querySelectorAll(".hg-filter-btn").forEach(a=>{a.addEventListener("click",()=>{e.querySelectorAll(".hg-filter-btn").forEach(l=>l.classList.remove("hg-active")),a.classList.add("hg-active");let s=a.dataset.type??"";r=s===""?null:s,o=1,n(1,r)})}),n(1,null)}var be=[{platform:"youtube",label:"YouTube",pts:1e3,icon:"\u25B6"},{platform:"facebook",label:"Facebook",pts:1e3,icon:"f"},{platform:"instagram",label:"Instagram",pts:1e3,icon:"\u{1F4F7}"}];async function W(e,t){e.innerHTML='<p style="color:#888;font-size:13px;text-align:center;padding:20px 0;">Loading\u2026</p>';let o=null;try{o=await T()}catch{e.innerHTML='<p class="hg-empty-state">Could not load referral data. Please try again later.</p>';return}if(!o){e.innerHTML='<p style="color:#888;font-size:13px;text-align:center;padding:20px 0;">Referral data unavailable.</p>';return}let{referralLink:r,totalReferrals:n,completedReferrals:a,totalPtsEarned:s,history:l,isInfluencer:p,referralRate:g}=o,c=m(r),h=encodeURIComponent(`Join HeyGirl.pk and earn 1,000 welcome points! Use my link: ${r}`),u=p?`<div class="hg-influencer-badge">
+      `}).join("");let g=Math.ceil(u/50);g>1&&(l.innerHTML=`
+        <button class="hg-page-btn" id="hg-hist-prev" ${r<=1?"disabled":""}>\u2190 Prev</button>
+        <span style="font-size:13px;padding:6px 8px;">Page ${r} of ${g}</span>
+        <button class="hg-page-btn" id="hg-hist-next" ${r>=g?"disabled":""}>Next \u2192</button>
+      `,l.querySelector("#hg-hist-prev")?.addEventListener("click",()=>{t--,i(t,n)}),l.querySelector("#hg-hist-next")?.addEventListener("click",()=>{t++,i(t,n)}))}e.querySelector("#hg-history-filter")?.querySelectorAll(".hg-filter-btn").forEach(r=>{r.addEventListener("click",()=>{e.querySelectorAll(".hg-filter-btn").forEach(p=>p.classList.remove("hg-active")),r.classList.add("hg-active");let d=r.dataset.type??"";n=d===""?null:d,t=1,i(1,n)})}),i(1,null)}var xe=[{platform:"youtube",label:"YouTube",pts:1e3,icon:"\u25B6"},{platform:"facebook",label:"Facebook",pts:1e3,icon:"f"},{platform:"instagram",label:"Instagram",pts:1e3,icon:"\u{1F4F7}"}];async function K(e,o){e.innerHTML='<p style="color:#888;font-size:13px;text-align:center;padding:20px 0;">Loading\u2026</p>';let t=null;try{t=await C()}catch{e.innerHTML='<p class="hg-empty-state">Could not load referral data. Please try again later.</p>';return}if(!t){e.innerHTML='<p style="color:#888;font-size:13px;text-align:center;padding:20px 0;">Referral data unavailable.</p>';return}let{referralLink:n,totalReferrals:i,completedReferrals:r,totalPtsEarned:d,history:p,isInfluencer:l,referralRate:f}=t,u=b(n),g=encodeURIComponent(`Join HeyGirl.pk and earn 1,000 welcome points! Use my link: ${n}`),c=l?`<div class="hg-influencer-badge">
         <div class="hg-influencer-title">\u2B50 Influencer Account</div>
-        <div class="hg-influencer-rate">Your referral earns <strong>${g.toLocaleString()} pts</strong> per conversion</div>
-        <div class="hg-influencer-stats">Total referral earnings: <strong>${s.toLocaleString()} pts</strong></div>
-      </div>`:"",f=l.length>0?`<div class="hg-section-title">Referral History</div>
-         ${l.slice(0,10).map(i=>`<div class="hg-history-item">
+        <div class="hg-influencer-rate">Your referral earns <strong>${f.toLocaleString()} pts</strong> per conversion</div>
+        <div class="hg-influencer-stats">Total referral earnings: <strong>${d.toLocaleString()} pts</strong></div>
+      </div>`:"",h=p.length>0?`<div class="hg-section-title">Referral History</div>
+         ${p.slice(0,10).map(a=>`<div class="hg-history-item">
                <div>
                  <div class="hg-history-label">Referral</div>
-                 <div class="hg-history-date">${new Date(i.created_at).toLocaleDateString("en-PK",{day:"numeric",month:"short",year:"numeric"})}</div>
+                 <div class="hg-history-date">${new Date(a.created_at).toLocaleDateString("en-PK",{day:"numeric",month:"short",year:"numeric"})}</div>
                </div>
-               <div class="hg-status-badge hg-status-${m(i.status)}">${m(i.status)}</div>
+               <div class="hg-status-badge hg-status-${b(a.status)}">${b(a.status)}</div>
              </div>`).join("")}`:'<div class="hg-empty-state">No referrals yet \u2014 share your link to get started!</div>';e.innerHTML=`
     <div class="hg-referral-link-card">
       <div class="hg-section-title">Your Referral Link</div>
-      <div class="hg-referral-url">${c}</div>
+      <div class="hg-referral-url">${u}</div>
       <div class="hg-share-row">
-        <a class="hg-btn hg-btn-wa" href="https://wa.me/?text=${h}" target="_blank" rel="noopener noreferrer">\u{1F4F2} WhatsApp Share</a>
+        <a class="hg-btn hg-btn-wa" href="https://wa.me/?text=${g}" target="_blank" rel="noopener noreferrer">\u{1F4F2} WhatsApp Share</a>
         <button class="hg-btn hg-btn-copy" id="hg-ref-copy">Copy Link</button>
       </div>
     </div>
 
     <div class="hg-stats-row">
       <div class="hg-stat-box">
-        <div class="hg-stat-num">${n}</div>
+        <div class="hg-stat-num">${i}</div>
         <div class="hg-stat-lbl">Friends Referred</div>
       </div>
       <div class="hg-stat-box">
-        <div class="hg-stat-num">${a}</div>
+        <div class="hg-stat-num">${r}</div>
         <div class="hg-stat-lbl">Completed</div>
       </div>
       <div class="hg-stat-box">
-        <div class="hg-stat-num">${s.toLocaleString()}</div>
+        <div class="hg-stat-num">${d.toLocaleString()}</div>
         <div class="hg-stat-lbl">Pts Earned</div>
       </div>
     </div>
@@ -626,29 +626,29 @@
     <div class="hg-section-title">Earn Social Points</div>
     <div class="hg-social-note">One-time per platform \xB7 Points arrive in ~24h after review</div>
     <div class="hg-social-list" id="hg-social-list">
-      ${be.map(i=>`<div class="hg-social-row">
-          <div class="hg-social-label">${i.icon} ${m(i.label)} <span class="hg-pts-badge">+${i.pts} pts</span></div>
-          <button class="hg-btn hg-btn-social" data-platform="${i.platform}">I Followed!</button>
+      ${xe.map(a=>`<div class="hg-social-row">
+          <div class="hg-social-label">${a.icon} ${b(a.label)} <span class="hg-pts-badge">+${a.pts} pts</span></div>
+          <button class="hg-btn hg-btn-social" data-platform="${a.platform}">I Followed!</button>
         </div>`).join("")}
     </div>
     <div class="hg-social-msg" id="hg-social-msg"></div>
 
     <div class="hg-history-section">
-      ${f}
+      ${h}
     </div>
 
-    ${u}
-  `,e.querySelector("#hg-ref-copy")?.addEventListener("click",i=>{let b=i.currentTarget;navigator.clipboard?.writeText(r).then(()=>{b.textContent="Copied!",setTimeout(()=>{b.textContent="Copy Link"},2e3)})});let d=e.querySelector("#hg-social-msg");e.querySelectorAll("[data-platform]").forEach(i=>{i.addEventListener("click",async()=>{let b=i.dataset.platform,v=i.textContent;i.textContent="Submitting\u2026",i.disabled=!0;let y=await _(b);y.alreadyClaimed?(d.textContent="Already claimed for this platform.",d.className="hg-social-msg hg-msg-warn",i.textContent="Claimed \u2713"):y.queued?(d.textContent="Submitted! Points pending 24h review",d.className="hg-social-msg hg-msg-ok",i.textContent="Queued \u2713"):(d.textContent="Something went wrong. Please try again.",d.className="hg-social-msg hg-msg-err",i.textContent=v??"I Followed!",i.disabled=!1)})})}var fe=[{key:"silver",name:"\u25C8 Silver",color:"#9e9e9e",threshold:"Default",benefits:["Earn 1 pt per Rs.1 spent","Sign-up bonus: 1,000 pts","Birthday reward: Rs.250","Referral bonus: 6,000 pts","Points expire after 1 year (FIFO)"]},{key:"gold",name:"\u2605 Gold",color:"#f9a825",threshold:"Rs.50,000 lifetime spend",benefits:["Earn 1 pt per Rs.1 spent","Points never expire","Birthday reward: Rs.500","Referral bonus: 6,000 pts","Priority customer support"]},{key:"diamond",name:"\u25C6 Diamond",color:"#7b1fa2",threshold:"Rs.100,000 lifetime spend",benefits:["Earn 1.2\xD7 points in birthday month","Points never expire","Birthday reward: Rs.1,000","Referral bonus: 6,000 pts","Early access to new arrivals","Exclusive Reward Room access"]}];function J(e,t){if(!t.member){e.innerHTML="<p style='color:#888;text-align:center;padding:16px;'>Please log in to view tier info.</p>";return}let{tier:o,lifetimeSpend:r,spendToNextTier:n,nextTier:a}=t.member,s=t.nudgeSettings?.tier_progress_gold_threshold??5e4,l=t.nudgeSettings?.tier_progress_diamond_threshold??1e5,p=Math.min(100,Math.round(r/s*100)),g=Math.min(100,Math.round(r/l*100));e.innerHTML=`
+    ${c}
+  `,e.querySelector("#hg-ref-copy")?.addEventListener("click",a=>{let m=a.currentTarget;navigator.clipboard?.writeText(n).then(()=>{m.textContent="Copied!",setTimeout(()=>{m.textContent="Copy Link"},2e3)})});let s=e.querySelector("#hg-social-msg");e.querySelectorAll("[data-platform]").forEach(a=>{a.addEventListener("click",async()=>{let m=a.dataset.platform,v=a.textContent;a.textContent="Submitting\u2026",a.disabled=!0;let y=await z(m);y.alreadyClaimed?(s.textContent="Already claimed for this platform.",s.className="hg-social-msg hg-msg-warn",a.textContent="Claimed \u2713"):y.queued?(s.textContent="Submitted! Points pending 24h review",s.className="hg-social-msg hg-msg-ok",a.textContent="Queued \u2713"):(s.textContent="Something went wrong. Please try again.",s.className="hg-social-msg hg-msg-err",a.textContent=v??"I Followed!",a.disabled=!1)})})}var ye=[{key:"silver",name:"\u25C8 Silver",color:"#9e9e9e",threshold:"Default",benefits:["Earn 1 pt per Rs.1 spent","Sign-up bonus: 1,000 pts","Birthday reward: Rs.250","Referral bonus: 6,000 pts","Points expire after 1 year (FIFO)"]},{key:"gold",name:"\u2605 Gold",color:"#f9a825",threshold:"Rs.50,000 lifetime spend",benefits:["Earn 1 pt per Rs.1 spent","Points never expire","Birthday reward: Rs.500","Referral bonus: 6,000 pts","Priority customer support"]},{key:"diamond",name:"\u25C6 Diamond",color:"#7b1fa2",threshold:"Rs.100,000 lifetime spend",benefits:["Earn 1.2\xD7 points in birthday month","Points never expire","Birthday reward: Rs.1,000","Referral bonus: 6,000 pts","Early access to new arrivals","Exclusive Reward Room access"]}];function V(e,o){if(!o.member){e.innerHTML="<p style='color:#888;text-align:center;padding:16px;'>Please log in to view tier info.</p>";return}let{tier:t,lifetimeSpend:n,spendToNextTier:i,nextTier:r}=o.member,d=o.nudgeSettings?.tier_progress_gold_threshold??5e4,p=o.nudgeSettings?.tier_progress_diamond_threshold??1e5,l=Math.min(100,Math.round(n/d*100)),f=Math.min(100,Math.round(n/p*100));e.innerHTML=`
     <div class="hg-tier-cards">
-      ${fe.map(c=>{let h=o===c.key,u=o==="gold"&&c.key==="silver"||o==="diamond"&&(c.key==="silver"||c.key==="gold");return`
-        <div class="hg-tier-card ${h?"hg-current-tier":""} ${u?"hg-achieved-tier":""}">
+      ${ye.map(u=>{let g=t===u.key,c=t==="gold"&&u.key==="silver"||t==="diamond"&&(u.key==="silver"||u.key==="gold");return`
+        <div class="hg-tier-card ${g?"hg-current-tier":""} ${c?"hg-achieved-tier":""}">
           <div class="hg-tier-card-header">
-            <div class="hg-tier-name" style="color:${c.color};">${c.name}</div>
-            ${h?'<span class="hg-current-badge">Your Current Tier</span>':""}
-            ${u?'<span class="hg-achieved-badge">Achieved \u2713</span>':""}
+            <div class="hg-tier-name" style="color:${u.color};">${u.name}</div>
+            ${g?'<span class="hg-current-badge">Your Current Tier</span>':""}
+            ${c?'<span class="hg-achieved-badge">Achieved \u2713</span>':""}
           </div>
-          <div style="font-size:12px;color:#888;margin-bottom:8px;">Unlocks at: ${c.threshold}</div>
-          ${c.benefits.map(f=>`<div class="hg-tier-benefit">\u2713 ${f}</div>`).join("")}
+          <div style="font-size:12px;color:#888;margin-bottom:8px;">Unlocks at: ${u.threshold}</div>
+          ${u.benefits.map(h=>`<div class="hg-tier-benefit">\u2713 ${h}</div>`).join("")}
         </div>
       `}).join("")}
     </div>
@@ -656,46 +656,46 @@
     <div class="hg-tier-progress-section">
       <div style="font-weight:700;font-size:14px;margin-bottom:12px;">Your Progress</div>
       <div style="font-size:13px;color:#555;margin-bottom:12px;">
-        Lifetime spend: <strong>Rs.${r.toLocaleString()}</strong>
-        ${a?` \xB7 Rs.${n.toLocaleString()} more to reach ${a.charAt(0).toUpperCase()+a.slice(1)}`:" \xB7 Maximum tier reached!"}
+        Lifetime spend: <strong>Rs.${n.toLocaleString()}</strong>
+        ${r?` \xB7 Rs.${i.toLocaleString()} more to reach ${r.charAt(0).toUpperCase()+r.slice(1)}`:" \xB7 Maximum tier reached!"}
       </div>
       <div class="hg-progress-label">
-        <span>Silver \u2192 Gold (Rs.${s.toLocaleString()})</span><span>${p}%</span>
+        <span>Silver \u2192 Gold (Rs.${d.toLocaleString()})</span><span>${l}%</span>
       </div>
       <div class="hg-progress-track">
-        <div class="hg-progress-fill" style="width:${p}%;background:#f9a825;"></div>
+        <div class="hg-progress-fill" style="width:${l}%;background:#f9a825;"></div>
       </div>
       <div class="hg-progress-label" style="margin-top:8px;">
-        <span>Gold \u2192 Diamond (Rs.${l.toLocaleString()})</span><span>${g}%</span>
+        <span>Gold \u2192 Diamond (Rs.${p.toLocaleString()})</span><span>${f}%</span>
       </div>
       <div class="hg-progress-track">
-        <div class="hg-progress-fill" style="width:${g}%;background:#7b1fa2;"></div>
+        <div class="hg-progress-fill" style="width:${f}%;background:#7b1fa2;"></div>
       </div>
     </div>
-  `}var U=["My Rewards","History","Referrals","VIP Tiers"],ve={silver:"\u25C8 Silver",gold:"\u2605 Gold",diamond:"\u25C6 Diamond"};function V(e){if(!e.loggedIn||!e.member)return;let{member:t}=e,o=document.createElement("div");o.id="hg-hub-overlay",o.className="hg-widget";let r=document.createElement("div");r.id="hg-hub",r.innerHTML=`
+  `}var Q=["My Rewards","History","Referrals","VIP Tiers"],we={silver:"\u25C8 Silver",gold:"\u2605 Gold",diamond:"\u25C6 Diamond"};function X(e){if(!e.loggedIn||!e.member)return;let{member:o}=e,t=document.createElement("div");t.id="hg-hub-overlay",t.className="hg-widget";let n=document.createElement("div");n.id="hg-hub",n.innerHTML=`
     <div class="hg-hub-header">
       <div class="hg-hub-header-top">
         <div>
-          <div class="hg-hub-name">Hi, ${m(t.firstName??"there")}!</div>
-          <div class="hg-hub-balance">${t.balance.toLocaleString()} pts</div>
-          <span class="hg-hub-tier">${ve[t.tier]??m(t.tier)}</span>
+          <div class="hg-hub-name">Hi, ${b(o.firstName??"there")}!</div>
+          <div class="hg-hub-balance">${o.balance.toLocaleString()} pts</div>
+          <span class="hg-hub-tier">${we[o.tier]??b(o.tier)}</span>
         </div>
         <button class="hg-hub-close" id="hg-hub-close" aria-label="Close">\xD7</button>
       </div>
-      <div class="hg-tabs">
-        ${U.map((g,c)=>`
-          <button class="hg-tab${c===0?" hg-active":""}" data-tab="${c}">${g}</button>
+      <div class="hg-tabs" role="tablist" aria-label="Loyalty sections">
+        ${Q.map((g,c)=>`
+          <button class="hg-tab${c===0?" hg-active":""}" data-tab="${c}" role="tab" id="hg-tab-${c}" aria-selected="${c===0}" aria-controls="hg-panel-${c}">${g}</button>
         `).join("")}
       </div>
     </div>
     <div class="hg-hub-body">
-      ${U.map((g,c)=>`<div class="hg-tab-panel${c===0?" hg-active":""}" id="hg-panel-${c}"></div>`).join("")}
+      ${Q.map((g,c)=>`<div class="hg-tab-panel${c===0?" hg-active":""}" id="hg-panel-${c}" role="tabpanel" aria-labelledby="hg-tab-${c}"></div>`).join("")}
     </div>
-  `,o.appendChild(r),document.body.appendChild(o),O(document.getElementById("hg-panel-0"),e);let n=new Set([0]);r.querySelectorAll(".hg-tab").forEach(g=>{g.addEventListener("click",()=>{let c=Number(g.dataset.tab);r.querySelectorAll(".hg-tab").forEach(u=>u.classList.remove("hg-active")),g.classList.add("hg-active"),r.querySelectorAll(".hg-tab-panel").forEach(u=>u.classList.remove("hg-active"));let h=document.getElementById(`hg-panel-${c}`);h.classList.add("hg-active"),n.has(c)||(n.add(c),c===1&&F(h,e),c===2&&W(h,e),c===3&&J(h,e))})}),r.querySelector("#hg-hub-close")?.addEventListener("click",p),o.addEventListener("click",g=>{g.target===o&&p()}),r.setAttribute("role","dialog"),r.setAttribute("aria-modal","true"),r.setAttribute("aria-label","Loyalty Rewards"),r.setAttribute("tabindex","-1");let a='a[href], button:not([disabled]), input, select, textarea, [tabindex]:not([tabindex="-1"])',s=null;function l(g){if(g.key==="Escape"){p();return}if(g.key==="Tab"){let c=r.querySelectorAll(a);if(c.length===0)return;let h=c[0],u=c[c.length-1];g.shiftKey&&document.activeElement===h?(g.preventDefault(),u.focus()):!g.shiftKey&&document.activeElement===u&&(g.preventDefault(),h.focus())}}window.__hgOpenHub=(g=0,c)=>{o.classList.add("hg-open");let h=r.querySelector(`[data-tab="${g}"]`);h&&h.click(),document.body.style.overflow="hidden",c&&(o._launcher=c),r.focus(),s&&document.removeEventListener("keydown",s),s=l,document.addEventListener("keydown",s)};function p(){o.classList.remove("hg-open"),document.body.style.overflow="",s&&(document.removeEventListener("keydown",s),s=null);let g=o._launcher;g&&g.focus()}}function K(e){let t=document.querySelector("#MainContent")??document.querySelector("main")??document.body,o=e.loggedIn&&!!e.member,r=e.member?.referralSlug?m(e.member.referralSlug):"",n="#9c7600",a=o?'<button class="hg-btn hg-btn-primary" id="hg-lp-hub" style="max-width:150px;margin:4px auto">Start Earning</button><button class="hg-btn hg-btn-secondary" id="hg-lp-how" style="max-width:150px;margin:4px auto">How It Works</button>':'<a href="/account/register" class="hg-btn hg-btn-primary" style="max-width:150px;margin:4px auto">Start Earning</a><button class="hg-btn hg-btn-secondary" id="hg-lp-how" style="max-width:150px;margin:4px auto">How It Works</button>',s=o&&r?`<code style="display:block;background:#fff;border-radius:5px;padding:5px;font-size:11px;color:#888;margin:6px auto;max-width:220px;word-break:break-all;font-family:inherit">https://heygirl.pk?ref=${r}</code><button class="hg-btn hg-btn-primary" id="hg-lp-copy" style="max-width:150px;margin:0 auto">Get My Referral Link</button>`:'<a href="/account/login" class="hg-btn hg-btn-primary" style="display:block;max-width:150px;margin:0 auto">Get My Referral Link</a>',l=document.createElement("div");l.id="hg-landing",l.innerHTML=`<div class="s" style="padding-top:0;border-bottom:none!important"><div style="background:linear-gradient(135deg,#e8ad00,#c08f00);color:#1a1a1a;border-radius:14px;padding:26px 14px;text-align:center"><h1 style="font-size:21px;font-weight:900;margin-bottom:5px">HeyGirl Rewards \u2728</h1><p style="font-size:13px;opacity:.9;margin-bottom:3px">Earn points. Unlock perks. Shop smarter.</p><small style="opacity:.6">Join 10,000+ members</small><div style="display:flex;gap:6px;justify-content:center;flex-wrap:wrap;margin-top:12px">${a}</div></div></div>
-<div class="s" id="how-it-works"><b class="hg-sh">How to Earn Points</b><div class="hg-eg"><div class="hg-ei"><b style="color:${n}">1</b><br><small><b>+1,000 pts</b></small><br><small>Sign Up</small></div><div class="hg-ei"><b style="color:${n}">2</b><br><small><b>1 pt/Rs.1</b></small><br><small>Shop</small></div><div class="hg-ei"><b style="color:${n}">3</b><br><small><b>+6,000 pts</b></small><br><small>Refer Friend</small></div><div class="hg-ei"><b style="color:${n}">4</b><br><small><b>+1,000 pts</b></small><br><small>Social Share</small></div><div class="hg-ei"><b style="color:${n}">5</b><br><small><b>+3,000 pts</b></small><br><small>Leave Review</small></div></div></div>
+  `,t.appendChild(n),document.body.appendChild(t),W(document.getElementById("hg-panel-0"),e);let i=new Set([0]);n.querySelectorAll(".hg-tab").forEach(g=>{g.addEventListener("click",()=>{let c=Number(g.dataset.tab);n.querySelectorAll(".hg-tab").forEach(s=>{s.classList.remove("hg-active"),s.setAttribute("aria-selected","false")}),g.classList.add("hg-active"),g.setAttribute("aria-selected","true"),n.querySelectorAll(".hg-tab-panel").forEach(s=>s.classList.remove("hg-active"));let h=document.getElementById(`hg-panel-${c}`);h.classList.add("hg-active"),i.has(c)||(i.add(c),c===1&&U(h,e),c===2&&K(h,e),c===3&&V(h,e))})}),n.querySelector("#hg-hub-close")?.addEventListener("click",u),t.addEventListener("click",g=>{g.target===t&&u()}),n.setAttribute("role","dialog"),n.setAttribute("aria-modal","true"),n.setAttribute("aria-label","Loyalty Rewards"),n.setAttribute("tabindex","-1");let r='a[href], button:not([disabled]), input, select, textarea, [tabindex]:not([tabindex="-1"])',d=null,p="",l=!1;function f(g){if(g.key==="Escape"){u();return}if(g.key==="Tab"){let c=n.querySelectorAll(r);if(c.length===0)return;let h=c[0],s=c[c.length-1];g.shiftKey&&document.activeElement===h?(g.preventDefault(),s.focus()):!g.shiftKey&&document.activeElement===s&&(g.preventDefault(),h.focus())}}window.__hgOpenHub=(g=0,c)=>{t.classList.add("hg-open");let h=n.querySelector(`[data-tab="${g}"]`);h&&h.click(),l||(p=document.body.style.overflow),l=!0,document.body.style.overflow="hidden",c&&(t._launcher=c),n.focus(),d&&document.removeEventListener("keydown",d),d=f,document.addEventListener("keydown",d)};function u(){t.classList.remove("hg-open"),document.body.style.overflow=p,l=!1,d&&(document.removeEventListener("keydown",d),d=null);let g=t._launcher;g&&g.focus()}}function Z(e){let o=document.querySelector("#hg-rewards-root"),t=o??document.querySelector("#MainContent")??document.querySelector("main")??document.body,n=e.loggedIn&&!!e.member,i=e.member?.referralSlug?b(e.member.referralSlug):"",r="#9c7600",d=n?'<button class="hg-btn hg-btn-primary" id="hg-lp-hub" style="max-width:150px;margin:4px auto">Start Earning</button><button class="hg-btn hg-btn-secondary" id="hg-lp-how" style="max-width:150px;margin:4px auto">How It Works</button>':'<a href="/account/register" class="hg-btn hg-btn-primary" style="max-width:150px;margin:4px auto">Start Earning</a><button class="hg-btn hg-btn-secondary" id="hg-lp-how" style="max-width:150px;margin:4px auto">How It Works</button>',p=n&&i?`<code style="display:block;background:#fff;border-radius:5px;padding:5px;font-size:11px;color:#6b6b6b;margin:6px auto;max-width:220px;word-break:break-all;font-family:inherit">https://heygirl.pk?ref=${i}</code><button class="hg-btn hg-btn-primary" id="hg-lp-copy" style="max-width:150px;margin:0 auto">Get My Referral Link</button>`:'<a href="/account/login" class="hg-btn hg-btn-primary" style="display:block;max-width:150px;margin:0 auto">Get My Referral Link</a>',l=document.createElement("div");if(l.id="hg-landing",l.innerHTML=`<div class="s" style="padding-top:0;border-bottom:none!important"><div style="background:linear-gradient(135deg,#e8ad00,#c08f00);color:#1a1a1a;border-radius:14px;padding:26px 14px;text-align:center"><h1 style="font-size:21px;font-weight:900;margin-bottom:5px">HeyGirl Rewards \u2728</h1><p style="font-size:13px;opacity:.9;margin-bottom:3px">Earn points. Unlock perks. Shop smarter.</p><small style="opacity:.6">Join 10,000+ members</small><div style="display:flex;gap:6px;justify-content:center;flex-wrap:wrap;margin-top:12px">${d}</div></div></div>
+<div class="s" id="how-it-works"><b class="hg-sh">How to Earn Points</b><div class="hg-eg"><div class="hg-ei"><b style="color:${r}">1</b><br><small><b>+1,000 pts</b></small><br><small>Sign Up</small></div><div class="hg-ei"><b style="color:${r}">2</b><br><small><b>1 pt/Rs.1</b></small><br><small>Shop</small></div><div class="hg-ei"><b style="color:${r}">3</b><br><small><b>+6,000 pts</b></small><br><small>Refer Friend</small></div><div class="hg-ei"><b style="color:${r}">4</b><br><small><b>+1,000 pts</b></small><br><small>Social Share</small></div><div class="hg-ei"><b style="color:${r}">5</b><br><small><b>+3,000 pts</b></small><br><small>Leave Review</small></div></div></div>
 <div class="s"><b class="hg-sh">Redemption Tiers</b><table class="hg-rt"><thead><tr><th>Points</th><th>Reward</th></tr></thead><tbody><tr><td>3,000</td><td>Rs.100 off</td></tr><tr><td>6,000</td><td>Rs.250 off</td></tr><tr><td>11,500</td><td>Rs.500 off</td></tr><tr><td>22,000</td><td>Rs.1,000 off</td></tr><tr><td>1,00,000</td><td>Rs.5,000 off</td></tr><tr><td>1,80,000</td><td>Rs.10,000 off</td></tr></tbody></table></div>
-<div class="s"><b class="hg-sh">VIP Tiers</b><div class="hg-tg"><div class="hg-tc" style="border:2px solid #9e9e9e"><b style="color:#9e9e9e">\u{1F948} Silver</b><br><small style="color:#888">Default</small><br><small>Earn &amp; save from day one</small></div><div class="hg-tc" style="border:2px solid #f9a825"><b style="color:#f9a825">\u{1F947} Gold</b><br><small style="color:#888">Rs.50,000 spend</small><br><small>No expiry, better birthday</small></div><div class="hg-tc" style="border:2px solid #7b1fa2"><b style="color:#7b1fa2">\u{1F48E} Diamond</b><br><small style="color:#888">Rs.100,000 spend</small><br><small>1.2\xD7 birthday pts, premium</small></div></div></div>
-<div class="s"><div style="background:linear-gradient(135deg,#fdf6e3,#f6ecc9);border-radius:12px;padding:18px;text-align:center"><b>Refer Friends, Earn More</b><p style="font-size:13px;color:#555;margin:5px 0 9px">Earn 6,000 pts per friend who shops. They get free shipping on first order.</p>${s}</div></div>
-<div class="s"><div style="background:#1a1a1a;color:#fff;border-radius:12px;padding:18px;text-align:center"><b>\u{1F512} Reward Room Coming Soon</b><p style="font-size:13px;color:#aaa;margin:5px 0 7px">Exclusive products redeemable with loyalty points.</p><small style="background:rgba(255,255,255,.1);border-radius:5px;padding:3px 9px;color:#ccc">Diamond members first</small></div></div>
-<div class="s" style="text-align:center"><small style="color:#888">Are you a content creator?</small><br><b>Apply for our influencer program</b><br><a href="mailto:rewards@heygirl.pk" style="color:${n};font-size:13px;margin-top:4px;display:inline-block">Apply Now \u2192</a></div>
-<div class="s"><b class="hg-sh">FAQs</b><details><summary>When do points expire?</summary><p>Silver: 1 year. Gold &amp; Diamond: never.</p></details><details><summary>Can I stack codes?</summary><p>No \u2014 one loyalty code per order.</p></details><details><summary>When do I get points?</summary><p>When order is Fulfilled + Paid, usually within minutes.</p></details><details><summary>How does referral work?</summary><p>Friend's first order \u2192 6,000 pts for you, free shipping for them.</p></details><p style="font-size:11px;color:#888;margin-top:12px;text-align:center">Program T&amp;Cs apply. Points non-transferable, no cash value.<br><a href="mailto:rewards@heygirl.pk" style="color:${n}">Contact Support</a></p></div>`,t.innerHTML="",t.appendChild(l);let p=window;l.querySelector("#hg-lp-hub")?.addEventListener("click",()=>{typeof p.__hgOpenHub=="function"&&p.__hgOpenHub(0)}),l.querySelector("#hg-lp-how")?.addEventListener("click",()=>{document.getElementById("how-it-works")?.scrollIntoView({behavior:"smooth"})}),r&&o&&l.querySelector("#hg-lp-copy")?.addEventListener("click",g=>{let c=g.currentTarget;navigator.clipboard?.writeText(`https://heygirl.pk?ref=${e.member.referralSlug}`).then(()=>{c.textContent="Copied!",setTimeout(()=>{c.textContent="Get My Referral Link"},2e3)})})}(function(){"use strict";function e(){if(document.getElementById("hg-styles"))return;let r=document.createElement("style");r.id="hg-styles",r.textContent=R,document.head.appendChild(r)}function t(){let r=window.location.pathname;return r==="/pages/rewards"?"rewards":r.startsWith("/products/")?"product":r==="/cart"?"cart":"other"}async function o(){try{e();let r=t(),n=await S();if(!n||n.programEnabled===!1)return;let a=new URLSearchParams(window.location.search).get("ref");if(a)try{localStorage.setItem("hg_pending_ref",a)}catch{}if(n.loggedIn&&n.member){let s=null;try{s=localStorage.getItem("hg_pending_ref")}catch{}s&&s!==n.member.referralSlug&&C(s).then(l=>{if(l)try{localStorage.removeItem("hg_pending_ref")}catch{}})}r!=="rewards"&&(z(n),n.loggedIn&&n.member?(P(n),V(n)):I(n)),n.nudgeSettings&&B(n,r),r==="product"&&D(n),r==="cart"&&G(n),r==="rewards"&&K(n)}catch{}}document.readyState==="loading"?document.addEventListener("DOMContentLoaded",o):o()})();})();
+<div class="s"><b class="hg-sh">VIP Tiers</b><div class="hg-tg"><div class="hg-tc" style="border:2px solid #9e9e9e"><b style="color:#9e9e9e">\u{1F948} Silver</b><br><small style="color:#6b6b6b">Default</small><br><small>Earn &amp; save from day one</small></div><div class="hg-tc" style="border:2px solid #f9a825"><b style="color:#f9a825">\u{1F947} Gold</b><br><small style="color:#6b6b6b">Rs.50,000 spend</small><br><small>No expiry, better birthday</small></div><div class="hg-tc" style="border:2px solid #7b1fa2"><b style="color:#7b1fa2">\u{1F48E} Diamond</b><br><small style="color:#6b6b6b">Rs.100,000 spend</small><br><small>1.2\xD7 birthday pts, premium</small></div></div></div>
+<div class="s"><div style="background:linear-gradient(135deg,#fdf6e3,#f6ecc9);border-radius:12px;padding:18px;text-align:center"><b>Refer Friends, Earn More</b><p style="font-size:13px;color:#4b4b4b;margin:5px 0 9px">Earn 6,000 pts per friend who shops. They get free shipping on first order.</p>${p}</div></div>
+<div class="s"><div style="background:#1a1a1a;color:#fff;border-radius:12px;padding:18px;text-align:center"><b>\u{1F512} Reward Room Coming Soon</b><p style="font-size:13px;color:#b8b8b8;margin:5px 0 7px">Exclusive products redeemable with loyalty points.</p><small style="background:rgba(255,255,255,.1);border-radius:5px;padding:3px 9px;color:#ccc">Diamond members first</small></div></div>
+<div class="s" style="text-align:center"><small style="color:#6b6b6b">Are you a content creator?</small><br><b>Apply for our influencer program</b><br><a href="mailto:rewards@heygirl.pk" style="color:${r};font-size:13px;margin-top:4px;display:inline-block">Apply Now \u2192</a></div>
+<div class="s"><b class="hg-sh">FAQs</b><details><summary>When do points expire?</summary><p>Silver: 1 year. Gold &amp; Diamond: never.</p></details><details><summary>Can I stack codes?</summary><p>No \u2014 one loyalty code per order.</p></details><details><summary>When do I get points?</summary><p>When order is Fulfilled + Paid, usually within minutes.</p></details><details><summary>How does referral work?</summary><p>Friend's first order \u2192 6,000 pts for you, free shipping for them.</p></details><p style="font-size:11px;color:#6b6b6b;margin-top:12px;text-align:center">Program T&amp;Cs apply. Points non-transferable, no cash value.<br><a href="mailto:rewards@heygirl.pk" style="color:${r}">Contact Support</a></p></div>`,document.getElementById("hg-landing"))return;o&&(o.innerHTML=""),t.appendChild(l);let f=window;l.querySelector("#hg-lp-hub")?.addEventListener("click",()=>{typeof f.__hgOpenHub=="function"&&f.__hgOpenHub(0)}),l.querySelector("#hg-lp-how")?.addEventListener("click",()=>{document.getElementById("how-it-works")?.scrollIntoView({behavior:"smooth"})}),i&&n&&l.querySelector("#hg-lp-copy")?.addEventListener("click",u=>{let g=u.currentTarget;navigator.clipboard?.writeText(`https://heygirl.pk?ref=${e.member.referralSlug}`).then(()=>{g.textContent="Copied!",setTimeout(()=>{g.textContent="Get My Referral Link"},2e3)})})}(function(){"use strict";function e(){if(document.getElementById("hg-styles"))return;let i=document.createElement("style");i.id="hg-styles",i.textContent=T,document.head.appendChild(i)}function o(){let i=window.location.pathname;return i==="/pages/rewards"?"rewards":i.startsWith("/products/")?"product":i==="/cart"?"cart":"other"}async function t(){try{e();let i=o();i!=="rewards"&&I();let r=await $();if(!r||r.programEnabled===!1){S();return}let d=new URLSearchParams(window.location.search).get("ref");if(d)try{localStorage.setItem("hg_pending_ref",d)}catch{}if(r.loggedIn&&r.member){let p=null;try{p=localStorage.getItem("hg_pending_ref")}catch{}p&&p!==r.member.referralSlug&&M(p).then(l=>{if(l)try{localStorage.removeItem("hg_pending_ref")}catch{}})}i!=="rewards"&&(A(r),r.loggedIn&&r.member?(N(r),X(r)):q(r)),r.nudgeSettings&&G(r,i),i==="product"&&Y(r),i==="cart"&&F(r),i==="rewards"&&Z(r)}catch{try{S()}catch{}}}function n(){let i=window.requestIdleCallback;typeof i=="function"?i(()=>void t(),{timeout:3e3}):setTimeout(()=>void t(),200)}document.readyState==="loading"?document.addEventListener("DOMContentLoaded",n):n()})();})();

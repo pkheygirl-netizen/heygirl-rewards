@@ -83,15 +83,21 @@ function showNudge3(code: { code: string; discount_pkr: number }) {
 }
 
 function showNudge5(message: string) {
-  const el = createNudge(
-    "You're close to the next tier!",
-    message,
-    "View Tiers",
-    "hg-nudge-header",
-    () => { window.location.href = "/pages/rewards"; }
-  );
-  // Prepend inside body for header banner effect
-  document.body.prepend(el);
+  // W12 (2026-07-03 review): the header-banner variant sat at z-index max over
+  // the theme's nav/announcement bar, hiding site navigation on load. Use the
+  // bottom-right toast position with a short delay instead.
+  setTimeout(() => {
+    // Don't stack on another bottom-right nudge (e.g. nudge 1 on the same spot).
+    if (document.querySelector(".hg-nudge-br")) return;
+    const el = createNudge(
+      "You're close to the next tier!",
+      message,
+      "View Tiers",
+      "hg-nudge-br",
+      () => { window.location.href = "/pages/rewards"; }
+    );
+    document.body.appendChild(el);
+  }, 3000);
   sessionStorage.setItem(SS_NUDGE5, "1");
 }
 

@@ -112,7 +112,8 @@ export async function redeemPoints(input: {
   }
   const deducted = rpcData?.[0]?.awarded ?? false;
   if (!deducted) {
-    // Duplicate redemption attempt — remove the duplicate row and surface the original code
+    // Not awarded: either a duplicate reference (retry) or, post-migration-008,
+    // a concurrent redemption drained the balance first.
     await db.from("loyalty_codes").delete().eq("id", codeRow.id);
     const { data: existing } = await db
       .from("loyalty_codes")
@@ -123,54 +124,98 @@ export async function redeemPoints(input: {
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
-    return {
-      redeemed: false,
-      reason: "duplicate",
-      code: existing?.code,
-      discountPkr: existing?.discount_amount_pkr,
-    };
+    if (existing) {
+      return {
+        redeemed: false,
+        reason: "duplicate",
+        code: existing.code,
+        discountPkr: existing.discount_amount_pkr,
+      };
+    }
+    return { redeemed: false, reason: "insufficient_balance" };
   }
+
+  // Compensating action: if Shopify discount creation fails AFTER the deduction
+  // succeeded, re-credit the points (idempotent reference) and remove the row so
+  // the customer keeps their balance and can simply retry.
+  const recredit = async (why: string) => {
+    const { error: recreditErr } = await db.rpc("award_points", {
+      p_member_id: member.id,
+      p_action_type: "adjustment", // 'redemption_reversal' not in ledger CHECK vocab
+      p_reference_id: `reversal-${codeRow.id}`,
+      p_points: input.requestedPoints,
+      p_reason_note: `auto re-credit: ${why}`,
+    });
+    if (recreditErr) {
+      // Re-credit itself failed — keep the row as evidence for manual review.
+      console.error("[redeemPoints] RE-CREDIT FAILED — manual adjustment needed:", recreditErr, "code row:", codeRow.id);
+      await db.from("loyalty_codes").update({ status: "expired" }).eq("id", codeRow.id);
+      return;
+    }
+    await db.from("loyalty_codes").delete().eq("id", codeRow.id);
+  };
 
   // Create Shopify price rule
   const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-  const priceRuleResult = await shopifyGraphqlWithRetry<{
+  let priceRuleResult: {
     priceRuleCreate: { priceRule: { id: string } | null; priceRuleUserErrors: Array<{ message: string }> };
-  }>(input.admin, CREATE_PRICE_RULE, {
-    input: {
-      title: `Loyalty Reward — Rs.${tier.discount_pkr} off`,
-      target: "LINE_ITEM",
-      valueType: "FIXED_AMOUNT",
-      value: String(-tier.discount_pkr),
-      customerSelection: { forAllCustomers: true },
-      usageLimit: 1,
-      startsAt: new Date().toISOString(),
-      endsAt: expiresAt,
-    },
-  });
+  };
+  try {
+    priceRuleResult = await shopifyGraphqlWithRetry<{
+      priceRuleCreate: { priceRule: { id: string } | null; priceRuleUserErrors: Array<{ message: string }> };
+    }>(input.admin, CREATE_PRICE_RULE, {
+      input: {
+        title: `Loyalty Reward — Rs.${tier.discount_pkr} off`,
+        target: "LINE_ITEM",
+        valueType: "FIXED_AMOUNT",
+        value: String(-tier.discount_pkr),
+        // I5 (2026-07-03 review): pin the code to its owner — a leaked/shared
+        // single-use code would otherwise consume the member's reward.
+        customerSelection: { customerIdsToAdd: [`gid://shopify/Customer/${customerId}`] },
+        usageLimit: 1,
+        startsAt: new Date().toISOString(),
+        endsAt: expiresAt,
+      },
+    });
+  } catch (err) {
+    console.error("[redeemPoints] priceRuleCreate threw:", err);
+    await recredit("Shopify price rule request failed");
+    return { redeemed: false, reason: "shopify_price_rule_error" };
+  }
 
   const priceRuleErrors = priceRuleResult.priceRuleCreate.priceRuleUserErrors;
   if (priceRuleErrors.length > 0 || !priceRuleResult.priceRuleCreate.priceRule) {
     console.error("[redeemPoints] priceRuleCreate errors:", priceRuleErrors);
-    // Points already deducted — log and surface partial error; do NOT re-credit automatically.
-    // Merchant must investigate via admin panel and manually adjust if needed.
-    await db.from("loyalty_codes").update({ status: "expired" }).eq("id", codeRow.id);
+    await recredit("Shopify price rule creation rejected");
     return { redeemed: false, reason: "shopify_price_rule_error" };
   }
 
   const priceRuleId = priceRuleResult.priceRuleCreate.priceRule.id;
   const codeValue = generateCodeValue();
 
-  const discountResult = await shopifyGraphqlWithRetry<{
+  let discountResult: {
     priceRuleDiscountCodeCreate: {
       priceRuleDiscountCode: { code: string } | null;
       userErrors: Array<{ message: string }>;
     };
-  }>(input.admin, CREATE_DISCOUNT_CODE, { priceRuleId, code: codeValue });
+  };
+  try {
+    discountResult = await shopifyGraphqlWithRetry<{
+      priceRuleDiscountCodeCreate: {
+        priceRuleDiscountCode: { code: string } | null;
+        userErrors: Array<{ message: string }>;
+      };
+    }>(input.admin, CREATE_DISCOUNT_CODE, { priceRuleId, code: codeValue });
+  } catch (err) {
+    console.error("[redeemPoints] discountCodeCreate threw:", err);
+    await recredit("Shopify discount code request failed");
+    return { redeemed: false, reason: "shopify_discount_code_error" };
+  }
 
   const discountErrors = discountResult.priceRuleDiscountCodeCreate.userErrors;
   if (discountErrors.length > 0 || !discountResult.priceRuleDiscountCodeCreate.priceRuleDiscountCode) {
     console.error("[redeemPoints] discountCodeCreate errors:", discountErrors);
-    await db.from("loyalty_codes").update({ status: "expired" }).eq("id", codeRow.id);
+    await recredit("Shopify discount code creation rejected");
     return { redeemed: false, reason: "shopify_discount_code_error" };
   }
 

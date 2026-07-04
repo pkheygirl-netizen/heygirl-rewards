@@ -71,7 +71,8 @@ export async function awardReferralBonus(
       target: "SHIPPING_LINE",
       valueType: "PERCENTAGE",
       value: "-100",
-      customerSelection: { forAllCustomers: true },
+      // I5: pin to the referred friend so a shared code can't consume the reward
+      customerSelection: { customerIdsToAdd: [`gid://shopify/Customer/${customerId}`] },
       usageLimit: 1,
       appliesOncePerCustomer: true,
       startsAt: now.toISOString(),
