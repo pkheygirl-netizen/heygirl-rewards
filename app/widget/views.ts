@@ -73,7 +73,7 @@ const SOCIAL: Array<{ key: "instagram" | "facebook" | "youtube"; title: string }
 
 /** Same-site path only ("/collections/all"); anything else is not linked. */
 function localPath(u: string | undefined): string {
-  return u && u.charAt(0) === "/" && u.charAt(1) !== "/" ? u : "";
+  return u && u.charAt(0) === "/" && u.charAt(1) !== "/" && u.charAt(1) !== "\\" ? u : "";
 }
 
 /**
@@ -411,10 +411,11 @@ export function stateMessage(c: Ctx, state: MemberState = "error"): string {
 const ERRORS: Record<string, string> = {
   insufficient_points: "You do not have enough points for that reward yet.",
   insufficient_balance: "You do not have enough points for that reward yet.",
-  invalid_points: "That reward is no longer available. Please reopen the panel.",
-  invalid_tier: "That reward is no longer available. Please reopen the panel.",
+  invalid_points: "That reward is no longer available. Please refresh the page to see the latest rewards.",
+  invalid_tier: "That reward is no longer available. Please refresh the page to see the latest rewards.",
   opted_out: "You have opted out of the rewards program.",
   blocked: "Your rewards account is on hold. Please contact us.",
+  redeem_unclear: "We could not finish this reward. If points were taken, they come back within 30 minutes, so please check your balance before trying again.",
   rate_limited: "Too many tries. Please wait a minute and try again.",
   already_set: "Your birthday is already saved. Contact us to change it.",
   invalid_date: "Please choose a valid day and month.",

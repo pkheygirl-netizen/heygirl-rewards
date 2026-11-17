@@ -68,7 +68,7 @@ describe("getSettings", () => {
 });
 
 describe("parsers", () => {
-  it("parseRedemptionTiers keeps `hidden: true` and nothing else as hidden", () => {
+  it("parseRedemptionTiers treats true and the text \"true\" as hidden, like the admin and storefront (review L1)", () => {
     expect(
       parseRedemptionTiers([
         { points: 6000, discount_pkr: 250, hidden: true },
@@ -79,7 +79,7 @@ describe("parsers", () => {
     ).toEqual([
       { points: 3000, discount_pkr: 100 },
       { points: 6000, discount_pkr: 250, hidden: true },
-      { points: 9000, discount_pkr: 400 },
+      { points: 9000, discount_pkr: 400, hidden: true },
       { points: 12000, discount_pkr: 500 },
     ]);
     // every reward hidden is a legal state: it must not fall back to the defaults

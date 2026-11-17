@@ -110,6 +110,47 @@ describe("influencer discount code (rule 12)", () => {
     expect(m.influencer_code).toBeNull();
   });
 
+  it("an unclear Shopify failure that did create her code is adopted, not left as a stray public discount (review M1)", async () => {
+    const m = seedMember(h.db, { is_influencer: true, first_name: "Sana" });
+    h.graphql = (q) => {
+      if (opName(q) === "HgDiscountCodeBasicCreate") throw new Error("socket hang up");
+      if (opName(q) === "HgFindCodeDetail") return { codeDiscountNodeByCode: { id: NODE, codeDiscount: { title: "Influencer SANA20 (Sana) 20% off" } } };
+      return {};
+    };
+    expect(await createInfluencerCode({ memberId: String(m.id), code: "SANA20", percentOff: 20, shop: "s" })).toEqual({ ok: true });
+    expect(m).toMatchObject({ influencer_code: "SANA20", influencer_code_discount_id: NODE });
+    // The create is sent once only: it is not repeated after an unclear failure.
+    expect(h.graphqlCalls.filter((c) => opName(c.query) === "HgDiscountCodeBasicCreate")).toHaveLength(1);
+  });
+
+  it("a taken code is adopted only when it is exactly the code this app made for her; any other discount is left alone", async () => {
+    const m = seedMember(h.db, { is_influencer: true, first_name: "Sana" });
+    const taken = { discountCodeBasicCreate: { codeDiscountNode: null, userErrors: [{ message: "taken", code: "TAKEN" }] } };
+    h.graphql = (q) => opName(q) === "HgFindCodeDetail"
+      ? { codeDiscountNodeByCode: { id: NODE, codeDiscount: { title: "Influencer SANA20 (Sana) 20% off" } } }
+      : taken;
+    expect(await createInfluencerCode({ memberId: String(m.id), code: "SANA20", percentOff: 20, shop: "s" })).toEqual({ ok: true });
+
+    const other = seedMember(h.db, { is_influencer: true, first_name: "Hira" });
+    h.graphql = (q) => opName(q) === "HgFindCodeDetail"
+      ? { codeDiscountNodeByCode: { id: "gid://shopify/DiscountCodeNode/99", codeDiscount: { title: "Summer sale" } } }
+      : taken;
+    expect(await createInfluencerCode({ memberId: String(other.id), code: "SUMMER20", percentOff: 20, shop: "s" })).toEqual({ ok: false, reason: "code_taken" });
+    expect(other.influencer_code).toBeNull();
+  });
+
+  it("an unclear failure with nothing in Shopify, or a failed lookup, is reported and nothing is stored", async () => {
+    const m = seedMember(h.db, { is_influencer: true });
+    h.graphql = (q) => {
+      if (opName(q) === "HgDiscountCodeBasicCreate") throw new Error("503");
+      return { codeDiscountNodeByCode: null };
+    };
+    expect(await createInfluencerCode({ memberId: String(m.id), code: "ABC10", percentOff: 10, shop: "s" })).toEqual({ ok: false, reason: "shopify_error" });
+    h.graphql = () => { throw new Error("503"); };
+    expect(await createInfluencerCode({ memberId: String(m.id), code: "ABC10", percentOff: 10, shop: "s" })).toEqual({ ok: false, reason: "shopify_error" });
+    expect(m.influencer_code).toBeNull();
+  });
+
   it("if saving fails after Shopify created the code, the Shopify code is removed again", async () => {
     const m = seedMember(h.db, { is_influencer: true });
     h.graphql = (q) =>

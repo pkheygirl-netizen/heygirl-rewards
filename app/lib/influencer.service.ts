@@ -3,7 +3,7 @@
 import { db } from "../db.server";
 import type { Database } from "../database.types";
 import { getAdminForShop } from "./worker-admin.server";
-import { createPublicPercentageCode, deleteDiscount, findDiscountIdByCode } from "./discounts.server";
+import { createPublicPercentageCode, deleteDiscount, findDiscountByCode, findDiscountIdByCode } from "./discounts.server";
 
 export type InfluencerRateFields = {
   is_influencer: boolean;
@@ -143,11 +143,20 @@ export async function createInfluencerCode(input: {
   }
 
   const name = [member.first_name, member.last_name].filter(Boolean).join(" ") || "influencer";
-  const created = await createPublicPercentageCode(admin, {
-    code,
-    title: `Influencer ${code} (${name}) ${percent}% off`,
-    percentOff: percent,
-  });
+  const title = influencerCodeTitle(code, name, percent);
+  let created = await createPublicPercentageCode(admin, { code, title, percentOff: percent });
+  if (!created.ok && (created.reason === "request_failed" || created.reason === "code_taken")) {
+    // An unclear failure may still have created the code, and a "taken" code may
+    // be one this app made for her on an earlier unclear attempt. Adopt it only
+    // when its title is exactly the one this function writes (same code, name
+    // and percentage); anything else is a different discount and is left alone.
+    try {
+      const existing = await findDiscountByCode(admin, code);
+      if (existing && existing.title === title) created = { ok: true, discountId: existing.id };
+    } catch (err) {
+      console.error("[createInfluencerCode] lookup after a failed create failed:", err instanceof Error ? err.message : err);
+    }
+  }
   if (!created.ok) return { ok: false, reason: created.reason === "code_taken" ? "code_taken" : "shopify_error" };
 
   const { data: saved, error: saveErr } = await db
@@ -163,6 +172,11 @@ export async function createInfluencerCode(input: {
     return { ok: false, reason: saveErr?.code === "23505" ? "code_taken" : "db_error" };
   }
   return { ok: true };
+}
+
+/** The exact title given to an influencer's Shopify discount; used to recognise our own code. */
+export function influencerCodeTitle(code: string, name: string, percent: number): string {
+  return `Influencer ${code} (${name}) ${percent}% off`;
 }
 
 export async function removeInfluencerCode(input: { memberId: string; shop: string }): Promise<{ ok: boolean; reason?: string }> {

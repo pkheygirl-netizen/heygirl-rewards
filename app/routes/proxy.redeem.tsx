@@ -34,6 +34,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return proxyJson({ ok: true, code: result.code, discountPkr: result.discountPkr, expiresAt: result.expiresAt });
   } catch (err) {
     console.error("[proxy.redeem] error:", err instanceof Error ? err.message : err);
-    return proxyJson({ ok: false, error: "server_error" }, 500);
+    return proxyJson({ ok: false, error: "redeem_unclear" }, 500);
   }
 };

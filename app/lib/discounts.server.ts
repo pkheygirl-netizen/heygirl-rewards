@@ -184,7 +184,10 @@ export async function createPublicPercentageCode(
           value: { percentage: Math.round(input.percentOff) / 100 },
         },
       },
-    }, 3, SAFE_TO_REPEAT);
+    // Not repeated after a 5xx: the code text is chosen by staff, so a TAKEN on
+    // a repeat could not be told apart from an unrelated discount. The caller
+    // resolves an unclear failure by looking the code up (findDiscountByCode).
+    }, 3);
     const payload = data.discountCodeBasicCreate;
     if (!payload || payload.userErrors.length > 0 || !payload.codeDiscountNode) return failed(payload, "discountCodeBasicCreate");
     return { ok: true, discountId: payload.codeDiscountNode.id };
@@ -246,6 +249,27 @@ export async function deleteDiscount(
 }
 
 /** Discount node id for a code, or null when Shopify has no such code. */
+const FIND_CODE_DETAIL = `#graphql
+  query HgFindCodeDetail($code: String!) {
+    codeDiscountNodeByCode(code: $code) {
+      id
+      codeDiscount { ... on DiscountCodeBasic { title } }
+    }
+  }`;
+
+/** The discount holding this code and its title (null title when it is not a basic code). Throws on request failure. */
+export async function findDiscountByCode(
+  admin: AdminGraphqlClient,
+  code: string,
+): Promise<{ id: string; title: string | null } | null> {
+  const data = await shopifyGraphqlWithRetry<{
+    codeDiscountNodeByCode: { id: string; codeDiscount: { title?: string } | null } | null;
+  }>(admin, FIND_CODE_DETAIL, { code });
+  const node = data.codeDiscountNodeByCode;
+  if (!node) return null;
+  return { id: node.id, title: typeof node.codeDiscount?.title === "string" ? node.codeDiscount.title : null };
+}
+
 export async function findDiscountIdByCode(admin: AdminGraphqlClient, code: string): Promise<string | null> {
   const data = await shopifyGraphqlWithRetry<{ codeDiscountNodeByCode: { id: string } | null }>(admin, FIND_CODE, { code });
   return data.codeDiscountNodeByCode?.id ?? null;

@@ -134,8 +134,8 @@ export function parseRedemptionTiers(raw: unknown): RedemptionTier[] {
     if (!Number.isFinite(points) || !Number.isFinite(discount) || points <= 0 || discount <= 0) continue;
     if (seen.has(points)) continue;
     seen.add(points);
-    // Only the boolean true hides a reward; anything else leaves it visible.
-    tiers.push(rec.hidden === true ? { points, discount_pkr: discount, hidden: true } : { points, discount_pkr: discount });
+    // true (or the text "true", as the admin and storefront read it) hides a reward.
+    tiers.push(rec.hidden === true || rec.hidden === "true" ? { points, discount_pkr: discount, hidden: true } : { points, discount_pkr: discount });
   }
   if (tiers.length === 0) return DEFAULT_REDEMPTION_TIERS;
   return tiers.sort((a, b) => a.points - b.points);
