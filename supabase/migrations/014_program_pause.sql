@@ -79,7 +79,7 @@ ALTER TABLE public.order_webhook_state
 UPDATE public.app_settings
    SET faqs = jsonb_build_array(jsonb_build_object(
          'q', 'How are my points calculated?',
-         'a', 'Points are earned on the amount you pay after discounts, and are added once your order is delivered and paid. Shipping and tax do not earn points.'))
+         'a', 'Points are earned on the amount you pay after discounts, and are added once your order is delivered and paid. Shipping, tax and any part paid by gift card do not earn points.'))
  WHERE id = 1
    AND (faqs IS NULL OR faqs = '[]'::jsonb);
 

@@ -571,7 +571,7 @@ console.log("\n[15] 014_program_pause: switch history, state at placement, defau
   // 014 was applied once with the later migrations above (on the legacy data)
   const legacyOrder = (await q(`select program_on_at_placement p from order_webhook_state where shopify_order_id='LO1'`))[0];
   eq("orders recorded before 014 count as placed while on", legacyOrder.p, true);
-  const APPROVED = [{ q: "How are my points calculated?", a: "Points are earned on the amount you pay after discounts, and are added once your order is delivered and paid. Shipping and tax do not earn points." }];
+  const APPROVED = [{ q: "How are my points calculated?", a: "Points are earned on the amount you pay after discounts, and are added once your order is delivered and paid. Shipping, tax and any part paid by gift card do not earn points." }];
   // jsonb sorts object keys, so compare in SQL rather than as JSON text
   const sameFaqs = async (want) => (await q(`select faqs = $1::jsonb s from app_settings where id=1`, [JSON.stringify(want)]))[0].s;
   eq("an empty FAQ list gets the approved entry", await sameFaqs(APPROVED), true);

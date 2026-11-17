@@ -72,11 +72,12 @@ export function previewBalance(balance: number, direction: "add" | "remove", poi
  * Settings page, its confirmation and the Home banner.
  */
 export const PROGRAM_OFF_EFFECTS = [
-  "Customers earn no points: no purchase, welcome, referral, review, social or birthday rewards.",
+  "Customers earn no new points: nothing for orders placed, sign-ups, referrals, reviews, social follows or birthdays while it is off.",
   "Customers cannot redeem points, and the rewards panel, launcher and points lines are hidden on the storefront.",
   "Reward codes already issued still work at checkout until they expire.",
   "An order placed while the program is off never earns points, even if it is delivered and paid after you switch it back on.",
-  "Orders placed before you switched off still earn when they are delivered and paid, and balances are kept.",
+  "Orders placed before you switched off still earn when they are delivered and paid, and rewards already earned before the switch (a referral, review or social claim) are still paid when due.",
+  "Balances are kept, but Silver points keep their expiry dates.",
 ] as const;
 
 /**
@@ -87,6 +88,6 @@ export const PROGRAM_OFF_EFFECTS = [
 export const SUGGESTED_FAQS: ReadonlyArray<{ q: string; a: string }> = [
   {
     q: "How are my points calculated?",
-    a: "Points are earned on the amount you pay after discounts, and are added once your order is delivered and paid. Shipping and tax do not earn points.",
+    a: "Points are earned on the amount you pay after discounts, and are added once your order is delivered and paid. Shipping, tax and any part paid by gift card do not earn points.",
   },
 ];
