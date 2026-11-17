@@ -16,9 +16,12 @@ function makeRedis() {
 // Clean-up: finished jobs are removed (an hour, or 1,000, is plenty for
 // de-duplicating webhook redeliveries); failed jobs are kept for two weeks,
 // capped at 5,000, so they can be inspected without Redis growing for ever.
+// Eight attempts, 30 s doubling: retries at 30 s, 1, 2, 4, 8, 16 and 32 min,
+// about an hour in all, which rides out a Shopify or database outage. What
+// still fails after that is picked up by the pending-code sweep (cron).
 export const DEFAULT_JOB_OPTIONS = {
-  attempts: 5,
-  backoff: { type: "exponential" as const, delay: 5000 },
+  attempts: 8,
+  backoff: { type: "exponential" as const, delay: 30_000 },
   removeOnComplete: { age: 60 * 60, count: 1000 },
   removeOnFail: { age: 14 * 24 * 60 * 60, count: 5000 },
 };
@@ -43,6 +46,22 @@ export async function failedJobCounts(): Promise<Record<string, number>> {
   return out;
 }
 
+type UniqueQueue = {
+  add: (name: string, data: Record<string, unknown>, opts?: Record<string, unknown>) => Promise<unknown>;
+  getJob: (id: string) => Promise<{ isFailed: () => Promise<boolean>; remove: () => Promise<unknown> } | undefined | null>;
+};
+
+/**
+ * Add a job under a fixed id (so two copies cannot be queued at once) without
+ * the trap that a FAILED job with that id, kept for two weeks, silently blocks
+ * every later add: a failed one is removed first.
+ */
+export async function addUnique(queue: UniqueQueue, name: string, data: Record<string, unknown>, jobId: string): Promise<void> {
+  const existing = await queue.getJob(jobId);
+  if (existing && (await existing.isFailed())) await existing.remove();
+  await queue.add(name, data, { jobId });
+}
+
 // Workers run ONLY in the dedicated worker process (WORKER=1), never the web process.
 export function startWorkers() {
   if (process.env.WORKER !== "1") return;
@@ -51,6 +70,7 @@ export function startWorkers() {
   void import("../workers/social.worker");
   void import("../workers/cron.worker");
   void import("../workers/notification.worker");
+  void import("../workers/import.worker"); // Smile import (plan / execute)
   console.log("[workers] started");
 }
 

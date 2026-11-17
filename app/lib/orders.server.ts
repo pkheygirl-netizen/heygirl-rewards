@@ -35,6 +35,12 @@ export type OrderEvent = {
   placedAt: string | null;
   /** total - shipping - tax, using the order's current figures (rule 1, before gift cards) */
   merchandisePkr: number;
+  /** the same from the order's ORIGINAL figures: what it was worth before any refund or removal */
+  grossMerchandisePkr: number;
+  /** Shopify's updated_at for this payload: an older payload never overwrites a newer one */
+  updatedAt: string | null;
+  /** prices include tax (refund line values then include tax too) */
+  taxesIncluded: boolean;
   fulfillmentStatus: string | null;
   financialStatus: string | null;
   cancelledAt: string | null;
@@ -77,6 +83,8 @@ export function parseOrderPayload(payload: unknown): OrderEvent | null {
   const total = o.current_total_price != null ? num(o.current_total_price) : num(o.total_price);
   const shipping = shopMoney(o.current_shipping_price_set) ?? shopMoney(o.total_shipping_price_set) ?? 0;
   const tax = o.current_total_tax != null ? num(o.current_total_tax) : num(o.total_tax);
+  const grossShipping = shopMoney(o.total_shipping_price_set) ?? shipping;
+  const gross = o.total_price != null ? num(o.total_price) - grossShipping - num(o.total_tax) : total - shipping - tax;
 
   const codes = Array.isArray(o.discount_codes)
     ? (o.discount_codes as unknown[]).map((d) => str(obj(d)?.code)).filter((x): x is string => !!x)
@@ -89,6 +97,9 @@ export function parseOrderPayload(payload: unknown): OrderEvent | null {
     customer,
     placedAt: str(o.created_at) ?? str(o.processed_at),
     merchandisePkr: money2(Math.max(0, total - shipping - tax)),
+    grossMerchandisePkr: money2(Math.max(0, gross, total - shipping - tax)),
+    updatedAt: str(o.updated_at),
+    taxesIncluded: o.taxes_included === true,
     fulfillmentStatus: str(o.fulfillment_status),
     financialStatus: str(o.financial_status),
     cancelledAt: str(o.cancelled_at),
@@ -97,13 +108,24 @@ export function parseOrderPayload(payload: unknown): OrderEvent | null {
   };
 }
 
-export type RefundEvent = { refundId: string; orderId: string; refundedMerchandisePkr: number };
+export type RefundEvent = {
+  refundId: string;
+  orderId: string;
+  /** discount-adjusted value of the refunded items; for an amount-only refund, the money refunded */
+  refundedMerchandisePkr: number;
+  /** tax inside that value when the order's prices include tax */
+  refundedTaxPkr?: number;
+  /** true when the refund lists no items: the value is money, not merchandise */
+  amountOnly?: boolean;
+};
 
 /**
- * Discount-adjusted value of the refunded items. For each line the smaller of
- * Shopify's refund subtotal and (line price x qty - the line's discount
- * allocations, pro rata) is used, so an order that used a code never reverses
- * more than was actually paid for those items.
+ * Value of a refund.
+ * With line items: for each line the smaller of Shopify's refund subtotal and
+ * (line price x qty - the line's discount allocations, pro rata), so an order
+ * that used a code never reverses more than was paid for those items.
+ * Without line items (an amount-only refund): the successful refund
+ * transactions, less refunded shipping and anything returned to a gift card.
  */
 export function parseRefundPayload(payload: unknown): RefundEvent | null {
   const r = obj(payload);
@@ -112,6 +134,7 @@ export function parseRefundPayload(payload: unknown): RefundEvent | null {
   if (!r || !refundId || !orderId) return null;
 
   let total = 0;
+  let taxTotal = 0;
   const lines = Array.isArray(r.refund_line_items) ? (r.refund_line_items as unknown[]) : [];
   for (const raw of lines) {
     const li = obj(raw);
@@ -128,8 +151,43 @@ export function parseRefundPayload(payload: unknown): RefundEvent | null {
       value = Math.min(subtotal, paidPerUnit * qty);
     }
     total += Math.max(0, value);
+    taxTotal += Math.max(0, shopMoney(li.total_tax_set) ?? num(li.total_tax));
   }
-  return { refundId, orderId, refundedMerchandisePkr: money2(total) };
+  if (total > 0) {
+    return { refundId, orderId, refundedMerchandisePkr: money2(total), refundedTaxPkr: money2(taxTotal), amountOnly: false };
+  }
+
+  // Amount-only refund.
+  let money = 0;
+  const transactions = Array.isArray(r.transactions) ? (r.transactions as unknown[]) : [];
+  for (const raw of transactions) {
+    const t = obj(raw);
+    if (!t) continue;
+    if (String(t.kind ?? "").toLowerCase() !== "refund") continue;
+    if (String(t.status ?? "").toLowerCase() !== "success") continue;
+    if (String(t.gateway ?? "").toLowerCase() === "gift_card") continue; // the gift-card part never earned
+    money += Math.max(0, num(t.amount));
+  }
+  let shippingRefund = 0;
+  const shippingLines = Array.isArray(r.refund_shipping_lines) ? (r.refund_shipping_lines as unknown[]) : [];
+  for (const raw of shippingLines) {
+    const sl = obj(raw);
+    shippingRefund += Math.max(0, shopMoney(sl?.subtotal_amount_set) ?? num(sl?.subtotal_amount));
+  }
+  if (shippingRefund === 0) {
+    const adjustments = Array.isArray(r.order_adjustments) ? (r.order_adjustments as unknown[]) : [];
+    for (const raw of adjustments) {
+      const adj = obj(raw);
+      if (String(adj?.kind ?? "") === "shipping_refund") shippingRefund += Math.abs(num(adj?.amount));
+    }
+  }
+  return {
+    refundId,
+    orderId,
+    refundedMerchandisePkr: money2(Math.max(0, money - shippingRefund)),
+    refundedTaxPkr: 0,
+    amountOnly: true,
+  };
 }
 
 /** Rule 1: money actually paid for merchandise. */
@@ -193,25 +251,27 @@ async function readMemberByCustomer(shopifyCustomerId: string): Promise<MemberRo
 }
 
 /**
- * Rule 2: the multiplier in force when the order was PLACED. It is worked out
- * once, when the order is first seen (seconds after it is placed), and stored;
- * a campaign that ends or is switched off later does not change it.
+ * Rule 2: the multiplier in force when the order was PLACED. A campaign counts
+ * when the order falls inside its dates and it was switched on at that moment:
+ * it is on now, or it was switched off only afterwards (deactivated_at is
+ * stamped by the database). It is worked out once and stored with the order.
  */
-async function multiplierAtPlacement(
+export async function multiplierAtPlacement(
   member: Pick<MemberRow, "tier" | "birthday_month">,
   placedAt: Date,
 ): Promise<{ multiplier: number; campaignId: string | null }> {
   const iso = placedAt.toISOString();
   const { data, error } = await db
     .from("bonus_campaigns")
-    .select("id, multiplier")
-    .eq("is_active", true)
+    .select("id, multiplier, is_active, deactivated_at")
     .lte("starts_at", iso)
     .gte("ends_at", iso)
     .order("multiplier", { ascending: false })
-    .limit(1);
+    .limit(50);
   if (error) throw new Error(`campaign lookup failed: ${error.message}`);
-  const campaign = data?.[0] ?? null;
+  const placed = placedAt.getTime();
+  const campaign =
+    (data ?? []).find((c) => c.is_active || (!!c.deactivated_at && Date.parse(c.deactivated_at) > placed)) ?? null;
   const multiplier = selectMultiplier(campaign ? Number(campaign.multiplier) : null, member, karachiParts(placedAt).month);
   return { multiplier, campaignId: campaign?.id ?? null };
 }
@@ -247,35 +307,43 @@ export async function processOrderEvent(ev: OrderEvent, shop?: string | null): P
 
   // Placing an order enrols the customer (rule 3); phone-only customers too (rule 5).
   const member = await enrolFromOrder(ev.customer);
-  if (!member) throw new Error(`could not enrol customer ${customerId}`);
+  if (!member) {
+    // Not retried for ever: the next webhook for this order tries again.
+    console.error(`[processOrderEvent] could not enrol customer ${customerId}; order ${ev.id} not recorded`);
+    return { status: "skipped", reason: "enrol_failed" };
+  }
 
   const settings = await getSettings();
   const canEarn = !member.is_blocked && !member.opted_out && isEarnRuleEnabled(settings, "purchase");
 
   let state = await readState(ev.id);
+  let giftCard: number;
   if (!state) {
     const placedAt = ev.placedAt ? new Date(ev.placedAt) : new Date();
     const { multiplier, campaignId } = await multiplierAtPlacement(member, placedAt);
-    const giftCard = ev.hasGiftCard ? await fetchGiftCardAmount(ev.id, shop) : 0;
+    giftCard = ev.hasGiftCard ? await fetchGiftCardAmount(ev.id, shop) : 0;
 
     let influencerId: string | null = null;
     const influencer = await findInfluencerByCodes(ev.discountCodes);
     if (influencer && influencer.shopify_customer_id !== customerId) influencerId = influencer.id;
 
-    // First order? Any earlier order we know of settles it; otherwise ask
-    // Shopify, but only when the answer matters (a referral or a code sale).
+    // First order? An earlier order that was not cancelled settles it;
+    // otherwise ask Shopify, but only when the answer matters (a code sale).
+    // Shopify's count includes cancelled orders, so the ones we know were
+    // cancelled are taken off.
     let isFirstOrder: boolean | null = null;
     const { data: others, error: othersErr } = await db
       .from("order_webhook_state")
-      .select("id")
+      .select("id, cancelled_at")
       .eq("shopify_customer_id", customerId)
       .neq("shopify_order_id", ev.id)
-      .limit(1);
+      .limit(500);
     if (othersErr) throw new Error(`order lookup failed: ${othersErr.message}`);
-    if ((others ?? []).length > 0) isFirstOrder = false;
-    else if (influencerId) isFirstOrder = (await shopifyOrderCount(customerId, shop)) <= 1;
+    const live = (others ?? []).filter((o) => !o.cancelled_at).length;
+    const cancelledBefore = (others ?? []).length - live;
+    if (live > 0) isFirstOrder = false;
+    else if (influencerId) isFirstOrder = (await shopifyOrderCount(customerId, shop)) - cancelledBefore <= 1;
 
-    const basis = computeEarningBasis(ev.merchandisePkr, giftCard);
     const { error: insErr } = await db.from("order_webhook_state").insert({
       shopify_order_id: ev.id,
       shopify_customer_id: customerId,
@@ -283,49 +351,53 @@ export async function processOrderEvent(ev: OrderEvent, shop?: string | null): P
       placed_at: placedAt.toISOString(),
       fulfillment_status: ev.fulfillmentStatus,
       financial_status: ev.financialStatus,
-      order_total_pkr: ev.merchandisePkr,
+      order_total_pkr: ev.grossMerchandisePkr,
       gift_card_amount_pkr: giftCard,
-      earning_basis_pkr: basis,
       multiplier_used: multiplier,
       campaign_id: campaignId,
-      pending_points: canEarn && !ev.cancelledAt ? computePurchasePoints(basis, settings.purchase_points_rate, multiplier) : 0,
       discount_codes: ev.discountCodes,
       influencer_member_id: influencerId,
       is_first_order: isFirstOrder,
+      taxes_included: ev.taxesIncluded,
     });
     // 23505: another event for the same order got there first; carry on with its row.
     if (insErr && insErr.code !== "23505") throw new Error(`order state insert failed: ${insErr.message}`);
-    state = await readState(ev.id);
-    if (!state) throw new Error(`order state for ${ev.id} missing after insert`);
-  } else if (!state.points_awarded && !state.cancelled_at) {
-    // Not yet awarded: keep the stored figures in step with the order
-    // (edits, part refunds before delivery). The multiplier never changes.
-    const giftCard = ev.hasGiftCard ? await fetchGiftCardAmount(ev.id, shop) : Number(state.gift_card_amount_pkr ?? 0);
-    const basis = computeEarningBasis(ev.merchandisePkr, giftCard);
-    const multiplier = Number(state.multiplier_used ?? 1);
+  } else {
+    giftCard = ev.hasGiftCard && !state.points_awarded && !state.cancelled_at
+      ? await fetchGiftCardAmount(ev.id, shop)
+      : Number(state.gift_card_amount_pkr ?? 0);
+  }
+
+  // The figures go through the database, which ignores a payload older than
+  // the newest one already applied, never lets the refunded total shrink, and
+  // for an awarded order reverses the difference at once (reconcile on totals).
+  const { data: synced, error: syncErr } = await db.rpc("sync_order_snapshot", {
+    p_shopify_order_id: ev.id,
+    p_source_updated_at: ev.updatedAt,
+    p_gross_basis_pkr: computeEarningBasis(ev.grossMerchandisePkr, giftCard),
+    p_current_basis_pkr: computeEarningBasis(ev.merchandisePkr, giftCard),
+    p_points_rate: settings.purchase_points_rate,
+    p_can_earn: canEarn && !ev.cancelledAt,
+  });
+  if (syncErr) throw new Error(`sync_order_snapshot failed: ${syncErr.message}`);
+  const applied = synced?.[0]?.applied ?? false;
+
+  if (applied) {
     const { error } = await db
       .from("order_webhook_state")
       .update({
-        order_name: ev.name ?? state.order_name,
+        order_name: ev.name ?? state?.order_name ?? null,
         fulfillment_status: ev.fulfillmentStatus,
         financial_status: ev.financialStatus,
-        order_total_pkr: ev.merchandisePkr,
-        gift_card_amount_pkr: giftCard,
-        earning_basis_pkr: basis,
-        pending_points: canEarn && !ev.cancelledAt ? computePurchasePoints(basis, settings.purchase_points_rate, multiplier) : 0,
         discount_codes: ev.discountCodes,
+        gift_card_amount_pkr: giftCard,
+        taxes_included: ev.taxesIncluded,
       })
-      .eq("id", state.id)
-      .eq("points_awarded", false);
-    if (error) throw new Error(`order state update failed: ${error.message}`);
-    state = (await readState(ev.id)) ?? state;
-  } else {
-    const { error } = await db
-      .from("order_webhook_state")
-      .update({ fulfillment_status: ev.fulfillmentStatus, financial_status: ev.financialStatus })
-      .eq("id", state.id);
+      .eq("shopify_order_id", ev.id);
     if (error) throw new Error(`order state update failed: ${error.message}`);
   }
+  state = await readState(ev.id);
+  if (!state) throw new Error(`order state for ${ev.id} missing after sync`);
 
   await markCodesUsed(member.id, ev);
 
@@ -333,8 +405,36 @@ export async function processOrderEvent(ev: OrderEvent, shop?: string | null): P
     await processOrderCancelled(ev, shop, { stateSynced: true });
     return { status: "cancelled" };
   }
-  if (isAwardable(ev)) return awardOrder(ev.id, shop);
+  if (Number(synced?.[0]?.reversed ?? 0) > 0 || state.points_awarded) await reverseFollowUpsIfFullyRefunded(ev.id);
+
+  // A stale payload does not decide the award: the stored (newer) statuses do.
+  const awardable = applied
+    ? isAwardable(ev)
+    : isAwardable({ fulfillmentStatus: state.fulfillment_status, financialStatus: state.financial_status, cancelledAt: state.cancelled_at });
+  if (awardable) return awardOrder(ev.id, shop);
   return { status: "recorded", pendingPoints: state.pending_points };
+}
+
+/** What is left of an awarded order's basis after refunds (rule 10: "refunded in full"). */
+export function remainingBasis(state: Pick<OrderState, "earning_basis_pkr" | "refunded_basis_pkr" | "refund_basis_at_award_pkr">): number {
+  const basis = Number(state.earning_basis_pkr ?? 0);
+  const since = Math.max(0, Number(state.refunded_basis_pkr ?? 0) - Number(state.refund_basis_at_award_pkr ?? 0));
+  return Math.max(0, basis - since);
+}
+
+/** Refunded in full: nothing (to the paisa) is left, or every awarded point has been reversed. */
+export function isFullyRefunded(state: OrderState): boolean {
+  if (!state.points_awarded) return false;
+  if (state.points_awarded_amount > 0 && state.points_reversed_amount >= state.points_awarded_amount) return true;
+  return Number(state.earning_basis_pkr ?? 0) > 0 && remainingBasis(state) < 0.01;
+}
+
+/** After any reversal: a qualifying order refunded in full also takes back the referral / code-sale reward. */
+async function reverseFollowUpsIfFullyRefunded(shopifyOrderId: string): Promise<void> {
+  const after = await readState(shopifyOrderId);
+  if (!after || after.cancelled_at || !isFullyRefunded(after)) return;
+  await reverseReferralForOrder(shopifyOrderId, "refunded");
+  await reverseInfluencerSale(after, "refunded");
 }
 
 /**
@@ -356,18 +456,20 @@ export async function awardOrder(shopifyOrderId: string, shop?: string | null): 
     if (member.is_blocked) return { status: "skipped", reason: "blocked" };
     if (member.opted_out) return { status: "skipped", reason: "opted_out" };
 
-    const points = Math.max(0, state.pending_points ?? 0);
     const { data, error } = await db.rpc("award_order_points", {
       p_shopify_order_id: shopifyOrderId,
       p_member_id: member.id,
-      p_points: points,
+      p_points: Math.max(0, state.pending_points ?? 0),
       p_basis_pkr: Number(state.earning_basis_pkr ?? 0),
       p_multiplier: Number(state.multiplier_used ?? 1),
       p_expires_at: expiresAtForTier(member.tier, settings),
     });
     if (error) throw new Error(`award_order_points failed: ${error.message}`);
-    if (data?.[0]?.awarded) {
-      pointsAwarded = points;
+    // The database awards on the order's own, current figures (net of any
+    // refund that landed since `state` was read), so read back what it did.
+    const awardedNow = data?.[0]?.awarded ? await readState(shopifyOrderId) : null;
+    if (awardedNow) {
+      const points = awardedNow.points_awarded_amount;
       if (points > 0) {
         await notificationQueue
           .add("points_earned", {
@@ -380,10 +482,13 @@ export async function awardOrder(shopifyOrderId: string, shop?: string | null): 
     }
     state = await readState(shopifyOrderId);
     if (!state || !state.points_awarded || state.cancelled_at) return { status: "skipped", reason: "not_awarded" };
+    pointsAwarded = data?.[0]?.awarded ? state.points_awarded_amount : 0;
   }
 
   const fresh = await readMemberByCustomer(state.shopify_customer_id!);
   if (fresh) {
+    // Throws when a follow-up cannot be queued, so the job is retried; every
+    // step looks at what is already there and only does what is missing.
     await checkAndUpgradeTier(fresh.id, Number(fresh.lifetime_spend_pkr ?? 0), fresh.tier, { shopifyOrderId, shop });
   }
   await completeReferralForCustomer(state.shopify_customer_id!);
@@ -400,6 +505,7 @@ export async function awardOrder(shopifyOrderId: string, shop?: string | null): 
 export async function awardInfluencerSale(state: OrderState): Promise<{ awarded: boolean; points?: number; reason?: string }> {
   if (!state.influencer_member_id || !state.shopify_customer_id) return { awarded: false, reason: "no_attribution" };
   if (state.is_first_order !== true) return { awarded: false, reason: "repeat_customer" };
+  if (isFullyRefunded(state)) return { awarded: false, reason: "refunded" };
 
   const { data: linkReferral, error } = await db
     .from("referrals")
@@ -415,7 +521,7 @@ export async function awardInfluencerSale(state: OrderState): Promise<{ awarded:
 
   const { data: influencer } = await db.from("members").select("*").eq("id", state.influencer_member_id).maybeSingle();
   if (!influencer || !influencer.is_influencer) return { awarded: false, reason: "not_an_influencer" };
-  if (influencer.influencer_paused) return { awarded: false, reason: "paused" };
+  // Paused only removes the special rate: effectiveReferralPoints returns the standard amount.
   if (influencer.is_blocked || influencer.opted_out) return { awarded: false, reason: "not_eligible" };
 
   const points = effectiveReferralPoints(influencer, settings.referral_points);
@@ -472,17 +578,23 @@ export async function processRefundEvent(
   const state = await readState(ev.orderId);
   // The customer is found through the stored order, never the refund payload.
   if (!state) return { reversed: 0, reason: "no_order_row" };
-  // Before the award there is nothing to reverse; the order update that
-  // follows the refund lowers the pending points instead.
-  if (!state.points_awarded) return { reversed: 0, reason: "not_awarded" };
-  if (ev.refundedMerchandisePkr <= 0) return { reversed: 0, reason: "no_merchandise_refunded" };
+
+  // Prices that include tax: the earning basis never included it, so it comes off.
+  let merchandiseRefunded = ev.refundedMerchandisePkr;
+  if (state.taxes_included && !ev.amountOnly) merchandiseRefunded -= Math.max(0, Number(ev.refundedTaxPkr ?? 0));
+  if (merchandiseRefunded <= 0) return { reversed: 0, reason: "no_merchandise_refunded" };
 
   // Scale from merchandise value to the earning basis (they differ when part
-  // of the order was paid by gift card).
+  // of the order was paid by gift card). An amount-only refund is money already.
   const merchandise = Number(state.order_total_pkr ?? 0);
-  const basis = Number(state.earning_basis_pkr ?? merchandise);
-  const refundedBasis = merchandise > 0 ? money2((ev.refundedMerchandisePkr * basis) / merchandise) : ev.refundedMerchandisePkr;
+  const gross = Number(state.gross_basis_pkr ?? state.earning_basis_pkr ?? merchandise);
+  const refundedBasis =
+    !ev.amountOnly && merchandise > 0 ? money2((merchandiseRefunded * gross) / merchandise) : money2(merchandiseRefunded);
 
+  // Recorded against the order whether or not it has been awarded yet: before
+  // the award it lowers what will be awarded, after it points are reversed.
+  // The database counts each refund id once and works from totals, so the
+  // order in which this and the order update arrive does not matter.
   const { data, error } = await db.rpc("reverse_order_points", {
     p_shopify_order_id: ev.orderId,
     p_kind: "refund",
@@ -492,16 +604,8 @@ export async function processRefundEvent(
   if (error) throw new Error(`reverse_order_points(refund) failed: ${error.message}`);
   const reversed = Number(data?.[0]?.reversed ?? 0);
 
-  const after = await readState(ev.orderId);
-  const full =
-    !!after &&
-    Number(after.earning_basis_pkr ?? 0) > 0 &&
-    Number(after.refunded_basis_pkr ?? 0) >= Number(after.earning_basis_pkr ?? 0);
-  if (after && full) {
-    await reverseReferralForOrder(ev.orderId, "refunded");
-    await reverseInfluencerSale(after, "refunded");
-  }
-  return { reversed };
+  await reverseFollowUpsIfFullyRefunded(ev.orderId);
+  return state.points_awarded ? { reversed } : { reversed, reason: "recorded_before_award" };
 }
 
 export async function processOrderCancelled(

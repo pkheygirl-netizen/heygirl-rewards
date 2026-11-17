@@ -25,6 +25,8 @@ export type MemberRow = {
   birthday_day: number | null;
   birthday_set_at: string | null;
   is_influencer: boolean | null;
+  influencer_code?: string | null;
+  influencer_code_percent?: number | null;
   influencer_paused: boolean | null;
   influencer_multiplier: number | null;
   influencer_referral_rate: number | null;
@@ -52,7 +54,17 @@ export type CustomerPayload = {
   social: Record<SocialPlatform, "available" | "claimed">;
   review: { eligible: boolean; pending: number };
   nextExpiry: { points: number; at: string } | null;
+  /** Only for influencers: her own reward per referral and her public discount code. */
+  influencer: { code: string | null; percent: number | null; rewardPoints: number } | null;
 };
+
+/** `rewardPoints` is what stream A's effectiveReferralPoints returns for this member. */
+export function buildInfluencer(member: MemberRow, rewardPoints: number): CustomerPayload["influencer"] {
+  if (!member.is_influencer) return null;
+  const code = typeof member.influencer_code === "string" && member.influencer_code.trim() ? member.influencer_code.trim() : null;
+  const pct = Number(member.influencer_code_percent);
+  return { code, percent: code && Number.isFinite(pct) && pct > 0 ? pct : null, rewardPoints: Math.max(0, Math.round(rewardPoints || 0)) };
+}
 
 export type HistoryFilter = "all" | "earned" | "redeemed" | "referral" | "other";
 export type HistoryRow = { id: string; type: string; label: string; points: number; at: string; note: string | null };
@@ -105,7 +117,7 @@ export function computeNextExpiry(
   return points > 0 ? { points, at } : null;
 }
 
-export async function getCustomerPayload(member: MemberRow, now: Date = new Date()): Promise<CustomerPayload> {
+export async function getCustomerPayload(member: MemberRow, now: Date = new Date(), influencerRewardPoints = 0): Promise<CustomerPayload> {
   const nowIso = now.toISOString();
   const [codesRes, socialRes, ordersRes, claimsRes, expiryRes] = await Promise.all([
     sdb
@@ -183,6 +195,7 @@ export async function getCustomerPayload(member: MemberRow, now: Date = new Date
       youtube: claimed.has("youtube") ? "claimed" : "available",
     },
     review: { eligible: !blocked && !optedOut && awardedOrders > liveClaims, pending: pendingClaims },
+    influencer: buildInfluencer(member, influencerRewardPoints),
     nextExpiry: computeNextExpiry((expiryRes.data ?? []) as Array<{ points_remaining: number | null; expires_at: string | null }>, now),
   };
 }
@@ -277,6 +290,30 @@ export function publicReferralStatus(status: string): "pending" | "completed" | 
   if (status === "completed") return "completed";
   if (status === "pending" || status === "flagged") return "pending";
   return "not_eligible";
+}
+
+export type ReferralOutcome = { ok: boolean; status: "recorded" | "not_eligible" | "try_again"; friendCode?: string };
+
+const FINAL_NO = ["not_eligible", "already_referred", "self_referral", "invalid_slug", "disabled", "duplicate", "blocked", "rejected"];
+
+/**
+ * What the browser is told after POST /proxy/referral. A referral that is held
+ * for review or blocked for fraud looks exactly like a recorded one, and no
+ * internal status or reason is ever passed through:
+ *   recorded     — stored (final; includes held/flagged/blocked rows and repeats)
+ *   not_eligible — will never be accepted (final)
+ *   try_again    — temporary; the storefront keeps the slug and retries later
+ */
+export function publicReferralOutcome(result: Record<string, unknown> | null | undefined): ReferralOutcome {
+  const r = result ?? {};
+  const status = typeof r.status === "string" ? r.status : "";
+  const reason = typeof r.reason === "string" ? r.reason : "";
+  if (r.recorded === true || status === "pending" || status === "flagged" || reason === "duplicate") {
+    const friendCode = typeof r.friendCode === "string" && r.friendCode && r.blocked !== true ? r.friendCode : undefined;
+    return friendCode ? { ok: true, status: "recorded", friendCode } : { ok: true, status: "recorded" };
+  }
+  if (FINAL_NO.includes(status) || FINAL_NO.includes(reason)) return { ok: false, status: "not_eligible" };
+  return { ok: false, status: "try_again" };
 }
 
 export async function getReferralSummary(memberId: string): Promise<ReferralSummary> {

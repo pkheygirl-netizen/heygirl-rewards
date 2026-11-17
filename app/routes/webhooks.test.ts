@@ -71,8 +71,8 @@ describe("refunds/create", () => {
     deliver("refunds/create", { id: 9001, order_id: 5001, refund_line_items: [{ quantity: 1, subtotal: 500, line_item: { quantity: 1, price: "500.00", discount_allocations: [] } }] });
     expect((await refundsCreate(args())).status).toBe(200);
     const job = h.points.named("refund_event")[0];
-    expect(job.data.event).toEqual({ refundId: "9001", orderId: "5001", refundedMerchandisePkr: 500 });
-    expect(job.opts).toEqual({ jobId: "refund-9001" });
+    expect(job.data.event).toEqual({ refundId: "9001", orderId: "5001", refundedMerchandisePkr: 500, refundedTaxPkr: 0, amountOnly: false });
+    expect(job.opts).toBeUndefined(); // M4: no fixed job id; the database counts each refund once
   });
   it("a payload without an order id is acknowledged and ignored", async () => {
     deliver("refunds/create", { id: 9001 });
@@ -114,5 +114,27 @@ describe("privacy webhooks", () => {
     expect((await customersRedact(args())).status).toBe(200);
     expect(m.first_name).toBeNull();
     expect(h.db.table("gdpr_requests")[0]).toMatchObject({ type: "customer_redact", shopify_customer_id: "42", status: "fulfilled" });
+  });
+});
+
+describe("fix round: webhook payloads", () => {
+  it("H2: an amount-only refund is queued with the refunded money, not dropped", async () => {
+    deliver("refunds/create", { id: 9002, order_id: 5001, refund_line_items: [], transactions: [{ kind: "refund", status: "success", gateway: "manual", amount: "400.00" }] });
+    expect((await refundsCreate(args())).status).toBe(200);
+    expect(h.points.named("refund_event")[0].data.event).toEqual({ refundId: "9002", orderId: "5001", refundedMerchandisePkr: 400, refundedTaxPkr: 0, amountOnly: true });
+  });
+
+  it("H1: the order event carries Shopify's updated_at and the original figures", async () => {
+    deliver("orders/updated", orderPayload({ updated_at: "2026-11-10T12:00:00+05:00", current_total_price: "2250.00", taxes_included: true }));
+    await ordersUpdated(args());
+    expect(h.points.named("order_event")[0].data.event).toMatchObject({
+      updatedAt: "2026-11-10T12:00:00+05:00", merchandisePkr: 2000, grossMerchandisePkr: 3000, taxesIncluded: true,
+    });
+  });
+
+  it("M4: customers/create is queued without a fixed job id", async () => {
+    deliver("customers/create", { id: 78, email: "x@example.com" });
+    await customersCreate(args());
+    expect(h.points.named("enrol_member")[0].opts).toBeUndefined();
   });
 });

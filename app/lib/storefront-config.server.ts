@@ -18,6 +18,8 @@ export const CONFIG_KEY = "config";
 export type SocialPlatform = "instagram" | "facebook" | "youtube";
 export type EarnRuleKey = "purchase" | "signup" | "referral" | "instagram" | "facebook" | "youtube" | "review" | "birthday";
 
+export type PublicCampaign = { name: string; multiplier: number; startsAt: string; endsAt: string };
+
 export type StorefrontConfig = {
   enabled: boolean;
   programName: string;
@@ -39,7 +41,14 @@ export type StorefrontConfig = {
     goldWithin: number;
     diamondWithin: number;
   };
-  campaign: { name: string; multiplier: number; startsAt: string; endsAt: string } | null;
+  /** The campaign running at sync time, else the next one that is switched on. */
+  campaign: PublicCampaign | null;
+  /**
+   * Addition: the campaign after `campaign`. The storefront script picks
+   * whichever is in force by its own clock, so back-to-back campaigns show
+   * without a settings save in between.
+   */
+  nextCampaign: PublicCampaign | null;
   terms: string;
   faqs: Array<{ q: string; a: string }>;
   // Additions to the contract shape (additive; needed so no number is hard-coded
@@ -104,8 +113,16 @@ function faqs(v: unknown): StorefrontConfig["faqs"] {
     .filter((f) => f.q !== "" && f.a !== "");
 }
 
-/** Pure: settings row (+ current or next campaign) → public config. */
-export function buildStorefrontConfig(settings: Loose, campaign: CampaignRow | null): StorefrontConfig {
+function publicCampaign(c: CampaignRow | null | undefined): PublicCampaign | null {
+  if (!c) return null;
+  const mult = num(c.multiplier, 1);
+  if (!(mult > 0) || mult === 1) return null;
+  if (isNaN(Date.parse(c.starts_at)) || isNaN(Date.parse(c.ends_at))) return null;
+  return { name: str(c.name), multiplier: mult, startsAt: c.starts_at, endsAt: c.ends_at };
+}
+
+/** Pure: settings row (+ current-or-next campaign and the one after) → public config. */
+export function buildStorefrontConfig(settings: Loose, campaign: CampaignRow | null, next: CampaignRow | null = null): StorefrontConfig {
   const s = settings;
   const fallbackSocial = int(s.social_points);
   const social = (p: SocialPlatform) => ({
@@ -117,7 +134,8 @@ export function buildStorefrontConfig(settings: Loose, campaign: CampaignRow | n
     RULE_KEYS.map((k) => [k, { enabled: ruleEnabled(s.earn_rules, k) }]),
   ) as StorefrontConfig["earnRules"];
 
-  const mult = campaign ? num(campaign.multiplier, 1) : 1;
+  const first = publicCampaign(campaign);
+  const second = publicCampaign(next);
   return {
     enabled: bool(s.program_enabled, true),
     programName: str(s.program_name) || "Rewards",
@@ -143,10 +161,8 @@ export function buildStorefrontConfig(settings: Loose, campaign: CampaignRow | n
       goldWithin: int(s.tier_progress_gold_threshold_pkr),
       diamondWithin: int(s.tier_progress_diamond_threshold_pkr),
     },
-    campaign:
-      campaign && mult > 0 && mult !== 1
-        ? { name: str(campaign.name), multiplier: mult, startsAt: campaign.starts_at, endsAt: campaign.ends_at }
-        : null,
+    campaign: first ?? second,
+    nextCampaign: first ? second : null,
     terms: str(s.terms_and_conditions),
     faqs: faqs(s.faqs),
     expiryDays: int(s.silver_expiry_days),
@@ -160,17 +176,22 @@ export function buildStorefrontConfig(settings: Loose, campaign: CampaignRow | n
   };
 }
 
-/** The campaign running now, else the next one that is switched on. */
-export async function getCurrentOrNextCampaign(now: Date = new Date()): Promise<CampaignRow | null> {
+/** Switched-on campaigns that have not ended, soonest first: [current or next, the one after]. */
+export async function getUpcomingCampaigns(now: Date = new Date()): Promise<CampaignRow[]> {
   const { data, error } = await db
     .from("bonus_campaigns")
     .select("name, multiplier, starts_at, ends_at")
     .eq("is_active", true)
     .gte("ends_at", now.toISOString())
     .order("starts_at", { ascending: true })
-    .limit(1);
+    .limit(2);
   if (error) throw new Error(`campaign_lookup_failed: ${error.message}`);
-  return (data?.[0] as CampaignRow | undefined) ?? null;
+  return (data ?? []) as CampaignRow[];
+}
+
+/** The campaign running now, else the next one that is switched on. */
+export async function getCurrentOrNextCampaign(now: Date = new Date()): Promise<CampaignRow | null> {
+  return (await getUpcomingCampaigns(now))[0] ?? null;
 }
 
 export const APP_INSTALLATION_QUERY = `#graphql
@@ -208,8 +229,8 @@ async function gql<T>(admin: AdminGraphqlClient, query: string, variables?: Reco
 export async function syncStorefrontConfig(admin: AdminGraphqlClient): Promise<{ ok: boolean; reason?: string }> {
   try {
     const settings = (await getSettings()) as unknown as Loose;
-    const campaign = await getCurrentOrNextCampaign();
-    const config = buildStorefrontConfig(settings, campaign);
+    const campaigns = await getUpcomingCampaigns();
+    const config = buildStorefrontConfig(settings, campaigns[0] ?? null, campaigns[1] ?? null);
 
     const inst = await gql<{ currentAppInstallation: { id: string } | null }>(admin, APP_INSTALLATION_QUERY);
     const ownerId = inst.currentAppInstallation?.id;

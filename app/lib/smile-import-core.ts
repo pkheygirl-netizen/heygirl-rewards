@@ -112,17 +112,30 @@ export function parseCsv(text: string): string[][] {
   return [...p.push(text), ...p.end()];
 }
 
+export const NOT_UTF8 =
+  "The file is not UTF-8 text (it may have been opened and saved in Excel). Download the export from Smile again and upload it unchanged.";
+
 /** Parse a byte or text stream record by record without holding the file as one string. */
 export async function* parseCsvStream(
   source: AsyncIterable<Uint8Array | string> | Iterable<Uint8Array | string>,
 ): AsyncGenerator<string[]> {
   const parser = new CsvParser();
-  const decoder = new TextDecoder("utf-8");
+  // fatal: a byte sequence that is not UTF-8 throws instead of silently
+  // becoming U+FFFD (which would corrupt e-mails and break matching).
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const decode = (bytes?: Uint8Array): string => {
+    try {
+      return bytes ? decoder.decode(bytes, { stream: true }) : decoder.decode();
+    } catch {
+      throw new Error(NOT_UTF8);
+    }
+  };
   for await (const chunk of source as AsyncIterable<Uint8Array | string>) {
-    const text = typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true });
+    const text = typeof chunk === "string" ? chunk : decode(chunk);
+    if (text.includes("\ufffd")) throw new Error(NOT_UTF8);
     for (const rec of parser.push(text)) yield rec;
   }
-  const tail = decoder.decode();
+  const tail = decode();
   if (tail) for (const rec of parser.push(tail)) yield rec;
   for (const rec of parser.end()) yield rec;
 }
@@ -193,7 +206,7 @@ export type RowReason =
   | "no_email" | "invalid_email" | "no_shopify_customer" | "shopify_lookup_error"
   | "duplicate_email" | "same_shopify_customer"
   | "wrong_column_count" | "no_smile_id" | "points_not_a_number" | "duplicate_smile_id"
-  | "already_imported" | "member_not_created" | "award_failed";
+  | "already_imported" | "member_opted_out" | "member_blocked" | "member_not_created" | "award_failed";
 
 /** What is kept for one file row. No names, no date of birth, no referral url. */
 export type PlannedRow = {
@@ -225,28 +238,32 @@ export class FilePlanner {
       row_number, smile_customer_id: "", email: null, smile_status: null, vip_tier_name: null,
       file_points: 0, points: 0, state: "invalid", reason: null,
     };
+    // The points are read first, so a row that is rejected below still counts
+    // in "Points in the file" and gets its own line in the reconciliation.
+    const filePoints = parsePoints(record[COL.points]);
+    const counted = { file_points: filePoints ?? 0, points: Math.max(0, filePoints ?? 0) };
     if (record.length !== SMILE_HEADER.length) {
-      this.rows.push({ ...base, smile_customer_id: (record[COL.id] ?? "").trim().slice(0, 64), reason: "wrong_column_count" });
+      // Column 6 is read as the balance when it is a number; with a shifted
+      // row that is the best available reading and the row is not imported.
+      this.rows.push({ ...base, ...counted, smile_customer_id: (record[COL.id] ?? "").trim().slice(0, 64), reason: "wrong_column_count" });
       return;
     }
     const id = record[COL.id].trim();
     const email = normaliseEmail(record[COL.email]);
-    const filePoints = parsePoints(record[COL.points]);
     const row: PlannedRow = {
       ...base,
+      ...counted,
       smile_customer_id: id.slice(0, 64),
       email,
       smile_status: record[COL.status].trim().toLowerCase().slice(0, 40) || null,
       vip_tier_name: record[COL.vipTier].trim().slice(0, 80) || null,
     };
     this.rows.push(row);
-    if (!id) { row.reason = "no_smile_id"; return; }
     if (filePoints === null) { row.reason = "points_not_a_number"; return; }
+    if (!id) { row.reason = "no_smile_id"; return; }
     if (this.ids.has(id)) { row.reason = "duplicate_smile_id"; return; }
     this.ids.add(id);
     if (record[COL.points].trim() === "") this.blankPoints++;
-    row.file_points = filePoints;
-    row.points = Math.max(0, filePoints);
     if (!email) { row.state = "unmatched"; row.reason = "no_email"; return; }
     if (!looksLikeEmail(email)) { row.state = "unmatched"; row.reason = "invalid_email"; return; }
 
@@ -283,6 +300,7 @@ export function planFile(records: string[][]): { ok: true; rows: PlannedRow[]; b
 /** The columns the totals are computed from. */
 export type TotalsRow = Pick<PlannedRow, "state" | "reason" | "file_points" | "points" | "smile_status"> & {
   member_existed?: boolean | null;
+  member_has_welcome?: boolean | null;
   points_awarded?: number | null;
   vip_tier_name?: string | null;
 };
@@ -300,6 +318,10 @@ export type ImportTotals = {
   unmatched: number;
   duplicates: number;
   invalid: number;
+  /** Rows whose points column is not a number: they cannot be part of filePoints. */
+  pointsUnreadable: number;
+  /** Matched customers who already received the welcome bonus (they keep it). */
+  welcomeAlready: number;
   membersToCreate: number;
   membersToUpdate: number;
   pointsToImport: number; // matched rows not yet finished
@@ -323,6 +345,11 @@ const DIFF_LABELS: Record<string, string> = {
   duplicate_email: "Duplicate email (the row with more points was used)",
   same_shopify_customer: "Second row for the same Shopify customer",
   already_imported: "Customer already has imported Smile points",
+  member_opted_out: "Member has opted out of the program",
+  member_blocked: "Member is blocked",
+  wrong_column_count: "Row does not have 9 columns (not imported)",
+  no_smile_id: "Row has no Smile Customer ID (not imported)",
+  duplicate_smile_id: "Smile Customer ID repeated in the file (not imported)",
   error: "Import of the row failed",
   waiting: "Not imported yet",
   short: "Fewer points added than planned",
@@ -337,7 +364,7 @@ const DIFF_LABELS: Record<string, string> = {
 export function computeTotals(rows: Iterable<TotalsRow>): ImportTotals {
   const t: ImportTotals = {
     rows: 0, filePoints: 0, byStatus: {}, vipTiers: { gold: 0, diamond: 0 }, waitingForLookup: 0, matched: 0,
-    unmatched: 0, duplicates: 0, invalid: 0, membersToCreate: 0, membersToUpdate: 0, pointsToImport: 0,
+    unmatched: 0, duplicates: 0, invalid: 0, pointsUnreadable: 0, welcomeAlready: 0, membersToCreate: 0, membersToUpdate: 0, pointsToImport: 0,
     zeroPointMembers: 0, imported: 0, importedPoints: 0, skipped: 0, errors: 0, differences: [], unexplained: 0,
   };
   const diff = new Map<string, { rows: number; points: number }>();
@@ -350,18 +377,22 @@ export function computeTotals(rows: Iterable<TotalsRow>): ImportTotals {
 
   for (const r of rows) {
     t.rows++;
+    t.filePoints += r.file_points;
+    if (r.file_points < 0) note("negative", r.file_points);
     if (r.state === "invalid") {
-      t.invalid++; // no readable number: counted, not part of filePoints
+      t.invalid++;
+      // A row whose points are not a number carries 0 here and is counted apart.
+      if (r.reason === "points_not_a_number") t.pointsUnreadable++;
+      else note(r.reason ?? "wrong_column_count", r.points);
       continue;
     }
-    t.filePoints += r.file_points;
+    if (r.member_has_welcome && (r.state === "matched" || r.state === "imported")) t.welcomeAlready++;
     const status = r.smile_status || "(blank)";
     const s = (t.byStatus[status] ??= { rows: 0, points: 0 });
     s.rows++;
     s.points += r.file_points;
     const vip = mapVipTier(r.vip_tier_name);
     if (vip) t.vipTiers[vip]++;
-    if (r.file_points < 0) note("negative", r.file_points);
 
     switch (r.state) {
       case "pending":
@@ -410,11 +441,9 @@ export function computeTotals(rows: Iterable<TotalsRow>): ImportTotals {
 
   for (const [key, d] of diff) {
     // Rows that carry no points explain nothing; keep the list short.
-    if (d.points === 0 && key !== "waiting") continue;
-    if (d.points === 0 && d.rows === 0) continue;
+    if (d.points === 0) continue;
     t.differences.push({ key, label: DIFF_LABELS[key] ?? key, rows: d.rows, points: d.points });
   }
-  t.differences = t.differences.filter((d) => d.points !== 0);
   t.differences.sort((a, b) => Math.abs(b.points) - Math.abs(a.points));
   t.unexplained = t.filePoints - t.importedPoints - t.differences.reduce((sum, d) => sum + d.points, 0);
   return t;
@@ -434,6 +463,8 @@ const REASON_TEXT: Record<string, string> = {
   points_not_a_number: "The points balance is not a whole number",
   duplicate_smile_id: "The Smile Customer ID appears earlier in the file",
   already_imported: "This customer already has imported Smile points; nothing was added",
+  member_opted_out: "This member has opted out of the rewards program; no points were added",
+  member_blocked: "This member is blocked; no points were added",
   member_not_created: "The member could not be created",
   award_failed: "The points could not be added",
 };

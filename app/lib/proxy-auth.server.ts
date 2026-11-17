@@ -2,6 +2,22 @@
 import crypto from "node:crypto";
 
 /**
+ * The string Shopify signs for an app proxy request: every parameter except
+ * `signature` as "key=value" (repeated keys joined as "key=v1,v2"), the
+ * resulting strings sorted in plain byte order, concatenated with no separator.
+ * Sorting is on the whole "key=value" string with the default comparison, as
+ * Shopify documents; a locale-aware sort orders mixed-case, digit and prefix
+ * keys differently.
+ */
+export function proxySignatureMessage(params: URLSearchParams): string {
+  const keys = [...new Set([...params.keys()])].filter((k) => k !== "signature");
+  return keys
+    .map((k) => `${k}=${params.getAll(k).join(",")}`)
+    .sort()
+    .join("");
+}
+
+/**
  * Verifies the Shopify App Proxy HMAC signature.
  * Shopify signs: alphabetically-sorted params (excluding `signature`),
  * concatenated as "key=value" with no separator, HMAC-SHA256 hex.
@@ -13,10 +29,7 @@ export function extractProxyCustomerId(url: URL, apiSecret: string): string | nu
   const receivedSig = params.get("signature") ?? "";
   params.delete("signature");
 
-  // Shopify joins repeated params as "key=v1,v2" — build from unique keys + getAll,
-  // not per-entry, or any multi-value param fails verification (W1, 2026-07-03 review).
-  const keys = [...new Set([...params.keys()])].sort((a, b) => a.localeCompare(b));
-  const message = keys.map((k) => `${k}=${params.getAll(k).join(",")}`).join("");
+  const message = proxySignatureMessage(params);
   const expected = crypto.createHmac("sha256", apiSecret).update(message).digest("hex");
 
   const sigBuf = Buffer.from(receivedSig, "hex");

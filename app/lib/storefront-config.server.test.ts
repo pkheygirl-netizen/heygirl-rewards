@@ -76,7 +76,7 @@ describe("buildStorefrontConfig", () => {
       faqs: [{ q: "When do points expire?", a: "After a year on Silver." }],
     });
     expect(Object.keys(c).sort()).toEqual(
-      ["campaign", "birthday", "codeExpiryDays", "earnRules", "enabled", "expiryDays", "faqs", "friendFreeShipping", "nudges", "pointsRate", "programName", "redemptionTiers", "referralPoints", "reviewPoints", "reviewReleaseHours", "signupPoints", "social", "tagline", "terms", "tierRewards", "tiers"].sort(),
+      ["campaign", "nextCampaign", "birthday", "codeExpiryDays", "earnRules", "enabled", "expiryDays", "faqs", "friendFreeShipping", "nudges", "pointsRate", "programName", "redemptionTiers", "referralPoints", "reviewPoints", "reviewReleaseHours", "signupPoints", "social", "tagline", "terms", "tierRewards", "tiers"].sort(),
     );
   });
 
@@ -157,5 +157,37 @@ describe("syncStorefrontConfig", () => {
     const graphql = vi.fn();
     expect(await syncStorefrontConfig({ graphql })).toEqual({ ok: false, reason: "campaign_lookup_failed: db down" });
     expect(graphql).not.toHaveBeenCalled();
+  });
+});
+
+describe("review fix item 11: current and next campaign are both published", () => {
+  const NEXT = { name: "Black Friday", multiplier: 3, starts_at: "2026-11-20T00:00:01Z", ends_at: "2026-11-30T00:00:00Z" };
+
+  it("keeps the contract's `campaign` and adds `nextCampaign`", () => {
+    const c = buildStorefrontConfig(SETTINGS, CAMPAIGN, NEXT);
+    expect(c.campaign).toEqual({ name: "11.11", multiplier: 2, startsAt: CAMPAIGN.starts_at, endsAt: CAMPAIGN.ends_at });
+    expect(c.nextCampaign).toEqual({ name: "Black Friday", multiplier: 3, startsAt: NEXT.starts_at, endsAt: NEXT.ends_at });
+    expect(buildStorefrontConfig(SETTINGS, CAMPAIGN).nextCampaign).toBeNull();
+  });
+
+  it("skips campaigns that change nothing or have unreadable dates", () => {
+    const c = buildStorefrontConfig(SETTINGS, { ...CAMPAIGN, multiplier: 1 }, NEXT);
+    expect(c.campaign!.name).toBe("Black Friday"); // promoted
+    expect(c.nextCampaign).toBeNull();
+    expect(buildStorefrontConfig(SETTINGS, { ...CAMPAIGN, ends_at: "soon" }, null).campaign).toBeNull();
+  });
+
+  it("sync asks for two campaigns and writes both", async () => {
+    h.getSettings.mockResolvedValue(SETTINGS);
+    h.campaigns.mockResolvedValue({ data: [CAMPAIGN, NEXT], error: null });
+    const reply = (data: unknown) => new Response(JSON.stringify({ data }));
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(reply({ currentAppInstallation: { id: "gid://shopify/AppInstallation/1" } }))
+      .mockResolvedValueOnce(reply({ metafieldsSet: { metafields: [], userErrors: [] } }));
+    expect(await syncStorefrontConfig({ graphql })).toEqual({ ok: true });
+    const value = JSON.parse(graphql.mock.calls[1][1].variables.metafields[0].value);
+    expect(value.campaign.name).toBe("11.11");
+    expect(value.nextCampaign.name).toBe("Black Friday");
   });
 });

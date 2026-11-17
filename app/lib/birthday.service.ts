@@ -24,8 +24,25 @@ export async function birthdayDiscountPkr(tier: string): Promise<number> {
 export async function listBirthdayMemberIds(now: Date = new Date()): Promise<string[]> {
   const { year, month } = karachiParts(now);
   const monthStart = karachiMonthStart(year, month).toISOString();
-  const ids: string[] = [];
+  // The job runs every day of the month (so a missed 1st is caught up); members
+  // who already have this year's code, issued or still pending, are left out.
+  const yearStart = karachiMonthStart(year, 1).toISOString();
+  const done = new Set<string>();
   const PAGE = 1000;
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await db
+      .from("loyalty_codes")
+      .select("member_id")
+      .eq("kind", "birthday")
+      .gte("created_at", yearStart)
+      .order("id", { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(`birthday code query failed: ${error.message}`);
+    for (const c of data ?? []) done.add(c.member_id);
+    if (!data || data.length < PAGE) break;
+  }
+
+  const ids: string[] = [];
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await db
       .from("members")
@@ -37,7 +54,7 @@ export async function listBirthdayMemberIds(now: Date = new Date()): Promise<str
       .order("id", { ascending: true })
       .range(from, from + PAGE - 1);
     if (error) throw new Error(`birthday query failed: ${error.message}`);
-    for (const m of data ?? []) ids.push(m.id);
+    for (const m of data ?? []) if (!done.has(m.id)) ids.push(m.id);
     if (!data || data.length < PAGE) break;
   }
   return ids;

@@ -25,6 +25,7 @@ const h = vi.hoisted(() => {
     getCustomerPayload: vi.fn(),
     getPointsHistory: vi.fn(),
     getReferralSummary: vi.fn(),
+    publicReferralOutcome: vi.fn(),
     queueAdd: vi.fn(),
   };
 });
@@ -43,6 +44,7 @@ vi.mock("../lib/widget-data.server", () => ({
   getCustomerPayload: h.getCustomerPayload,
   getPointsHistory: h.getPointsHistory,
   getReferralSummary: h.getReferralSummary,
+  publicReferralOutcome: (r: Record<string, unknown>) => h.publicReferralOutcome(r),
   parseHistoryFilter: (v: string | null) => (v === "earned" || v === "redeemed" || v === "referral" || v === "other" ? v : "all"),
 }));
 
@@ -70,6 +72,9 @@ const SETTINGS = {
   program_enabled: true,
   referral_points: 6000,
   social_points_instagram: 1000,
+  social_points_youtube: 1000,
+  social_url_instagram: "https://instagram.com/heygirl.pk",
+  social_url_facebook: "https://facebook.com/heygirl.pk",
   earn_rules: { instagram: { enabled: true }, facebook: { enabled: false } },
 };
 const json = async (r: Response) => (await r.json()) as Record<string, unknown>;
@@ -83,6 +88,7 @@ beforeEach(() => {
   h.social.maybeSingle.mockResolvedValue({ data: null, error: null });
   h.social.single.mockResolvedValue({ data: { id: "sa1" }, error: null });
   h.queueAdd.mockResolvedValue(undefined);
+  h.publicReferralOutcome.mockImplementation((r: Record<string, unknown>) => (r.recorded ? { ok: true, status: "recorded" } : { ok: false, status: "not_eligible" }));
 });
 
 describe("every route: HMAC first, shop from the verified query, no-store", () => {
@@ -148,7 +154,7 @@ describe("GET /proxy/customer", () => {
 
   it("returns clear states for a paused program and a customer with no member row", async () => {
     h.getSettings.mockResolvedValueOnce({ program_enabled: false });
-    expect(await json(await customerLoader(args(signedRequest("customer", { customerId: "42" }))))).toEqual({ enabled: false, member: null });
+    expect(await json(await customerLoader(args(signedRequest("customer", { customerId: "42" }))))).toEqual({ enabled: false, member: null, state: "paused" });
     expect(h.enrolFromSignin).not.toHaveBeenCalled();
     h.getMemberByCustomerId.mockResolvedValueOnce(null);
     expect(await json(await customerLoader(args(signedRequest("customer", { customerId: "42" }))))).toEqual({ enabled: true, member: null, state: "not_enrolled" });
@@ -192,6 +198,7 @@ describe("POST /proxy/redeem", () => {
       expect(res.status).toBe(400);
       expect(await json(res)).toEqual({ ok: false, error: "invalid_points" });
     }
+    resetRateLimits(); // the five bad tries above used up this customer's minute
     expect((await redeemAction(args(signedRequest("redeem", { customerId: "42", method: "PUT", body: { points: 3000 } })))).status).toBe(405);
     expect(h.redeemPoints).not.toHaveBeenCalled();
   });
@@ -270,16 +277,14 @@ describe("POST /proxy/birthday", () => {
 });
 
 describe("/proxy/referral", () => {
-  it("POST records with server-side email and address, and returns { ok, status, friendCode }", async () => {
-    h.recordReferralVisit.mockResolvedValueOnce({ ok: true, status: "pending", friendCode: "FRIEND-XY12" });
+  it("POST records with server-side email and address, and returns only the public outcome", async () => {
+    const raw = { ok: true, recorded: true, blocked: false, status: "pending", friendCode: "FRIEND-XY12" };
+    h.recordReferralVisit.mockResolvedValueOnce(raw);
+    h.publicReferralOutcome.mockReturnValueOnce({ ok: true, status: "recorded", friendCode: "FRIEND-XY12" });
     const res = await referralAction(args(signedRequest("referral", { customerId: "42", body: { slug: "sara-9999", email: "evil@x.com", ip: "1.1.1.1" } })));
     expect(h.recordReferralVisit).toHaveBeenCalledWith({ referralSlug: "sara-9999", referredShopifyCustomerId: "42", referredEmail: "a@example.com", referredIp: "203.0.113.7", shop: TEST_SHOP });
-    expect(await json(res)).toEqual({ ok: true, status: "pending", friendCode: "FRIEND-XY12" });
-  });
-
-  it("POST understands the current service result shape too", async () => {
-    h.recordReferralVisit.mockResolvedValueOnce({ recorded: false, blocked: true, reason: "same_ip" });
-    expect(await json(await referralAction(args(signedRequest("referral", { customerId: "42", body: { slug: "sara-9999" } }))))).toEqual({ ok: false, status: "blocked" });
+    expect(h.publicReferralOutcome).toHaveBeenCalledWith(raw);
+    expect(await json(res)).toEqual({ ok: true, status: "recorded", friendCode: "FRIEND-XY12" });
   });
 
   it("POST refuses self-referral and malformed slugs", async () => {
@@ -295,5 +300,68 @@ describe("/proxy/referral", () => {
     const res = await referralLoader(args(signedRequest("referral", { customerId: "42" })));
     expect(await json(res)).toEqual({ ok: true, rewardPoints: 9000, total: 2, completed: 1, pointsEarned: 9000, rows: [] });
     expect(h.effectiveReferralPoints).toHaveBeenCalledWith(expect.objectContaining({ is_influencer: true, influencer_multiplier: 1.5, influencer_paused: false }), 6000);
+  });
+});
+
+describe("review fixes: routes", () => {
+  const posts: Array<[string, (r: Request) => Promise<Response>]> = [
+    ["redeem", (r) => redeemAction(args(r))],
+    ["social", (r) => socialAction(args(r))],
+    ["review", (r) => reviewAction(args(r))],
+    ["birthday", (r) => birthdayAction(args(r))],
+    ["referral", (r) => referralAction(args(r))],
+  ];
+  it.each(posts)("item 8: %s checks the signature before the method", async (name, call) => {
+    // Unsigned, wrong method: must be 401, never 405.
+    const unsigned = await call(signedRequest(name, { customerId: "42", method: "PUT", body: {}, unsigned: true }));
+    expect(unsigned.status).toBe(401);
+    const tampered = await call(signedRequest(name, { customerId: "42", method: "DELETE", tamper: true }));
+    expect(tampered.status).toBe(401);
+    // Signed, wrong method: 405.
+    const signed = await call(signedRequest(name, { customerId: "42", method: "PUT", body: {} }));
+    expect(signed.status).toBe(405);
+    expect(await json(signed)).toEqual({ ok: false, error: "method_not_allowed" });
+  });
+
+  it("item 3: the customer payload is built with the influencer's own reward", async () => {
+    h.effectiveReferralPoints.mockReturnValue(9000);
+    h.getMemberByCustomerId.mockResolvedValueOnce({ ...MEMBER, is_influencer: true, influencer_multiplier: 1.5 });
+    h.getCustomerPayload.mockResolvedValue({ member: { firstName: "Aisha", isInfluencer: true }, influencer: { code: "SARA10", percent: 10, rewardPoints: 9000 } });
+    const res = await customerLoader(args(signedRequest("customer", { customerId: "42" })));
+    expect(h.effectiveReferralPoints).toHaveBeenCalledWith(expect.objectContaining({ is_influencer: true, influencer_multiplier: 1.5 }), 6000);
+    expect(h.getCustomerPayload).toHaveBeenCalledWith(expect.objectContaining({ id: "m1" }), expect.any(Date), 9000);
+    expect(await json(res)).toMatchObject({ influencer: { code: "SARA10", percent: 10, rewardPoints: 9000 } });
+    // ordinary members: no rate lookup, zero passed
+    h.effectiveReferralPoints.mockClear();
+    await customerLoader(args(signedRequest("customer", { customerId: "42" })));
+    expect(h.effectiveReferralPoints).not.toHaveBeenCalled();
+    expect(h.getCustomerPayload).toHaveBeenLastCalledWith(expect.anything(), expect.any(Date), 0);
+  });
+
+  it("item 4: paused and not-enrolled are explicit states with HTTP 200", async () => {
+    h.getSettings.mockResolvedValueOnce({ program_enabled: false });
+    const paused = await customerLoader(args(signedRequest("customer", { customerId: "42" })));
+    expect(paused.status).toBe(200);
+    expect(await json(paused)).toEqual({ enabled: false, member: null, state: "paused" });
+    h.getMemberByCustomerId.mockResolvedValueOnce(null);
+    const none = await customerLoader(args(signedRequest("customer", { customerId: "42" })));
+    expect(none.status).toBe(200);
+    expect(await json(none)).toEqual({ enabled: true, member: null, state: "not_enrolled" });
+  });
+
+  it("item 9: the referral reply never carries the service's internal status or reason", async () => {
+    h.recordReferralVisit.mockResolvedValueOnce({ ok: false, recorded: true, blocked: true, status: "flagged", reason: "same_ip" });
+    const body = await json(await referralAction(args(signedRequest("referral", { customerId: "42", body: { slug: "sara-9999" } }))));
+    expect(body).toEqual({ ok: true, status: "recorded" });
+    expect(JSON.stringify(body)).not.toMatch(/flagged|blocked|same_ip|reason/);
+  });
+
+  it("item 10: a platform with no profile URL in settings is never awarded", async () => {
+    const res = await socialAction(args(signedRequest("social", { customerId: "42", body: { platform: "youtube" } })));
+    expect(await json(res)).toEqual({ ok: false, error: "disabled" });
+    h.getSettings.mockResolvedValueOnce({ ...SETTINGS, social_url_instagram: "javascript:alert(1)" });
+    expect(await json(await socialAction(args(signedRequest("social", { customerId: "42", body: { platform: "instagram" } }))))).toEqual({ ok: false, error: "disabled" });
+    expect(h.social.insert).not.toHaveBeenCalled();
+    expect(h.queueAdd).not.toHaveBeenCalled();
   });
 });

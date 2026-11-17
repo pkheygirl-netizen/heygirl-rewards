@@ -30,7 +30,9 @@ const TABLE_DEFAULTS: Record<string, () => Row> = {
     order_total_pkr: null, order_name: null, placed_at: null, cancelled_at: null, earning_basis_pkr: null,
     gift_card_amount_pkr: 0, refunded_basis_pkr: 0, multiplier_used: null, campaign_id: null,
     pending_points: 0, points_awarded_amount: 0, points_reversed_amount: 0, discount_codes: [],
-    influencer_member_id: null, is_first_order: null,
+    influencer_member_id: null, is_first_order: null, gross_basis_pkr: null, refund_events_basis_pkr: 0,
+    refund_ids: [], refund_basis_at_award_pkr: 0, spend_reversed_pkr: 0, source_updated_at: null,
+    points_rate: null, taxes_included: false,
   }),
   loyalty_codes: () => ({
     kind: "reward", status: "active", shopify_discount_id: null, issue_key: null, cancelled_at: null,
@@ -45,7 +47,7 @@ const TABLE_DEFAULTS: Record<string, () => Row> = {
   }),
   review_claims: () => ({ shopify_order_id: null, status: "pending", claimed_at: new Date().toISOString(), resolved_at: null }),
   social_actions: () => ({ status: "pending", points_awarded: null }),
-  bonus_campaigns: () => ({ is_active: true }),
+  bonus_campaigns: () => ({ is_active: true, deactivated_at: null }),
   gdpr_requests: () => ({ status: "open", shopify_customer_id: null, payload: null }),
   system_heartbeat: () => ({ detail: {} }),
 };
@@ -140,6 +142,8 @@ export class FakeDb {
       if (fn === "award_points") return { data: [this.awardPoints(args)], error: null };
       if (fn === "award_order_points") return { data: [this.awardOrderPoints(args)], error: null };
       if (fn === "reverse_order_points") return { data: [this.reverseOrderPoints(args)], error: null };
+      if (fn === "sync_order_snapshot") return { data: [this.syncOrderSnapshot(args)], error: null };
+      if (fn === "upgrade_member_tier") return { data: this.upgradeMemberTier(args) as never, error: null };
       return { data: null, error: { code: "PGRST202", message: `function ${fn} not found` } };
     } catch (err) {
       return { data: null, error: { code: "P0001", message: err instanceof Error ? err.message : String(err) } };
@@ -165,7 +169,12 @@ export class FakeDb {
 
     if (a.p_action_type === "expiry") {
       const src = ledger.find((l) => l.id === ref && l.member_id === member.id && Number(l.points) > 0 && !l.expired);
-      if (!src) return { awarded: false, new_balance: balance, new_lifetime_spend_pkr: lifetime };
+      if (!src || member.tier !== "silver") return { awarded: false, new_balance: balance, new_lifetime_spend_pkr: lifetime };
+      if (Number(src.points_remaining ?? 0) <= 0 || balance <= 0) {
+        src.points_remaining = 0;
+        src.expired = true;
+        return { awarded: false, new_balance: balance, new_lifetime_spend_pkr: lifetime };
+      }
       delta = -Math.min(Number(src.points_remaining ?? 0), balance);
       src.points_remaining = 0;
       src.expired = true;
@@ -209,8 +218,9 @@ export class FakeDb {
     if (!member) throw new Error("member not found");
     const snapshot = () => ({ new_balance: Number(member.points_balance), new_lifetime_spend_pkr: Number(member.lifetime_spend_pkr) });
     if (!order || order.cancelled_at || order.points_awarded) return { awarded: false, ...snapshot() };
-    const points = Math.max(0, Number(a.p_points ?? 0));
-    const basis = Math.max(0, Number(a.p_basis_pkr ?? 0));
+    const own = order.gross_basis_pkr != null; // the row's own figures win over the caller's
+    const points = Math.max(0, Number((own ? order.pending_points : a.p_points) ?? 0));
+    const basis = Math.max(0, Number((own ? order.earning_basis_pkr : a.p_basis_pkr) ?? 0));
     if (points > 0) {
       this.awardPoints({
         p_member_id: member.id, p_action_type: "purchase", p_reference_id: a.p_shopify_order_id, p_points: points,
@@ -220,54 +230,127 @@ export class FakeDb {
       member.lifetime_spend_pkr = Number(member.lifetime_spend_pkr) + basis;
     }
     Object.assign(order, {
-      points_awarded: true, points_awarded_amount: points, multiplier_used: a.p_multiplier ?? order.multiplier_used,
-      earning_basis_pkr: basis, pending_points: 0,
+      points_awarded: true, points_awarded_amount: points, multiplier_used: order.multiplier_used ?? a.p_multiplier,
+      earning_basis_pkr: basis, gross_basis_pkr: order.gross_basis_pkr ?? basis + Number(order.refunded_basis_pkr),
+      refund_basis_at_award_pkr: Number(order.refunded_basis_pkr), spend_reversed_pkr: 0, pending_points: 0,
     });
     if (!member.first_order_awarded_at) member.first_order_awarded_at = new Date().toISOString();
     return { awarded: true, ...snapshot() };
   }
 
+  /** Bring reversed points in line with the order's totals (model of reconcile_order_points). */
+  private reconcile(order: Row, reference: string, note: string): Row {
+    const member = this.table("members").find((m) => m.shopify_customer_id === order.shopify_customer_id);
+    if (!member || !order.points_awarded) return { reversed: 0, new_balance: member ? Number(member.points_balance) : null };
+    const cancelled = !!order.cancelled_at;
+    const basis = Math.max(0, Number(order.earning_basis_pkr ?? order.order_total_pkr ?? 0));
+    const awarded = Number(order.points_awarded_amount);
+    const already = Number(order.points_reversed_amount);
+    const post = cancelled
+      ? basis
+      : Math.min(Math.max(Number(order.refunded_basis_pkr) - Number(order.refund_basis_at_award_pkr), 0), basis);
+    const target = cancelled ? awarded : basis > 0 ? Math.round((awarded * post) / basis) : 0;
+    const amount = Math.min(Math.max(target - already, 0), Math.max(awarded - already, 0));
+    const cut = Math.max(post - Number(order.spend_reversed_pkr), 0);
+    if (amount <= 0 && cut <= 0) return { reversed: 0, new_balance: Number(member.points_balance) };
+    const before = Number(member.points_balance);
+    if (amount > 0) {
+      const action = cancelled ? "order_cancelled" : "refund_deduction";
+      let ref = reference;
+      if (this.table("points_ledger").some((l) => l.member_id === member.id && l.action_type === action && l.reference_id === ref)) {
+        ref = `${ref}:${already}`;
+      }
+      this.awardPoints({
+        p_member_id: member.id, p_action_type: action, p_reference_id: ref, p_points: -amount,
+        p_shopify_order_id: order.shopify_order_id,
+        p_customer_note: order.order_name ? `${note} (${String(order.order_name)})` : note,
+      });
+    }
+    order.points_reversed_amount = already + amount;
+    order.spend_reversed_pkr = post;
+    member.lifetime_spend_pkr = Math.max(0, Number(member.lifetime_spend_pkr) - cut);
+    return { reversed: before - Number(member.points_balance), new_balance: Number(member.points_balance) };
+  }
+
   private reverseOrderPoints(a: Row): Row {
     const order = this.table("order_webhook_state").find((o) => o.shopify_order_id === a.p_shopify_order_id);
     if (!order) return { reversed: 0, new_balance: null };
-    const member = this.table("members").find((m) => m.shopify_customer_id === order.shopify_customer_id);
     if (a.p_kind === "cancel") {
       order.cancelled_at = order.cancelled_at ?? new Date().toISOString();
       order.pending_points = 0;
+      return this.reconcile(order, String(a.p_reference_id), "Order cancelled");
     }
-    if (!member || !order.points_awarded) return { reversed: 0, new_balance: member ? Number(member.points_balance) : null };
-    const action = a.p_kind === "refund" ? "refund_deduction" : "order_cancelled";
-    const dup = this.table("points_ledger").some(
-      (l) => l.member_id === member.id && l.action_type === action && l.reference_id === a.p_reference_id,
+    const refund = Math.max(0, Number(a.p_refunded_basis_pkr ?? 0));
+    const ids = order.refund_ids as string[];
+    if (refund > 0 && !ids.includes(String(a.p_reference_id))) {
+      const gross = Number(
+        order.gross_basis_pkr ??
+          Number(order.earning_basis_pkr ?? order.order_total_pkr ?? 0) +
+            Number(order.points_awarded ? order.refund_basis_at_award_pkr : order.refunded_basis_pkr),
+      );
+      const events = Number(order.refund_events_basis_pkr) + refund;
+      const total = Math.min(gross, Math.max(Number(order.refunded_basis_pkr), events));
+      if (!order.points_awarded && !order.cancelled_at) {
+        const earning = Math.max(gross - total, 0);
+        order.pending_points =
+          order.points_rate != null
+            ? Math.floor(earning * Number(order.points_rate) * Number(order.multiplier_used ?? 1) + 1e-6)
+            : Number(order.earning_basis_pkr ?? 0) > 0
+              ? Math.floor((Number(order.pending_points) * earning) / Number(order.earning_basis_pkr))
+              : 0;
+        order.earning_basis_pkr = earning;
+      }
+      Object.assign(order, { gross_basis_pkr: gross, refund_events_basis_pkr: events, refunded_basis_pkr: total });
+      ids.push(String(a.p_reference_id));
+    }
+    return this.reconcile(order, String(a.p_reference_id), "Order refunded");
+  }
+
+  private syncOrderSnapshot(a: Row): Row {
+    const order = this.table("order_webhook_state").find((o) => o.shopify_order_id === a.p_shopify_order_id);
+    if (!order) return { applied: false, reversed: 0, pending_points: 0 };
+    const at = a.p_source_updated_at ? Date.parse(String(a.p_source_updated_at)) : null;
+    const stored = order.source_updated_at ? Date.parse(String(order.source_updated_at)) : null;
+    if (at !== null && stored !== null && at < stored) return { applied: false, reversed: 0, pending_points: order.pending_points };
+    const current = Math.max(0, Number(a.p_current_basis_pkr ?? 0));
+    const gross = Math.max(
+      Number(order.gross_basis_pkr ?? (order.points_awarded ? Number(order.earning_basis_pkr ?? 0) + Number(order.refund_basis_at_award_pkr) : 0)),
+      Number(a.p_gross_basis_pkr ?? 0),
+      current,
     );
-    if (dup) return { reversed: 0, new_balance: Number(member.points_balance) };
-    const basis = Number(order.earning_basis_pkr ?? order.order_total_pkr ?? 0);
-    const awarded = Number(order.points_awarded_amount);
-    const already = Number(order.points_reversed_amount);
-    const left = Math.max(0, awarded - already);
-    let amount: number;
-    let refundTotal: number;
-    if (a.p_kind === "refund") {
-      const refund = Math.max(0, Number(a.p_refunded_basis_pkr ?? 0));
-      if (refund <= 0 || basis <= 0) return { reversed: 0, new_balance: Number(member.points_balance) };
-      refundTotal = Math.min(Number(order.refunded_basis_pkr) + refund, basis);
-      amount = Math.min(Math.max(Math.round((awarded * refundTotal) / basis) - already, 0), left);
-    } else {
-      refundTotal = Math.max(basis, Number(order.refunded_basis_pkr));
-      amount = left;
-    }
-    const spendCut = refundTotal - Math.min(Number(order.refunded_basis_pkr), basis);
-    if (amount <= 0 && spendCut <= 0) return { reversed: 0, new_balance: Number(member.points_balance) };
-    const before = Number(member.points_balance);
-    this.awardPoints({
-      p_member_id: member.id, p_action_type: action, p_reference_id: a.p_reference_id, p_points: -amount,
-      p_shopify_order_id: a.p_shopify_order_id,
-      p_customer_note: a.p_kind === "refund" ? "Order refunded" : "Order cancelled",
+    const total = Math.min(gross, Math.max(Number(order.refunded_basis_pkr), gross - current, Number(order.refund_events_basis_pkr)));
+    Object.assign(order, {
+      gross_basis_pkr: gross, refunded_basis_pkr: total,
+      source_updated_at: a.p_source_updated_at ?? order.source_updated_at,
     });
-    order.points_reversed_amount = already + amount;
-    order.refunded_basis_pkr = refundTotal;
-    member.lifetime_spend_pkr = Math.max(0, Number(member.lifetime_spend_pkr) - spendCut);
-    return { reversed: before - Number(member.points_balance), new_balance: Number(member.points_balance) };
+    if (order.points_awarded || order.cancelled_at) {
+      const reversed =
+        order.points_awarded && !order.cancelled_at
+          ? Number(this.reconcile(order, `sync:${String(order.shopify_order_id)}:${at ?? "na"}`, "Order refunded").reversed)
+          : 0;
+      return { applied: true, reversed, pending_points: 0 };
+    }
+    const rate = a.p_can_earn ? Math.max(0, Number(a.p_points_rate ?? 0)) : 0;
+    const earning = Math.max(gross - total, 0);
+    const pending = Math.max(0, Math.floor(earning * rate * Number(order.multiplier_used ?? 1) + 1e-6));
+    Object.assign(order, { earning_basis_pkr: earning, points_rate: rate, pending_points: pending });
+    return { applied: true, reversed: 0, pending_points: pending };
+  }
+
+  private upgradeMemberTier(a: Row): boolean {
+    const rank: Record<string, number> = { silver: 0, gold: 1, diamond: 2 };
+    const member = this.table("members").find((m) => m.id === a.p_member_id);
+    if (!member) throw new Error("member not found");
+    const from = String(member.tier);
+    const to = String(a.p_to_tier);
+    if (!(to in rank)) throw new Error(`unknown tier ${to}`);
+    if (rank[to] <= (rank[from] ?? 0)) return false;
+    member.tier = to;
+    this.seed("tier_history", { member_id: member.id, from_tier: from, to_tier: to, shopify_order_id: a.p_shopify_order_id ?? null });
+    for (const l of this.table("points_ledger")) {
+      if (l.member_id === member.id && !l.expired && l.expires_at != null) l.expires_at = null;
+    }
+    return true;
   }
 }
 
@@ -420,6 +503,13 @@ export function fakeQueue() {
       return { id: String(jobs.length) };
     },
     getFailedCount: async () => 0,
+    /** Jobs a test wants to exist already (e.g. a failed job with a fixed id). */
+    existing: new Map<string, { failed: boolean; removed: boolean }>(),
+    async getJob(id: string) {
+      const j = this.existing.get(id);
+      if (!j || j.removed) return undefined;
+      return { isFailed: async () => j.failed, isCompleted: async () => false, remove: async () => { j.removed = true; } };
+    },
     named: (name: string) => jobs.filter((j) => j.name === name),
     clear: () => {
       jobs.length = 0;

@@ -33,9 +33,8 @@ export function makeConfig(over: Partial<Config> = {}): Config {
     birthday: { silver: 250, gold: 500, diamond: 1000 },
     nudges: { accountCreation: true, pointsSpending: true, rewardUsage: true, tierProgress: true, goldWithin: 5000, diamondWithin: 10000 },
     campaign: null,
+    nextCampaign: null,
     expiryDays: 365,
-    codeExpiryDays: 30,
-    reviewReleaseHours: 72,
     friendFreeShipping: true,
     tierRewards: { goldFreeShipping: true, diamondPkr: 500 },
     ...over,
@@ -62,6 +61,7 @@ export function makeMember(over: Partial<MemberData["member"]> = {}, rest: Parti
     social: { instagram: "available", facebook: "available", youtube: "available" },
     review: { eligible: false, pending: 0 },
     nextExpiry: null,
+    influencer: null,
     ...rest,
   };
 }

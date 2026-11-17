@@ -193,7 +193,7 @@ import { earnTab, errorText, guestHome, guestSub, historyFilters, historyRows, r
     if (!member || !mm || mm.optedOut || mm.blocked) {
       tabs.hidden = true;
       body.removeAttribute("role");
-      body.innerHTML = stateMessage(ctx());
+      body.innerHTML = stateMessage(ctx(), api!.state() || "error");
       return;
     }
     tabs.hidden = false;
@@ -371,7 +371,7 @@ import { earnTab, errorText, guestHome, guestSub, historyFilters, historyRows, r
       const p = b.getAttribute("data-p") as "instagram" | "facebook" | "youtube";
       act(b, "/social", { platform: p }, (r) => {
         m.social[p] = "claimed";
-        return r.status === "already_claimed" ? "You have already claimed this one." : `Thank you! ${pts(Number(r.points) || 0)} will be added within 24 hours.`;
+        return r.status === "already_claimed" ? "You have already claimed this one." : `Thank you! ${pts(Number(r.points) || 0)} will be added to your balance soon.`;
       });
     } else if (a === "review" && m) {
       act(b, "/review", {}, (r) => {

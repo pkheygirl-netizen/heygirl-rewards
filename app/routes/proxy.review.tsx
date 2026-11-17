@@ -6,9 +6,10 @@ import { claimReview } from "../lib/review-claims.service";
 import { getSettings } from "../lib/settings.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  if (request.method !== "POST") return proxyJson({ ok: false, error: "method_not_allowed" }, 405);
+  // HMAC first: an unsigned request learns nothing, not even the allowed method.
   const g = guardProxy(request, "review");
   if (g.response) return g.response;
+  if (request.method !== "POST") return proxyJson({ ok: false, error: "method_not_allowed" }, 405);
 
   try {
     const settings = (await getSettings()) as unknown as { program_enabled?: boolean };

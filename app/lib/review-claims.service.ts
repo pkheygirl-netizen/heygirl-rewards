@@ -5,6 +5,7 @@ import { db } from "../db.server";
 import { notificationQueue } from "./queue.server";
 import { getSettings, isEarnRuleEnabled } from "./settings.server";
 import { expiresAtForTier } from "./points.service";
+import { isFullyRefunded } from "./orders.server";
 
 export async function claimReview(
   memberId: string,
@@ -82,7 +83,12 @@ export async function rejectReviewClaim(claimId: string, actor: string): Promise
 export async function releaseDueReviewClaims(
   now: Date = new Date(),
   batchSize = 200,
-): Promise<{ released: number; rejected: number }> {
+): Promise<{ released: number; rejected: number; reason?: string }> {
+  // Checked again at release time: while the rule is switched off nothing is
+  // paid, and the claims simply wait.
+  const settingsNow = await getSettings();
+  if (!isEarnRuleEnabled(settingsNow, "review")) return { released: 0, rejected: 0, reason: "disabled" };
+
   const { data: due, error } = await db
     .from("review_claims")
     .select("id, member_id, points, shopify_order_id")
@@ -102,7 +108,17 @@ export async function releaseDueReviewClaims(
       .eq("id", claim.member_id)
       .maybeSingle();
     const resolvedAt = new Date().toISOString();
-    if (!member || member.is_blocked || member.opted_out) {
+    // The order the claim stands on must still stand: not cancelled, not refunded in full.
+    let orderGone = false;
+    if (claim.shopify_order_id) {
+      const { data: order } = await db
+        .from("order_webhook_state")
+        .select("*")
+        .eq("shopify_order_id", claim.shopify_order_id)
+        .maybeSingle();
+      orderGone = !order || !!order.cancelled_at || isFullyRefunded(order);
+    }
+    if (!member || member.is_blocked || member.opted_out || orderGone) {
       await db.from("review_claims").update({ status: "rejected", resolved_at: resolvedAt }).eq("id", claim.id).eq("status", "pending");
       rejected++;
       continue;

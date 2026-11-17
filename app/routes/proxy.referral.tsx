@@ -3,7 +3,7 @@
 // GET  /apps/loyalty/referral        → referral summary for the Refer tab (additive)
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { clientIp, guardProxy, proxyJson, readJsonBody } from "../lib/proxy-auth.server";
-import { getMemberByCustomerId, getReferralSummary } from "../lib/widget-data.server";
+import { getMemberByCustomerId, getReferralSummary, publicReferralOutcome } from "../lib/widget-data.server";
 import { recordReferralVisit } from "../lib/referrals.service";
 import { effectiveReferralPoints } from "../lib/influencer.service";
 import { getSettings } from "../lib/settings.server";
@@ -39,9 +39,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  if (request.method !== "POST") return proxyJson({ ok: false, error: "method_not_allowed" }, 405);
+  // HMAC first: an unsigned request learns nothing, not even the allowed method.
   const g = guardProxy(request, "referral");
   if (g.response) return g.response;
+  if (request.method !== "POST") return proxyJson({ ok: false, error: "method_not_allowed" }, 405);
   const { customerId, shop } = g.ctx;
 
   const body = await readJsonBody(request);
@@ -69,20 +70,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       shop,
     };
     const result = (await recordReferralVisit(input)) as unknown as Record<string, unknown>;
-
-    const status =
-      typeof result.status === "string"
-        ? result.status
-        : result.blocked
-          ? "blocked"
-          : result.recorded
-            ? "pending"
-            : typeof result.reason === "string"
-              ? result.reason
-              : "not_recorded";
-    const ok = result.ok === true || result.recorded === true;
-    const friendCode = typeof result.friendCode === "string" ? result.friendCode : undefined;
-    return proxyJson(friendCode ? { ok, status, friendCode } : { ok, status });
+    // Internal statuses and fraud reasons never leave the server.
+    return proxyJson(publicReferralOutcome(result));
   } catch (err) {
     console.error("[proxy.referral] record error:", err instanceof Error ? err.message : err);
     return proxyJson({ ok: false, error: "server_error" }, 500);

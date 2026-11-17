@@ -13,7 +13,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       await pointsQueue.add(
         "enrol_member",
         { customer: { id: String(c.id), email: c.email ?? null, phone: c.phone ?? null, first_name: c.first_name ?? null, last_name: c.last_name ?? null } },
-        { jobId: `enrol-${c.id}` },
       );
     } catch (err) {
       console.error("[customers-create] enqueue failed:", err instanceof Error ? err.message : err);

@@ -3,26 +3,28 @@
   Prints the launcher and a small JSON config, then loads one deferred script.
   Settings come from the app-data metafield written by the admin on save.
   Renders nothing when the config is missing or the program is switched off.
+  The cart line's CSS is printed once per page: by the product or cart app
+  block when present, otherwise by hg-core.js (never twice).
   Guests cause no request to the app server.
 {%- endcomment -%}
 {%- assign cfg = app.metafields.hg_loyalty.config.value -%}
 {%- if cfg and cfg.enabled -%}
   <style>
-    .hg-launcher{position:fixed;z-index:2147483000;bottom:20px;{{ block.settings.position }}:16px;display:inline-flex;align-items:center;gap:8px;min-height:52px;padding:6px 18px 6px 6px;border:0;border-radius:999px;background:#e8ad00;color:#1a1a1a;font:inherit;font-size:15px;font-weight:700;line-height:1;letter-spacing:normal;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.22)}
+    .hg-launcher{position:fixed;z-index:2147483000;bottom:20px;{{ block.settings.position }}:16px;display:inline-flex;align-items:center;gap:8px;min-height:52px;padding:4px 16px 4px 4px;border:2px solid #7a5c00;border-radius:999px;background:#e8ad00;color:#1a1a1a;font:inherit;font-size:15px;font-weight:700;line-height:1;letter-spacing:normal;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.22)}
     .hg-launcher:focus-visible{outline:3px solid #1a1a1a;outline-offset:3px}
     .hg-launcher[aria-busy=true]{opacity:.8}
     .hg-launcher__ic{display:flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:50%;background:#fff}
     .hg-launcher__ic .hg-ico{width:26px;height:26px}
+    .hg-launcher__label{display:inline-block;min-width:84px;text-align:center;white-space:nowrap}
     .hg-toast{position:fixed;z-index:2147482999;bottom:84px;{{ block.settings.position }}:16px;width:300px;max-width:calc(100vw - 32px);padding:14px 44px 14px 14px;border:1px solid #e9e2cc;border-radius:14px;background:#fff;color:#1a1a1a;font-size:14px;line-height:1.4;letter-spacing:normal;box-shadow:0 8px 28px rgba(0,0,0,.18)}
     .hg-toast p{margin:0}
     .hg-toast__t{font-weight:700;font-size:15px}
     .hg-toast__b{color:#595959;margin-top:2px!important}
     .hg-toast__x{position:absolute;top:0;right:0;width:44px;height:44px;border:0;background:none;color:#1a1a1a;font-size:22px;line-height:1;cursor:pointer}
-    .hg-toast__cta{display:inline-flex;align-items:center;min-height:44px;margin-top:8px;padding:0 16px;border:0;border-radius:999px;background:#e8ad00;color:#1a1a1a;font:inherit;font-weight:700;text-decoration:none;cursor:pointer}
+    .hg-toast__cta{display:inline-flex;align-items:center;min-height:44px;margin-top:8px;padding:0 16px;border:2px solid #7a5c00;border-radius:999px;background:#e8ad00;color:#1a1a1a;font:inherit;font-weight:700;text-decoration:none;cursor:pointer}
     @media (prefers-reduced-motion:no-preference){.hg-launcher{transition:transform .15s ease}.hg-launcher:hover{transform:translateY(-2px)}}
     @media print{.hg-launcher,.hg-toast{display:none}}
   </style>
-  {%- render 'hg-line-css' -%}
   <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><symbol id="hg-i-gift" viewBox="0 0 24 24"><path fill="#d62839" d="M12 6.6C10.3 2.3 5.2 3.3 7.3 6.6zM12 6.6c1.7-4.3 6.8-3.3 4.7 0z"/><rect x="3.5" y="10" width="17" height="11" rx="1.5" fill="#f7c531" stroke="#8a5d00" stroke-width=".7"/><rect x="2.5" y="6.5" width="19" height="4.5" rx="1.2" fill="#ffd95a" stroke="#8a5d00" stroke-width=".7"/><path fill="#d62839" d="M10.5 6.5h3V21h-3z"/></symbol></svg>
   <button
     type="button"
@@ -57,13 +59,12 @@
         "birthday": {{ cfg.birthday | json }},
         "nudges": {{ cfg.nudges | json }},
         "campaign": {{ cfg.campaign | json }},
+        "nextCampaign": {{ cfg.nextCampaign | json }},
         "expiryDays": {{ cfg.expiryDays | default: 0 | json }},
-        "codeExpiryDays": {{ cfg.codeExpiryDays | default: 0 | json }},
-        "reviewReleaseHours": {{ cfg.reviewReleaseHours | default: 0 | json }},
         "friendFreeShipping": {{ cfg.friendFreeShipping | json }},
         "tierRewards": {{ cfg.tierRewards | json }}
       },
-      "customer": {% if customer %}{ "id": {{ customer.id | append: '' | json }}, "firstName": {{ customer.first_name | json }} }{% else %}null{% endif %},
+      "customer": {% if customer %}{ "id": {{ customer.id | append: '' | json }} }{% else %}null{% endif %},
       "page": {{ request.page_type | json }},
       "urls": {
         "login": {{ routes.account_login_url | json }},

@@ -213,7 +213,18 @@ Deploy the branch to the dev store (apply migrations 010–012 to `heygirl-rewar
   - Influencer custom multiplier limited to 1–10. Block/unblock writes `members.is_blocked` directly.
   - Added dependency `@shopify/app-bridge-react`.
   - Unverified: the literal theme-editor deep-link path and parameter names; nav, save bar, toasts and CSV download inside a real admin.
-- 2026-11-16: **Stream D (import) started, stopped by the usage limit** with one file written (`app/lib/smile-import-core.ts`). Resume the same agent.
-- 2026-11-16: **Reviewers 1 (accounting) and 2 (storefront) started, stopped by the usage limit** before reporting. Resume them. Reviewer 3 (admin and security) not started.
-- Not done: finish D; three reviews; fixes and a verification pass; README to list migrations 011 and 012; dev-store test (section 10).
-- Branch `v3-rebuild` typechecks and passes its tests but is unreviewed. Do not merge yet.
+- 2026-11-16: **Stream D (import) finished its first pass.** Dry parse of the real Smile file (counts only): 23,876 rows; 20,221 with an email (1,816 with points, 18,405 at zero); 3,655 with no email and zero points; no duplicates; 14,535,144 points; VIP tier blank on every row.
+- 2026-11-17: **Independent reviews done.** Scores as first written: engine 62, storefront 74, admin 80, import 15. Findings are listed in the fix-round messages; summary:
+  - Engine: refund arriving before the award was discarded (H1); amount-only refunds reversed nothing (H2); codes or points could be stranded by a restart (H3); plus M1–M6, L1–L7.
+  - Storefront: no high. Referral slug lost on temporary errors; drawer line flicker; no influencer view; paused/not-enrolled state shown as a load error; plus low items.
+  - Admin: no high. Influencer code left live when status removed (A1); non-atomic campaign replace (A2); campaign switch-off semantics (A3); search over-match on digits (A4); A5–A10.
+  - Import: worker never started (I1); Shopify error handling written for a client that returns errors, but the real client throws (I2); resume while active (I3); opted-out/blocked members would receive points (I4); personal data retention (I5); I6–I9.
+- 2026-11-17: **Engine fix round done.** All H, M, L items fixed with tests. Order rows now hold running totals and are reconciled regardless of webhook order (`reconcile_order_points`, `sync_order_snapshot`, `upgrade_member_tier` in 010, which was edited in place because it has not been applied anywhere). Pending-code sweep every 10 minutes. Birthday job daily. `bonus_campaigns.deactivated_at` set by trigger. Import worker wired into `startWorkers`. Postgres harness 106 of 106.
+  - `order_webhook_state.refunded_basis_pkr` now means total refunded since placement, including before the award.
+  - New heartbeat keys `cron:pending_codes`, `cron:storefront_config`.
+  - Unverified: refund webhook field names for the amount-only path; harness ran on Postgres 18, Supabase is older.
+- 2026-11-17: **Storefront fix round done.** All 14 items fixed. Bundles 5.42 KB and 11.87 KB gzip. Config gains `nextCampaign`; `GET /proxy/customer` gains `influencer` and `state`; `POST /proxy/referral` status is only `recorded | not_eligible | try_again`. Still no DOM test of `core.ts`/`hub.ts`. Left over: `proxy.social.tsx` still passes a fixed job id `social-<id>` (drop it).
+- 2026-11-17: **Lead verification after both fix rounds:** `tsc` clean; 47 test files, 705 tests pass.
+- 2026-11-17: **Admin and import fix rounds NOT done.** Both agents were stopped at the start by the account's monthly spend limit. Their fix lists (A1–A10; I2–I9) are still open. The import must not be used until I2–I5 are fixed.
+- Not done: admin and import fix rounds; a fresh verification review of all fixes; dev-store test (section 10).
+- Branch `v3-rebuild` is not ready to merge.

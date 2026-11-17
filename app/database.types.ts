@@ -173,6 +173,7 @@ export type Database = {
       bonus_campaigns: {
         Row: {
           created_at: string
+          deactivated_at: string | null
           ends_at: string
           id: string
           is_active: boolean
@@ -182,6 +183,7 @@ export type Database = {
         }
         Insert: {
           created_at?: string
+          deactivated_at?: string | null
           ends_at: string
           id?: string
           is_active?: boolean
@@ -191,6 +193,7 @@ export type Database = {
         }
         Update: {
           created_at?: string
+          deactivated_at?: string | null
           ends_at?: string
           id?: string
           is_active?: boolean
@@ -226,6 +229,125 @@ export type Database = {
           shopify_customer_id?: string | null
           status?: string
           type?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      import_rows: {
+        Row: {
+          email: string | null
+          file_points: number
+          member_existed: boolean | null
+          member_id: string | null
+          points: number
+          points_awarded: number | null
+          reason: string | null
+          row_number: number
+          run_id: string
+          shopify_customer_id: string | null
+          shopify_first_name: string | null
+          shopify_last_name: string | null
+          shopify_phone: string | null
+          smile_customer_id: string
+          smile_status: string | null
+          state: string
+          vip_tier_name: string | null
+        }
+        Insert: {
+          email?: string | null
+          file_points?: number
+          member_existed?: boolean | null
+          member_id?: string | null
+          points?: number
+          points_awarded?: number | null
+          reason?: string | null
+          row_number: number
+          run_id: string
+          shopify_customer_id?: string | null
+          shopify_first_name?: string | null
+          shopify_last_name?: string | null
+          shopify_phone?: string | null
+          smile_customer_id?: string
+          smile_status?: string | null
+          state: string
+          vip_tier_name?: string | null
+        }
+        Update: {
+          email?: string | null
+          file_points?: number
+          member_existed?: boolean | null
+          member_id?: string | null
+          points?: number
+          points_awarded?: number | null
+          reason?: string | null
+          row_number?: number
+          run_id?: string
+          shopify_customer_id?: string | null
+          shopify_first_name?: string | null
+          shopify_last_name?: string | null
+          shopify_phone?: string | null
+          smile_customer_id?: string
+          smile_status?: string | null
+          state?: string
+          vip_tier_name?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "import_rows_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "import_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      import_runs: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          error: string | null
+          file_name: string | null
+          finished_at: string | null
+          id: string
+          options: Json
+          phase: string
+          progress: Json
+          source: string
+          started_at: string | null
+          status: string
+          totals: Json
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          error?: string | null
+          file_name?: string | null
+          finished_at?: string | null
+          id?: string
+          options?: Json
+          phase?: string
+          progress?: Json
+          source?: string
+          started_at?: string | null
+          status?: string
+          totals?: Json
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          error?: string | null
+          file_name?: string | null
+          finished_at?: string | null
+          id?: string
+          options?: Json
+          phase?: string
+          progress?: Json
+          source?: string
+          started_at?: string | null
+          status?: string
+          totals?: Json
           updated_at?: string
         }
         Relationships: []
@@ -465,6 +587,7 @@ export type Database = {
           financial_status: string | null
           fulfillment_status: string | null
           gift_card_amount_pkr: number
+          gross_basis_pkr: number | null
           id: string
           influencer_member_id: string | null
           is_first_order: boolean | null
@@ -475,10 +598,17 @@ export type Database = {
           placed_at: string | null
           points_awarded: boolean
           points_awarded_amount: number
+          points_rate: number | null
           points_reversed_amount: number
+          refund_basis_at_award_pkr: number
+          refund_events_basis_pkr: number
+          refund_ids: string[]
           refunded_basis_pkr: number
           shopify_customer_id: string | null
           shopify_order_id: string
+          source_updated_at: string | null
+          spend_reversed_pkr: number
+          taxes_included: boolean
           updated_at: string
         }
         Insert: {
@@ -490,6 +620,7 @@ export type Database = {
           financial_status?: string | null
           fulfillment_status?: string | null
           gift_card_amount_pkr?: number
+          gross_basis_pkr?: number | null
           id?: string
           influencer_member_id?: string | null
           is_first_order?: boolean | null
@@ -500,10 +631,17 @@ export type Database = {
           placed_at?: string | null
           points_awarded?: boolean
           points_awarded_amount?: number
+          points_rate?: number | null
           points_reversed_amount?: number
+          refund_basis_at_award_pkr?: number
+          refund_events_basis_pkr?: number
+          refund_ids?: string[]
           refunded_basis_pkr?: number
           shopify_customer_id?: string | null
           shopify_order_id: string
+          source_updated_at?: string | null
+          spend_reversed_pkr?: number
+          taxes_included?: boolean
           updated_at?: string
         }
         Update: {
@@ -515,6 +653,7 @@ export type Database = {
           financial_status?: string | null
           fulfillment_status?: string | null
           gift_card_amount_pkr?: number
+          gross_basis_pkr?: number | null
           id?: string
           influencer_member_id?: string | null
           is_first_order?: boolean | null
@@ -525,10 +664,17 @@ export type Database = {
           placed_at?: string | null
           points_awarded?: boolean
           points_awarded_amount?: number
+          points_rate?: number | null
           points_reversed_amount?: number
+          refund_basis_at_award_pkr?: number
+          refund_events_basis_pkr?: number
+          refund_ids?: string[]
           refunded_basis_pkr?: number
           shopify_customer_id?: string | null
           shopify_order_id?: string
+          source_updated_at?: string | null
+          spend_reversed_pkr?: number
+          taxes_included?: boolean
           updated_at?: string
         }
         Relationships: [
@@ -906,6 +1052,17 @@ export type Database = {
           new_lifetime_spend_pkr: number
         }[]
       }
+      reconcile_order_points: {
+        Args: {
+          p_note?: string
+          p_reference_id: string
+          p_shopify_order_id: string
+        }
+        Returns: {
+          reversed: number
+          new_balance: number | null
+        }[]
+      }
       reverse_order_points: {
         Args: {
           p_kind: string
@@ -917,6 +1074,29 @@ export type Database = {
           reversed: number
           new_balance: number | null
         }[]
+      }
+      sync_order_snapshot: {
+        Args: {
+          p_can_earn: boolean
+          p_current_basis_pkr: number
+          p_gross_basis_pkr: number
+          p_points_rate: number
+          p_shopify_order_id: string
+          p_source_updated_at: string | null
+        }
+        Returns: {
+          applied: boolean
+          reversed: number
+          pending_points: number
+        }[]
+      }
+      upgrade_member_tier: {
+        Args: {
+          p_member_id: string
+          p_shopify_order_id?: string | null
+          p_to_tier: string
+        }
+        Returns: boolean
       }
     }
     Enums: {

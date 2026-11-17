@@ -19,19 +19,28 @@ import {
   type OrderEvent,
 } from "./orders.server";
 
-const order = (over: Partial<OrderEvent> = {}): OrderEvent => ({
-  id: "O1",
-  name: "#1001",
-  customer: { id: "C1", email: "c1@example.com", first_name: "Sara" },
-  placedAt: "2026-11-10T10:00:00Z",
-  merchandisePkr: 3000,
-  fulfillmentStatus: null,
-  financialStatus: "pending",
-  cancelledAt: null,
-  discountCodes: [],
-  hasGiftCard: false,
-  ...over,
-});
+const order = (over: Partial<OrderEvent> = {}): OrderEvent => {
+  const merchandisePkr = over.merchandisePkr ?? 3000;
+  return {
+    id: "O1",
+    name: "#1001",
+    customer: { id: "C1", email: "c1@example.com", first_name: "Sara" },
+    placedAt: "2026-11-10T10:00:00Z",
+    merchandisePkr,
+    // original figures: unchanged by later refunds or removals
+    grossMerchandisePkr: Math.max(3000, merchandisePkr),
+    updatedAt: null,
+    taxesIncluded: false,
+    fulfillmentStatus: null,
+    financialStatus: "pending",
+    cancelledAt: null,
+    discountCodes: [],
+    hasGiftCard: false,
+    ...over,
+  };
+};
+/** Shopify updated_at for the n-th version of the order payload. */
+const at = (n: number) => new Date(Date.UTC(2026, 10, 10, 10, n)).toISOString();
 const state = (id = "O1") => h.db.table("order_webhook_state").find((o) => o.shopify_order_id === id)!;
 const member = (cust = "C1") => h.db.table("members").find((m) => m.shopify_customer_id === cust)!;
 const ledger = (action: string) => h.db.table("points_ledger").filter((l) => l.action_type === action);
@@ -89,7 +98,7 @@ describe("payload parsing", () => {
         { quantity: 1, subtotal: 500, line_item: { quantity: 1, price: "500.00", discount_allocations: [] } },
       ],
     })!;
-    expect(ev).toEqual({ refundId: "9001", orderId: "7001", refundedMerchandisePkr: 1300 });
+    expect(ev).toEqual({ refundId: "9001", orderId: "7001", refundedMerchandisePkr: 1300, refundedTaxPkr: 0, amountOnly: false });
     expect(parseRefundPayload({ id: 1 })).toBeNull(); // no order id
   });
 
@@ -283,10 +292,12 @@ describe("refunds (found through the stored order)", () => {
     expect((await processRefundEvent({ refundId: "R1", orderId: "O1", refundedMerchandisePkr: 1500 })).reversed).toBe(1000);
   });
 
-  it("refund for an unknown order or before the award reverses nothing", async () => {
+  it("refund for an unknown order reverses nothing; before the award it is remembered and lowers the pending points", async () => {
     expect(await processRefundEvent({ refundId: "R1", orderId: "NOPE", refundedMerchandisePkr: 100 })).toEqual({ reversed: 0, reason: "no_order_row" });
     await processOrderEvent(order(), "s");
-    expect(await processRefundEvent({ refundId: "R1", orderId: "O1", refundedMerchandisePkr: 100 })).toEqual({ reversed: 0, reason: "not_awarded" });
+    expect(await processRefundEvent({ refundId: "R1", orderId: "O1", refundedMerchandisePkr: 100 })).toEqual({ reversed: 0, reason: "recorded_before_award" });
+    expect(state()).toMatchObject({ pending_points: 2900, refunded_basis_pkr: 100 });
+    expect(member().points_balance).toBe(0);
   });
 
   it("points already spent: reverses what it can, balance never negative", async () => {
@@ -409,10 +420,10 @@ describe("influencer discount codes (rule 12)", () => {
     expect(ledger("influencer_sale")).toHaveLength(0);
   });
 
-  it("paused influencer earns nothing; her own order with her code is not attributed", async () => {
-    const inf = influencer({ influencer_paused: true });
+  it("M6: a paused influencer earns the STANDARD amount on a code sale; her own order with her code is not attributed", async () => {
+    const inf = influencer({ influencer_paused: true }); // multiplier 1.5 is ignored while paused
     await processOrderEvent(paid(), "s");
-    expect(inf.points_balance).toBe(0);
+    expect(inf.points_balance).toBe(6000);
 
     resetHarness();
     bustSettingsCache();
@@ -444,5 +455,195 @@ describe("referral follow-up", () => {
     await processRefundEvent({ refundId: "R2", orderId: "O1", refundedMerchandisePkr: 2000 }); // now refunded in full
     expect(referrer.points_balance).toBe(0);
     expect(ledger("referral_reversal")[0]).toMatchObject({ member_id: referrer.id, points: -6000 });
+  });
+});
+
+describe("H1: refunds, order updates and retries in any order (reconcile on totals)", () => {
+  const paidFull = (n: number) => order({ fulfillmentStatus: "fulfilled", financialStatus: "paid", updatedAt: at(n) });
+  const refunded = (n: number) =>
+    order({ fulfillmentStatus: "fulfilled", financialStatus: "partially_refunded", merchandisePkr: 2000, updatedAt: at(n) });
+
+  it("refund processed BEFORE the award, then a stale pre-refund payload triggers the award: awarded net", async () => {
+    await processOrderEvent(order({ updatedAt: at(1) }), "s");
+    await processRefundEvent({ refundId: "R1", orderId: "O1", refundedMerchandisePkr: 1000 });
+    // built before the refund, so its figures are still the full 3000
+    const r = await processOrderEvent(paidFull(2), "s");
+    expect(r).toMatchObject({ status: "awarded", pointsAwarded: 2000 });
+    expect(member()).toMatchObject({ points_balance: 2000, lifetime_spend_pkr: 2000 });
+    expect(h.notifications.named("points_earned")[0].data).toMatchObject({ points: 2000 });
+    // the fresh payload and a redelivered refund change nothing
+    await processOrderEvent(refunded(3), "s");
+    await processRefundEvent({ refundId: "R1", orderId: "O1", refundedMerchandisePkr: 1000 });
+    expect(member().points_balance).toBe(2000);
+    expect(ledger("refund_deduction")).toHaveLength(0);
+  });
+
+  it("award first, then the refund event, then the fresh order update: reversed once", async () => {
+    await processOrderEvent(paidFull(1), "s");
+    expect((await processRefundEvent({ refundId: "R1", orderId: "O1", refundedMerchandisePkr: 1000 })).reversed).toBe(1000);
+    await processOrderEvent(refunded(2), "s");
+    expect(member()).toMatchObject({ points_balance: 2000, lifetime_spend_pkr: 2000 });
+    expect(ledger("refund_deduction")).toHaveLength(1);
+  });
+
+  it("award first, then the fresh order update BEFORE the refund event: reversed once", async () => {
+    await processOrderEvent(paidFull(1), "s");
+    await processOrderEvent(refunded(2), "s"); // the update alone already reverses the difference
+    expect(member().points_balance).toBe(2000);
+    expect((await processRefundEvent({ refundId: "R1", orderId: "O1", refundedMerchandisePkr: 1000 })).reversed).toBe(0);
+    expect(member()).toMatchObject({ points_balance: 2000, lifetime_spend_pkr: 2000 });
+    expect(ledger("refund_deduction")).toHaveLength(1);
+  });
+
+  it("stale retry: an older payload cannot overwrite a newer, lower basis or newer statuses", async () => {
+    await processOrderEvent(order({ updatedAt: at(1) }), "s");
+    await processOrderEvent(order({ merchandisePkr: 2000, updatedAt: at(5), fulfillmentStatus: "fulfilled" }), "s"); // item removed, shipped
+    await processOrderEvent(order({ updatedAt: at(2) }), "s"); // retried old job: 3000, unfulfilled
+    expect(state()).toMatchObject({ pending_points: 2000, earning_basis_pkr: 2000, fulfillment_status: "fulfilled" });
+  });
+
+  it("a stale payload that says 'fulfilled and paid' does not award an order whose newer state is unpaid", async () => {
+    await processOrderEvent(order({ updatedAt: at(5), fulfillmentStatus: "fulfilled", financialStatus: "pending" }), "s");
+    const r = await processOrderEvent(order({ updatedAt: at(2), fulfillmentStatus: "fulfilled", financialStatus: "paid" }), "s");
+    expect(r.status).toBe("recorded");
+    expect(member().points_balance).toBe(0);
+  });
+
+  it("an older payload still triggers the award when the stored, newer state is awardable (retry after a failed award)", async () => {
+    await processOrderEvent(order({ updatedAt: at(1) }), "s");
+    Object.assign(state(), { fulfillment_status: "fulfilled", financial_status: "paid", source_updated_at: at(9) });
+    const r = await processOrderEvent(order({ updatedAt: at(3) }), "s");
+    expect(r.status).toBe("awarded");
+    expect(member().points_balance).toBe(3000);
+  });
+
+  it("L7: part refunds that add up to the whole order count as refunded in full despite rounding", async () => {
+    const referrer = seedMember(h.db, { shopify_customer_id: "REF" });
+    seedMember(h.db, { shopify_customer_id: "C1" });
+    h.db.seed("referrals", { referrer_member_id: referrer.id, referred_shopify_customer_id: "C1", status: "pending" });
+    await processOrderEvent(order({ merchandisePkr: 999.99, grossMerchandisePkr: 999.99, fulfillmentStatus: "fulfilled", financialStatus: "paid" }), "s");
+    expect(referrer.points_balance).toBe(6000);
+    for (const id of ["a", "b"]) await processRefundEvent({ refundId: id, orderId: "O1", refundedMerchandisePkr: 333.33 });
+    expect(referrer.points_balance).toBe(6000); // not yet in full
+    await processRefundEvent({ refundId: "c", orderId: "O1", refundedMerchandisePkr: 333.33 }); // 999.99 in all
+    expect(member().points_balance).toBe(0);
+    expect(referrer.points_balance).toBe(0);
+  });
+
+  it("an order update that shows the order refunded in full reverses the referral too", async () => {
+    const referrer = seedMember(h.db, { shopify_customer_id: "REF" });
+    seedMember(h.db, { shopify_customer_id: "C1" });
+    h.db.seed("referrals", { referrer_member_id: referrer.id, referred_shopify_customer_id: "C1", status: "pending" });
+    await processOrderEvent(paidFull(1), "s");
+    await processOrderEvent(order({ fulfillmentStatus: "fulfilled", financialStatus: "refunded", merchandisePkr: 0, updatedAt: at(2) }), "s");
+    expect(member().points_balance).toBe(0);
+    expect(referrer.points_balance).toBe(0);
+  });
+});
+
+describe("H2: amount-only refunds", () => {
+  const payload = (amount: string, extra: Record<string, unknown> = {}) => ({
+    id: 9100, order_id: 1, refund_line_items: [],
+    transactions: [
+      { kind: "refund", status: "success", gateway: "manual", amount },
+      { kind: "refund", status: "failure", gateway: "manual", amount: "999.00" },
+      { kind: "refund", status: "success", gateway: "gift_card", amount: "50.00" },
+    ],
+    ...extra,
+  });
+
+  it("the value is the successful refund transactions, less refunded shipping and gift-card money", () => {
+    expect(parseRefundPayload(payload("750.00"))).toEqual({ refundId: "9100", orderId: "1", refundedMerchandisePkr: 750, refundedTaxPkr: 0, amountOnly: true });
+    expect(parseRefundPayload(payload("750.00", { refund_shipping_lines: [{ subtotal_amount_set: { shop_money: { amount: "250.00" } } }] }))!.refundedMerchandisePkr).toBe(500);
+    expect(parseRefundPayload(payload("750.00", { order_adjustments: [{ kind: "shipping_refund", amount: "-250.00" }] }))!.refundedMerchandisePkr).toBe(500);
+    expect(parseRefundPayload(payload("250.00", { order_adjustments: [{ kind: "shipping_refund", amount: "-250.00" }] }))!.refundedMerchandisePkr).toBe(0); // shipping only
+  });
+
+  it("reverses points in proportion", async () => {
+    await processOrderEvent(order({ fulfillmentStatus: "fulfilled", financialStatus: "paid" }), "s");
+    expect((await processRefundEvent({ refundId: "R1", orderId: "O1", refundedMerchandisePkr: 750, amountOnly: true })).reversed).toBe(750);
+    expect(member().points_balance).toBe(2250);
+    // an order update whose current figures do not show the amount-only refund must not undo or repeat it
+    await processOrderEvent(order({ fulfillmentStatus: "fulfilled", financialStatus: "partially_refunded", updatedAt: at(4) }), "s");
+    expect(member().points_balance).toBe(2250);
+  });
+
+  it("a full amount-only refund reverses the referral and the influencer sale", async () => {
+    const inf = seedMember(h.db, { shopify_customer_id: "INF", is_influencer: true, influencer_code: "AYESHA10" });
+    await processOrderEvent(order({ discountCodes: ["AYESHA10"], fulfillmentStatus: "fulfilled", financialStatus: "paid" }), "s");
+    expect(inf.points_balance).toBe(6000);
+    await processRefundEvent({ refundId: "R1", orderId: "O1", refundedMerchandisePkr: 3000, amountOnly: true });
+    expect(member().points_balance).toBe(0);
+    expect(inf.points_balance).toBe(0);
+
+    resetHarness(); bustSettingsCache();
+    const referrer = seedMember(h.db, { shopify_customer_id: "REF" });
+    seedMember(h.db, { shopify_customer_id: "C1" });
+    h.db.seed("referrals", { referrer_member_id: referrer.id, referred_shopify_customer_id: "C1", status: "pending" });
+    await processOrderEvent(order({ fulfillmentStatus: "fulfilled", financialStatus: "paid" }), "s");
+    await processRefundEvent({ refundId: "R1", orderId: "O1", refundedMerchandisePkr: 3000, amountOnly: true });
+    expect(referrer.points_balance).toBe(0);
+  });
+});
+
+describe("M1: prices that include tax", () => {
+  it("line tax is taken off the refund value when the order has taxes_included", async () => {
+    const ev = parseRefundPayload({
+      id: 1, order_id: 2,
+      refund_line_items: [{ quantity: 1, subtotal: 1180, total_tax: 180, line_item: { quantity: 1, price: "1180.00", discount_allocations: [] } }],
+    })!;
+    expect(ev).toMatchObject({ refundedMerchandisePkr: 1180, refundedTaxPkr: 180 });
+    expect(parseOrderPayload({ id: 1, total_price: "10", taxes_included: true })!.taxesIncluded).toBe(true);
+
+    // order: 3540 incl. 540 tax -> basis 3000
+    await processOrderEvent(order({ taxesIncluded: true, fulfillmentStatus: "fulfilled", financialStatus: "paid" }), "s");
+    expect(state().taxes_included).toBe(true);
+    expect((await processRefundEvent({ ...ev, orderId: "O1", refundId: "R1" })).reversed).toBe(1000); // not 1180
+  });
+
+  it("without taxes_included the line value is used as it is", async () => {
+    await processOrderEvent(order({ fulfillmentStatus: "fulfilled", financialStatus: "paid" }), "s");
+    expect((await processRefundEvent({ refundId: "R1", orderId: "O1", refundedMerchandisePkr: 1180, refundedTaxPkr: 180 })).reversed).toBe(1180);
+  });
+});
+
+describe("M5: campaign switched off after the order was placed still counts", () => {
+  const campaign = (over = {}) =>
+    h.db.seed("bonus_campaigns", { name: "2x", multiplier: 2, starts_at: "2026-11-09T00:00:00Z", ends_at: "2026-11-11T00:00:00Z", ...over });
+
+  it("first seen late (after the switch-off): the campaign applies because it was on at placement", async () => {
+    campaign({ is_active: false, deactivated_at: "2026-11-10T18:00:00Z" }); // order placed 10:00
+    await processOrderEvent(order(), "s");
+    expect(state()).toMatchObject({ multiplier_used: 2, pending_points: 6000 });
+  });
+
+  it("switched off BEFORE the order was placed: does not apply", async () => {
+    campaign({ is_active: false, deactivated_at: "2026-11-10T09:00:00Z" });
+    await processOrderEvent(order(), "s");
+    expect(state().multiplier_used).toBe(1);
+  });
+
+  it("never switched on (no deactivation time): does not apply; outside the dates: does not apply", async () => {
+    campaign({ is_active: false, deactivated_at: null });
+    campaign({ name: "later", multiplier: 3, starts_at: "2026-11-12T00:00:00Z", ends_at: "2026-11-20T00:00:00Z", is_active: false, deactivated_at: "2026-11-13T00:00:00Z" });
+    await processOrderEvent(order(), "s");
+    expect(state().multiplier_used).toBe(1);
+  });
+});
+
+describe("L5 / L6", () => {
+  it("L5: an earlier CANCELLED order does not stop the next one being the first order", async () => {
+    const inf = seedMember(h.db, { shopify_customer_id: "INF", is_influencer: true, influencer_code: "AYESHA10" });
+    h.db.seed("order_webhook_state", { shopify_order_id: "OLD", shopify_customer_id: "C1", cancelled_at: "2026-11-01T00:00:00Z" });
+    h.graphql = (q) => (opName(q) === "HgCustomerOrderCount" ? { customer: { numberOfOrders: "2" } } : {}); // Shopify counts the cancelled one
+    await processOrderEvent(order({ discountCodes: ["AYESHA10"], fulfillmentStatus: "fulfilled", financialStatus: "paid" }), "s");
+    expect(state().is_first_order).toBe(true);
+    expect(inf.points_balance).toBe(6000);
+  });
+
+  it("L6: a customer who cannot be enrolled makes the job finish as skipped, not throw for ever", async () => {
+    h.db.failNext("members", "insert", { code: "23514", message: "check constraint" });
+    await expect(processOrderEvent(order(), "s")).resolves.toEqual({ status: "skipped", reason: "enrol_failed" });
+    expect(h.db.table("order_webhook_state")).toHaveLength(0);
   });
 });

@@ -13,9 +13,10 @@ export function isValidBirthday(month: number, day: number): boolean {
 }
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  if (request.method !== "POST") return proxyJson({ ok: false, error: "method_not_allowed" }, 405);
+  // HMAC first: an unsigned request learns nothing, not even the allowed method.
   const g = guardProxy(request, "birthday");
   if (g.response) return g.response;
+  if (request.method !== "POST") return proxyJson({ ok: false, error: "method_not_allowed" }, 405);
 
   const body = await readJsonBody(request);
   const month = Number(body?.month);

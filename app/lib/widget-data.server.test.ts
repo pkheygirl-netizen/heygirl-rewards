@@ -23,6 +23,7 @@ const h = vi.hoisted(() => {
 vi.mock("../db.server", () => ({ db: { from: h.from } }));
 
 import {
+  buildInfluencer,
   buildReferralLink,
   computeNextExpiry,
   getCustomerPayload,
@@ -30,6 +31,7 @@ import {
   getReferralSummary,
   historyLabel,
   parseHistoryFilter,
+  publicReferralOutcome,
   publicReferralStatus,
   type MemberRow,
 } from "./widget-data.server";
@@ -215,5 +217,38 @@ describe("getReferralSummary", () => {
         { status: "completed", at: "2026-11-01T00:00:00Z" },
       ],
     });
+  });
+});
+
+describe("review fixes: read models", () => {
+  it("item 3: influencer block only for influencers, with code, percent and her reward", async () => {
+    expect(buildInfluencer(MEMBER, 9000)).toBeNull();
+    const inf = { ...MEMBER, is_influencer: true, influencer_code: " SARA10 ", influencer_code_percent: 10 };
+    expect(buildInfluencer(inf, 9000.4)).toEqual({ code: "SARA10", percent: 10, rewardPoints: 9000 });
+    expect(buildInfluencer({ ...inf, influencer_code: null }, 9000)).toEqual({ code: null, percent: null, rewardPoints: 9000 });
+    const p = await getCustomerPayload(inf, NOW, 9000);
+    expect(p.member.isInfluencer).toBe(true);
+    expect(p.influencer).toEqual({ code: "SARA10", percent: 10, rewardPoints: 9000 });
+    expect((await getCustomerPayload(MEMBER, NOW, 9000)).influencer).toBeNull();
+  });
+
+  it("item 9: referral outcomes are public statuses only", () => {
+    // recorded: looks the same whether pending, held for review or fraud-blocked
+    expect(publicReferralOutcome({ ok: true, recorded: true, blocked: false, status: "pending", friendCode: "FRIEND-1" })).toEqual({ ok: true, status: "recorded", friendCode: "FRIEND-1" });
+    expect(publicReferralOutcome({ ok: true, recorded: true, blocked: false, status: "flagged", reason: "same_ip" })).toEqual({ ok: true, status: "recorded" });
+    expect(publicReferralOutcome({ ok: false, recorded: true, blocked: true, status: "blocked", reason: "self_referral", friendCode: "X" })).toEqual({ ok: true, status: "recorded" });
+    expect(publicReferralOutcome({ ok: false, recorded: false, blocked: false, status: "already_referred", reason: "duplicate" })).toEqual({ ok: true, status: "recorded" });
+    // final refusals
+    for (const status of ["not_eligible", "already_referred", "self_referral", "invalid_slug", "disabled"]) {
+      expect(publicReferralOutcome({ ok: false, recorded: false, blocked: false, status, reason: "has_orders" })).toEqual({ ok: false, status: "not_eligible" });
+    }
+    // temporary
+    expect(publicReferralOutcome({ ok: false, recorded: false, blocked: false, status: "try_again", reason: "order_count_unavailable" })).toEqual({ ok: false, status: "try_again" });
+    expect(publicReferralOutcome({ ok: false, recorded: false, blocked: false, status: "not_a_member" })).toEqual({ ok: false, status: "try_again" });
+    expect(publicReferralOutcome(null)).toEqual({ ok: false, status: "try_again" });
+    // nothing internal survives
+    for (const r of [{ recorded: true, status: "flagged", reason: "same_ip" }, { status: "not_eligible", reason: "referrer_not_eligible" }]) {
+      expect(JSON.stringify(publicReferralOutcome(r))).not.toMatch(/flagged|blocked|same_ip|referrer|reason/);
+    }
   });
 });

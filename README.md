@@ -28,7 +28,14 @@ Set these on **both** Railway services (web and worker). Names only; see `.env.e
 
 Run the files in `supabase/migrations/` in number order in the Supabase SQL editor, one file at a time:
 
-`001` → `002` → `003` → `004` → `005` → `006` → `007` → `008` → `009` → `010_v3_core`, then any higher-numbered files that are present (`011_admin_stats`, `012_import`), still in number order.
+| Order | File | What it does |
+|---|---|---|
+| 1-9 | `001` ... `009` | The original schema (already applied on the existing database) |
+| 10 | `010_v3_core.sql` | v3 columns and tables, and the points functions (`award_points`, `award_order_points`, `reverse_order_points`, `reconcile_order_points`, `sync_order_snapshot`, `upgrade_member_tier`) |
+| 11 | `011_admin_stats.sql` | Totals for the admin screens |
+| 12 | `012_import.sql` | Tables for the Smile import |
+
+There is no `013`: the engine fixes of 17 November were made in `010` itself, because `010` had not been applied to any database yet.
 
 - **Take a Supabase backup before `010`.** It replaces the points function and back-fills existing ledger rows.
 - `010` can be run again safely.
@@ -80,10 +87,12 @@ This is deliberate: an uninstall and reinstall during maintenance must not wipe 
 | Job | When | What |
 |---|---|---|
 | heartbeat | every minute | `system_heartbeat` key `worker`, with failed-job counts |
+| pending codes | every 10 minutes | finishes automatic codes left half-made; for a reward code that was never created, returns the points |
 | review release | every 15 minutes | pays review claims after the hold period |
+| storefront config | hourly at :05 | republishes the storefront settings when a campaign started or ended, and once a day regardless |
 | expiry | 02:00 daily | expires overdue Silver points and overdue codes |
 | expiry warning | 02:30 daily | emails members whose points expire within 30 days |
-| birthday | 09:00 on the 1st | issues birthday codes |
+| birthday | 09:00 daily | issues birthday codes (once per member per year; a missed day is caught up) |
 
 Each run also writes a `cron:<job>` heartbeat with its result.
 

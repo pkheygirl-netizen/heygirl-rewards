@@ -10,7 +10,10 @@ import { socialQueue } from "../lib/queue.server";
 import { db } from "../db.server";
 
 const sdb = db as unknown as SupabaseClient;
-const DELAY_MS = 24 * 60 * 60 * 1000;
+// The only place the honour-system delay is defined; the storefront never
+// quotes a duration.
+export const SOCIAL_AWARD_DELAY_HOURS = 24;
+const DELAY_MS = SOCIAL_AWARD_DELAY_HOURS * 60 * 60 * 1000;
 
 function ruleOn(rules: unknown, key: string): boolean {
   const r = rules && typeof rules === "object" ? (rules as Record<string, unknown>)[key] : null;
@@ -18,9 +21,10 @@ function ruleOn(rules: unknown, key: string): boolean {
 }
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  if (request.method !== "POST") return proxyJson({ ok: false, error: "method_not_allowed" }, 405);
+  // HMAC first: an unsigned request learns nothing, not even the allowed method.
   const g = guardProxy(request, "social");
   if (g.response) return g.response;
+  if (request.method !== "POST") return proxyJson({ ok: false, error: "method_not_allowed" }, 405);
   const { customerId } = g.ctx;
 
   const body = await readJsonBody(request);
@@ -31,6 +35,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const settings = (await getSettings()) as unknown as Record<string, unknown>;
     if (settings.program_enabled === false) return proxyJson({ ok: false, error: "program_disabled" });
     if (!ruleOn(settings.earn_rules, platform)) return proxyJson({ ok: false, error: "disabled" });
+    // No profile link in settings means there is nothing to follow: never award.
+    const profileUrl = settings[`social_url_${platform}`];
+    if (typeof profileUrl !== "string" || !/^https?:\/\/[^\s"'<>]+$/i.test(profileUrl.trim())) {
+      return proxyJson({ ok: false, error: "disabled" });
+    }
     const points = Math.max(0, Math.round(Number(settings[`social_points_${platform}`] ?? settings.social_points ?? 0)));
 
     const member = await getMemberByCustomerId(customerId);

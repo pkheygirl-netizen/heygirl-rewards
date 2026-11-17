@@ -15,6 +15,17 @@ const BUNDLES = [
 
 mkdirSync(OUT, { recursive: true });
 
+// One source for the cart line's CSS: the Liquid snippet. The core bundle
+// injects the same rules when no app block has printed them on the page.
+const lineCss = readFileSync("extensions/hg-loyalty/snippets/hg-line-css.liquid", "utf8")
+  .replace(/<\/?style[^>]*>/g, "")
+  .replace(/\s*\n\s*/g, "")
+  .trim();
+if (!lineCss || /[<{%]%|\{\{/.test(lineCss)) {
+  console.error("ERROR hg-line-css.liquid must contain plain CSS only");
+  process.exit(1);
+}
+
 let failed = false;
 for (const b of BUNDLES) {
   await build({
@@ -25,7 +36,7 @@ for (const b of BUNDLES) {
     target: ["es2018"],
     legalComments: "none",
     outfile: b.outfile,
-    define: { "process.env.NODE_ENV": '"production"' },
+    define: { "process.env.NODE_ENV": '"production"', __HG_LINE_CSS__: JSON.stringify(lineCss) },
   });
   const raw = readFileSync(b.outfile);
   const gz = zlib.gzipSync(raw, { level: 9 }).length;

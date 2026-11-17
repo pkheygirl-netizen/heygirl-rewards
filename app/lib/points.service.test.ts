@@ -285,10 +285,11 @@ describe("checkAndUpgradeTier", () => {
   });
 
   it("two jobs cannot both record the same upgrade", async () => {
-    const m = seedMember(h.db, { tier: "gold" }); // already upgraded by the other job
+    const m = seedMember(h.db);
+    await checkAndUpgradeTier(String(m.id), 60000, "silver");
+    // a second job that read the member before the first one finished
     expect(await checkAndUpgradeTier(String(m.id), 60000, "silver")).toBe("gold");
-    expect(h.db.table("tier_history")).toHaveLength(0);
-    expect(h.points.jobs).toHaveLength(0);
+    expect(h.db.table("tier_history")).toHaveLength(1);
   });
 });
 
@@ -368,5 +369,127 @@ describe("privacy webhooks", () => {
     expect(m.points_balance).toBe(5000);
     expect(h.db.table("gdpr_requests")[0]).toMatchObject({ type: "shop_redact", status: "open" });
     expect(h.db.table("system_heartbeat")[0]).toMatchObject({ key: "alert:shop_redact" });
+  });
+});
+
+describe("fix round", () => {
+  it("M4: the welcome-bonus job has no fixed id, so an old failed job cannot block it", async () => {
+    seedMember(h.db, { shopify_customer_id: "800" });
+    expect((await enrolFromSignin({ shopifyCustomerId: "800", shop: "s" })).welcomeQueued).toBe(true);
+    expect(h.points.named("award_signup_points")[0].opts).toBeUndefined();
+  });
+
+  it("M4: if the job cannot be queued, welcomeQueued is false (not a false promise)", async () => {
+    seedMember(h.db, { shopify_customer_id: "801" });
+    h.points.add = async () => { throw new Error("redis down"); };
+    expect(await enrolFromSignin({ shopifyCustomerId: "801", shop: "s" })).toMatchObject({ welcomeQueued: false, reason: "enqueue_failed" });
+  });
+
+  it("L3: a redacted, opted-out member who orders again does not get her name, phone or email back", async () => {
+    const m = seedMember(h.db, { shopify_customer_id: "802", first_name: "Sara", phone: "0300" });
+    await redactCustomer("802");
+    await enrolFromOrder({ id: "802", email: "sara@example.com", phone: "03001234567", first_name: "Sara", last_name: "Khan" });
+    await enrolMember({ id: "802", email: "sara@example.com", first_name: "Sara" });
+    expect(m).toMatchObject({ first_name: null, last_name: null, phone: null, opted_out: true, consent_given: false });
+    expect(String(m.email)).toMatch(/@redacted\.invalid$/);
+  });
+
+  it("L3: an opted-out (not redacted) member's missing details are not filled in either", async () => {
+    const m = seedMember(h.db, { shopify_customer_id: "803", opted_out: true, phone: null });
+    await enrolFromOrder({ id: "803", phone: "0300" });
+    expect(m.phone).toBeNull();
+  });
+
+  it("L6: a unique clash on another column enrols the customer without contact details instead of failing for ever", async () => {
+    h.db.failNext("members", "insert", { code: "23505", message: 'duplicate key value violates unique constraint "members_email_key"' });
+    const m = await enrolFromOrder({ id: 804, email: "dup@example.com", phone: "0300", first_name: "Hina" });
+    expect(m).toMatchObject({ shopify_customer_id: "804", email: null, phone: null, first_name: "Hina", consent_given: true });
+  });
+
+  it("L6: a clash that persists gives null, never an exception", async () => {
+    h.db.failNext("members", "insert", { code: "23505", message: "members_email_key" });
+    h.db.failNext("members", "insert", { code: "23505", message: "members_other_key" });
+    await expect(enrolFromOrder({ id: 805, email: "dup@example.com" })).resolves.toBeNull();
+  });
+
+  it("L1: an overdue tranche that was spent in full is closed without a 0-point ledger row", async () => {
+    const now = new Date("2026-11-16T00:00:00Z");
+    const m = seedMember(h.db, { points_balance: 300 });
+    const spent = h.db.seed("points_ledger", { member_id: m.id, action_type: "signup", reference_id: "a", points: 1000, points_remaining: 0, balance_after: 1000, expires_at: "2026-11-01T00:00:00Z" });
+    h.db.seed("points_ledger", { member_id: m.id, action_type: "review", reference_id: "b", points: 300, points_remaining: 300, balance_after: 300, expires_at: "2027-06-01T00:00:00Z" });
+    const r = await expireSilverPoints(now);
+    expect(r).toMatchObject({ pointsExpired: 0, membersAffected: 0 });
+    expect(spent.expired).toBe(true);
+    expect(h.db.table("points_ledger").filter((l) => l.action_type === "expiry")).toHaveLength(0);
+    expect(h.db.rpcCalls.filter((c) => c.args.p_action_type === "expiry")).toHaveLength(0);
+    expect(m.points_balance).toBe(300);
+  });
+});
+
+describe("H3a: tier follow-ups are atomic and state-driven", () => {
+  it("the upgrade goes through one database call (tier + history + expiry together)", async () => {
+    const m = seedMember(h.db);
+    await checkAndUpgradeTier(String(m.id), 60000, "silver", { shopifyOrderId: "O1", shop: "s" });
+    expect(h.db.rpcCalls.filter((c) => c.fn === "upgrade_member_tier")).toEqual([
+      { fn: "upgrade_member_tier", args: { p_member_id: m.id, p_to_tier: "gold", p_shopify_order_id: "O1" } },
+    ]);
+  });
+
+  it("a queueing failure is thrown (so the job retries), and the retry still queues the reward", async () => {
+    const m = seedMember(h.db);
+    const realAdd = h.points.add;
+    h.points.add = async () => { throw new Error("redis down"); };
+    await expect(checkAndUpgradeTier(String(m.id), 60000, "silver", { shop: "s" })).rejects.toThrow(/redis down/);
+    expect(m.tier).toBe("gold"); // the upgrade itself is done
+
+    h.points.add = realAdd;
+    // retry: the member is already Gold, so "this call upgraded" is false, yet the code is still owed
+    expect(await checkAndUpgradeTier(String(m.id), 60000, "gold", { shop: "s" })).toBe("gold");
+    expect(h.points.named("issue_tier_reward")).toHaveLength(1);
+    expect(h.points.named("issue_tier_reward")[0].data).toMatchObject({ memberId: m.id, fromTier: "silver", toTier: "gold" });
+    expect(h.db.table("tier_history")).toHaveLength(1);
+  });
+
+  it("once the code row exists nothing more is queued, however often it runs", async () => {
+    const m = seedMember(h.db);
+    await checkAndUpgradeTier(String(m.id), 60000, "silver");
+    h.db.seed("loyalty_codes", { member_id: m.id, code: "GOLD-1", kind: "tier_gold", issue_key: `tier_gold:${m.id}`, status: "pending", discount_amount: 0, points_spent: 0, expires_at: "2027-01-01" });
+    h.points.clear();
+    await checkAndUpgradeTier(String(m.id), 61000, "gold");
+    await checkAndUpgradeTier(String(m.id), 62000, "gold");
+    expect(h.points.jobs).toHaveLength(0);
+  });
+
+  it("expiry dates left behind by an interrupted upgrade are cleared on the next run", async () => {
+    const m = seedMember(h.db, { tier: "gold" });
+    const row = h.db.seed("points_ledger", { member_id: m.id, action_type: "purchase", reference_id: "o", points: 10, points_remaining: 10, balance_after: 10, expires_at: "2027-01-01T00:00:00Z" });
+    await checkAndUpgradeTier(String(m.id), 60000, "gold");
+    expect(row.expires_at).toBeNull();
+  });
+
+  it("Gold then Diamond: only the missing Diamond code is queued; Silver straight to Diamond owes both", async () => {
+    const m = seedMember(h.db);
+    await checkAndUpgradeTier(String(m.id), 60000, "silver");
+    h.db.seed("loyalty_codes", { member_id: m.id, code: "GOLD-1", kind: "tier_gold", issue_key: `tier_gold:${m.id}`, discount_amount: 0, points_spent: 0, expires_at: "2027-01-01" });
+    h.points.clear();
+    await checkAndUpgradeTier(String(m.id), 120000, "gold");
+    expect(h.points.named("issue_tier_reward")[0].data).toMatchObject({ fromTier: "gold", toTier: "diamond" });
+
+    const jump = seedMember(h.db);
+    h.points.clear();
+    await checkAndUpgradeTier(String(jump.id), 150000, "silver");
+    expect(h.points.named("issue_tier_reward")[0].data).toMatchObject({ fromTier: "silver", toTier: "diamond" });
+  });
+
+  it("members who were Gold before v3 (no history row), blocked members, and switched-off rewards get nothing", async () => {
+    const legacy = seedMember(h.db, { tier: "gold" });
+    await checkAndUpgradeTier(String(legacy.id), 60000, "gold");
+    const blocked = seedMember(h.db, { is_blocked: true });
+    await checkAndUpgradeTier(String(blocked.id), 60000, "silver");
+    h.db.table("app_settings")[0].tier_reward_gold_free_shipping = false;
+    bustSettingsCache();
+    const off = seedMember(h.db);
+    await checkAndUpgradeTier(String(off.id), 60000, "silver");
+    expect(h.points.jobs).toHaveLength(0);
   });
 });

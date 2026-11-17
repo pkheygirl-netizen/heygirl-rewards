@@ -253,7 +253,9 @@ describe("held referrals: approve / reject", () => {
     expect(r).toMatchObject({ ok: true, paid: true });
     expect(referrer.points_balance).toBe(6000);
     expect(referral()).toMatchObject({ status: "completed", reviewed_note: "approved by staff@heygirl.pk" });
-    expect(h.points.named("issue_referral_friend_code")).toHaveLength(1);
+    // the friend's code is issued there and then (the row is written first, so the sweep can finish it)
+    expect(h.db.table("loyalty_codes")[0]).toMatchObject({ kind: "referral_friend", status: "active" });
+    expect(h.points.named("issue_referral_friend_code")).toHaveLength(0);
   });
 
   it("approve before any qualifying order: back to pending, paid later when the order qualifies", async () => {
@@ -302,5 +304,33 @@ describe("reversal", () => {
   it("an order that did not complete a referral reverses nothing", async () => {
     setup();
     expect(await reverseReferralForOrder("O-OTHER", "refunded")).toEqual({ reversed: false });
+  });
+});
+
+describe("fix round", () => {
+  it("H3: approving while Shopify is down leaves a pending code row and queues a retry; nothing is swallowed", async () => {
+    setup();
+    await visit({ referredIp: "10.0.0.1" });
+    h.graphql = () => { throw new Error("503"); };
+    expect((await approveReferral(String(referral().id), "staff", "s")).ok).toBe(true);
+    expect(h.db.table("loyalty_codes")[0]).toMatchObject({ kind: "referral_friend", status: "pending" });
+    expect(h.points.named("issue_referral_friend_code")).toHaveLength(1);
+    expect(h.points.named("issue_referral_friend_code")[0].opts).toBeUndefined(); // M4: no fixed job id
+  });
+
+  it("a first order refunded before it was awarded (zero basis) does not pay the referrer", async () => {
+    const { referrer } = setup();
+    await visit();
+    awardedOrder("O1", { earning_basis_pkr: 0, points_awarded_amount: 0 });
+    expect(await completeReferralForCustomer("FR")).toMatchObject({ paid: false, reason: "first_order_refunded" });
+    expect(referrer.points_balance).toBe(0);
+  });
+
+  it("M6: a paused influencer earns the standard amount on a link referral", async () => {
+    const { referrer } = setup({ is_influencer: true, influencer_multiplier: 2.5, influencer_paused: true });
+    await visit();
+    awardedOrder();
+    expect((await completeReferralForCustomer("FR")).points).toBe(6000);
+    expect(referrer.points_balance).toBe(6000);
   });
 });

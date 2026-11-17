@@ -73,6 +73,11 @@ let rerunErr = null;
 try { await db.query(m010); } catch (e) { rerunErr = e.message; }
 console.log("\n[migration]");
 ok("010 is re-runnable (second run without error)", rerunErr === null, rerunErr);
+for (const f of files.filter((f) => f > "010_v3_core.sql")) {
+  let err = null;
+  try { await db.query(fs.readFileSync(path.join(MIG, f), "utf8")); } catch (e) { err = e.message; }
+  ok(`later migration ${f} applies on top of 010`, err === null, err);
+}
 
 {
   const rows = await q(`select action_type, points, points_remaining, expires_at is not null as has_exp from points_ledger where member_id=$1 order by earned_at, id`, [legacy]);
@@ -351,6 +356,144 @@ console.log("\n[9] extras");
   const cn = await award(m.id, "adjustment", "cn", 5, { note: "internal reason", cnote: "A gift from us" });
   const row = (await q(`select reason_note, customer_note from points_ledger where member_id=$1 and reference_id='cn'`, [m.id]))[0];
   eq("customer_note stored separately from reason_note", [row.reason_note, row.customer_note], ["internal reason", "A gift from us"]);
+}
+
+
+// ── v3 fix round: reconciliation on totals ──
+const sync = async (id, at, gross, current, rate = 1, can = true) =>
+  (await q(`select * from sync_order_snapshot($1,$2,$3,$4,$5,$6)`, [id, at, gross, current, rate, can]))[0];
+const bare = async (cust, id, mult = 1) =>
+  q(`insert into order_webhook_state (shopify_order_id, shopify_customer_id, multiplier_used, order_name) values ($1,$2,$3,$4)`, [id, cust, mult, `#${id}`]);
+const ows = async (id) => (await q(`select pending_points p, earning_basis_pkr::float e, gross_basis_pkr::float g, refunded_basis_pkr::float r,
+  points_awarded a, points_awarded_amount pa, points_reversed_amount pr, refund_basis_at_award_pkr::float r0 from order_webhook_state where shopify_order_id=$1`, [id]))[0];
+const T = (n) => new Date(Date.UTC(2026, 10, 10, 10, n)).toISOString();
+
+console.log("\n[10] refunds and order updates in any order (reconcile on totals)");
+{
+  // A. refund BEFORE the award, then a STALE pre-refund payload triggers the award
+  const a = await member(); await bare(a.cust, "RA");
+  await sync("RA", T(1), 3000, 3000);
+  eq("A: pending from snapshot", (await ows("RA")).p, 3000);
+  const r = (await q(`select * from reverse_order_points('RA','refund','RF-A',1000)`))[0];
+  eq("A: refund before award reverses no points but is remembered", [r.reversed, (await ows("RA")).p, (await ows("RA")).r], [0, 2000, 1000]);
+  await sync("RA", T(2), 3000, 3000); // payload built before the refund, newer timestamp
+  eq("A: stale-content payload cannot restore the refunded part", (await ows("RA")).p, 2000);
+  const aw = (await q(`select * from award_order_points('RA',$1,3000,3000,1,null)`, [a.id]))[0]; // caller passes OLD figures
+  eq("A: award is net of the refund (2000, not 3000)", [aw.awarded, aw.new_balance, Number(aw.new_lifetime_spend_pkr)], [true, 2000, 2000]);
+  await sync("RA", T(3), 3000, 2000); // fresh payload now shows the refund
+  await q(`select * from reverse_order_points('RA','refund','RF-A',1000)`); // replayed refund webhook
+  eq("A: nothing further is reversed afterwards", [(await bal(a.id)).b, (await ows("RA")).pr], [2000, 0]);
+
+  // B. award first (stale payload), THEN the refund event, THEN the fresh payload
+  const b = await member(); await bare(b.cust, "RB");
+  await sync("RB", T(1), 3000, 3000);
+  await q(`select * from award_order_points('RB',$1,3000,3000,1,null)`, [b.id]);
+  const rb = (await q(`select * from reverse_order_points('RB','refund','RF-B',1000)`))[0];
+  eq("B: refund after award reverses 1000", rb.reversed, 1000);
+  const sb = await sync("RB", T(2), 3000, 2000);
+  eq("B: the order update that follows reverses nothing more (no double deduction)", [sb.reversed, (await bal(b.id)).b, (await bal(b.id)).l], [0, 2000, 2000]);
+
+  // C. award, then the fresh payload arrives BEFORE the refund event
+  const c = await member(); await bare(c.cust, "RC");
+  await sync("RC", T(1), 3000, 3000);
+  await q(`select * from award_order_points('RC',$1,3000,3000,1,null)`, [c.id]);
+  const sc = await sync("RC", T(2), 3000, 2000);
+  eq("C: order update alone reverses the difference", sc.reversed, 1000);
+  const rc = (await q(`select * from reverse_order_points('RC','refund','RF-C',1000)`))[0];
+  eq("C: the refund event that follows reverses nothing more", [rc.reversed, (await bal(c.id)).b], [0, 2000]);
+  const notes = await q(`select customer_note from points_ledger where member_id=$1 and points<0`, [c.id]);
+  eq("C: one customer-visible reversal row", notes.map((n) => n.customer_note), ["Order refunded (#RC)"]);
+
+  // D. stale retry: an OLDER payload arrives after a newer one
+  const d = await member(); await bare(d.cust, "RD");
+  await sync("RD", T(5), 3000, 2000); // newest: item removed
+  const stale = await sync("RD", T(1), 3000, 3000); // retried old job
+  eq("D: older payload is ignored", [stale.applied, (await ows("RD")).p, (await ows("RD")).e], [false, 2000, 2000]);
+  const same = await sync("RD", T(5), 3000, 2000);
+  eq("D: same payload again is harmless", [same.applied, (await ows("RD")).p], [true, 2000]);
+
+  // E. two refund events + payloads interleaved, then full refund
+  const e = await member(); await bare(e.cust, "RE");
+  await sync("RE", T(1), 4000, 4000);
+  await q(`select * from award_order_points('RE',$1,0,0,1,null)`, [e.id]);
+  eq("E: awarded 4000", (await bal(e.id)).b, 4000);
+  await sync("RE", T(3), 4000, 2000); // reflects refunds 1 and 2 already
+  await q(`select * from reverse_order_points('RE','refund','E1',1000)`);
+  await q(`select * from reverse_order_points('RE','refund','E2',1000)`);
+  eq("E: two refunds + one update = 2000 reversed, once", [(await bal(e.id)).b, (await ows("RE")).pr], [2000, 2000]);
+  await q(`select * from reverse_order_points('RE','refund','E3',2000)`);
+  const fin = await ows("RE");
+  eq("E: full refund reverses everything, spend back to 0", [(await bal(e.id)).b, fin.pr, (await bal(e.id)).l, fin.r], [0, 4000, 0, 4000]);
+  const cz = (await q(`select * from reverse_order_points('RE','cancel','RE')`))[0];
+  eq("E: cancel after full refund reverses nothing", cz.reversed, 0);
+
+  // F. amount-only refund (in the refund events, not in the order's current figures)
+  const f = await member(); await bare(f.cust, "RG");
+  await sync("RG", T(1), 2000, 2000);
+  await q(`select * from award_order_points('RG',$1,0,0,1,null)`, [f.id]);
+  await q(`select * from reverse_order_points('RG','refund','G1',500)`);
+  await sync("RG", T(2), 2000, 2000); // current figures unchanged by an amount-only refund
+  eq("F: amount-only refund reverses and a later update does not undo or repeat it", [(await bal(f.id)).b, (await ows("RG")).pr], [1500, 500]);
+
+  // G. campaign multiplier + member who cannot earn + item added after creation
+  const g = await member(); await bare(g.cust, "RH", 2);
+  eq("G: pending uses the stored multiplier and the rate", (await sync("RH", T(1), 1000, 1000, 0.5, true)).pending_points, 1000);
+  eq("G: cannot earn -> 0 pending", (await sync("RH", T(2), 1000, 1000, 1, false)).pending_points, 0);
+  eq("G: item added before delivery raises the basis", (await sync("RH", T(3), 1000, 1500, 1, true)).pending_points, 3000);
+  eq("G: unknown order: not applied", (await sync("NOPE", T(1), 1, 1, 1, true)).applied, false);
+
+  // H. concurrent refund event and order update for the same refund
+  const hM = await member(); await bare(hM.cust, "RI");
+  await sync("RI", T(1), 5000, 5000);
+  await q(`select * from award_order_points('RI',$1,0,0,1,null)`, [hM.id]);
+  const c1 = new pg.Client(conn), c2 = new pg.Client(conn); await c1.connect(); await c2.connect();
+  await Promise.all([
+    c1.query(`select * from reverse_order_points('RI','refund','I1',2000)`),
+    c2.query(`select * from sync_order_snapshot('RI',$1,5000,3000,1,true)`, [T(2)]),
+  ]);
+  eq("H: refund event and order update at the same time reverse 2000 once", [(await bal(hM.id)).b, (await ows("RI")).pr], [3000, 2000]);
+  await c1.end(); await c2.end();
+}
+
+console.log("\n[11] expiry: no 0-point rows, Silver only");
+{
+  const m = await member();
+  await award(m.id, "signup", "s", 1000, { exp: new Date(Date.now() - 86400000).toISOString() });
+  await award(m.id, "redemption", "c", -1000);
+  const src = (await q(`select id from points_ledger where member_id=$1 and action_type='signup'`, [m.id]))[0];
+  const e = await award(m.id, "expiry", src.id, 0);
+  eq("fully spent tranche: closed without a ledger row", [e.awarded, (await q(`select count(*)::int c from points_ledger where member_id=$1 and action_type='expiry'`, [m.id]))[0].c], [false, 0]);
+  eq("...and marked expired", (await q(`select expired from points_ledger where id=$1`, [src.id]))[0].expired, true);
+  const g = await member("gold");
+  await award(g.id, "signup", "s", 1000, { exp: new Date(Date.now() - 86400000).toISOString() });
+  const gs = (await q(`select id from points_ledger where member_id=$1`, [g.id]))[0];
+  const ge = await award(g.id, "expiry", gs.id, -1000);
+  eq("expiry is refused for a non-Silver member", [ge.awarded, (await bal(g.id)).b, (await q(`select expired from points_ledger where id=$1`, [gs.id]))[0].expired], [false, 1000, false]);
+}
+
+console.log("\n[12] upgrade_member_tier is atomic");
+{
+  const m = await member();
+  await award(m.id, "signup", "s", 1000);
+  const up = (await q(`select upgrade_member_tier($1,'gold','O-T') u`, [m.id]))[0].u;
+  const st = (await q(`select tier from members where id=$1`, [m.id]))[0];
+  const hist = await q(`select from_tier, to_tier, shopify_order_id from tier_history where member_id=$1`, [m.id]);
+  const exp = (await q(`select count(*)::int c from points_ledger where member_id=$1 and expires_at is not null`, [m.id]))[0].c;
+  eq("tier, history row and cleared expiry together", [up, st.tier, hist, exp], [true, "gold", [{ from_tier: "silver", to_tier: "gold", shopify_order_id: "O-T" }], 0]);
+  eq("second call does nothing", [(await q(`select upgrade_member_tier($1,'gold',null) u`, [m.id]))[0].u, (await q(`select count(*)::int c from tier_history where member_id=$1`, [m.id]))[0].c], [false, 1]);
+  eq("never downgrades", [(await q(`select upgrade_member_tier($1,'silver',null) u`, [m.id]))[0].u, (await q(`select tier from members where id=$1`, [m.id]))[0].tier], [false, "gold"]);
+  eq("gold -> diamond", (await q(`select upgrade_member_tier($1,'diamond',null) u`, [m.id]))[0].u, true);
+}
+
+console.log("\n[13] campaign switched off is time-stamped");
+{
+  const [c] = await q(`insert into bonus_campaigns (name, multiplier, starts_at, ends_at, is_active) values ('x',2,'2030-01-01','2030-01-05',true) returning id, deactivated_at`);
+  eq("active campaign has no deactivated_at", c.deactivated_at, null);
+  await q(`update bonus_campaigns set is_active=false where id=$1`, [c.id]);
+  ok("switching off stamps deactivated_at", (await q(`select deactivated_at from bonus_campaigns where id=$1`, [c.id]))[0].deactivated_at !== null);
+  await q(`update bonus_campaigns set is_active=true where id=$1`, [c.id]);
+  eq("switching back on clears it", (await q(`select deactivated_at from bonus_campaigns where id=$1`, [c.id]))[0].deactivated_at, null);
+  await q(`update bonus_campaigns set is_active=false where id=$1`, [c.id]);
 }
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);

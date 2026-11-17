@@ -2,7 +2,7 @@
 // Pure HTML builders for the hub panel. Every number and text that can be
 // configured comes from the storefront config or the member payload; nothing
 // here touches the DOM, so the output is unit-tested as strings.
-import { codeValue, discountUrl, esc, fmt, fmtDate, GIFT_ICON, pts, rs, tierProgress, TIER_NAME, activeMultiplier, type Config, type MemberData, type Tier } from "./shared";
+import { campaignNote, codeValue, discountUrl, esc, fmt, fmtDate, GIFT_ICON, pts, rateText, rs, tierProgress, TIER_NAME, type Config, type MemberData, type MemberState, type Tier } from "./shared";
 
 export type Ctx = {
   cfg: Config;
@@ -60,9 +60,8 @@ export function earnList(c: Ctx): string {
     out.push(row(ico("user"), "Join " + esc(cfg.programName), pts(cfg.signupPoints), m ? done : ""));
   }
   if (on(cfg, "purchase") && cfg.pointsRate > 0) {
-    const mult = activeMultiplier(cfg, c.now);
-    const bonus = mult !== 1 && cfg.campaign ? ` <span class="hg-chip">${esc(String(mult))}x until ${esc(fmtDate(cfg.campaign.endsAt))}</span>` : "";
-    out.push(row(ico("bag"), "Place an order", `${pts(cfg.pointsRate)} for every Rs. 1 spent${bonus}`));
+    const note = campaignNote(cfg, c.now);
+    out.push(row(ico("bag"), "Place an order", esc(rateText(cfg.pointsRate)) + (note ? `<br><span class="hg-chip">${esc(note)}</span>` : "")));
   }
   for (const s of SOCIAL) {
     const sc = cfg.social[s.key];
@@ -72,7 +71,7 @@ export function earnList(c: Ctx): string {
       right =
         m.social[s.key] === "claimed"
           ? done
-          : `<button type="button" class="hg-btn hg-btn--sm" data-act="social" data-p="${s.key}" data-url="${esc(sc.url)}" data-points="${sc.points}">${s.verb}</button>`;
+          : `<button type="button" class="hg-btn hg-btn--sm" data-act="social" data-p="${s.key}" data-url="${esc(sc.url)}">${s.verb}</button>`;
     }
     out.push(row(ico(s.key), s.title, pts(sc.points), right));
   }
@@ -96,12 +95,32 @@ export function earnList(c: Ctx): string {
       if (mm && mm.canSetBirthday) out.push(birthdayForm());
     }
   }
-  if (on(cfg, "referral") && cfg.referralPoints > 0) {
-    out.push(
-      row(ico("friends"), "Refer a friend", pts(cfg.referralPoints), m ? `<button type="button" class="hg-btn hg-btn--sm" data-go="refer">Invite</button>` : ""),
-    );
+  const youGet = referralReward(c);
+  if (on(cfg, "referral") && youGet > 0) {
+    out.push(row(ico("friends"), "Refer a friend", pts(youGet), m ? `<button type="button" class="hg-btn hg-btn--sm" data-go="refer">Invite</button>` : ""));
   }
   return `<ul class="hg-list">${out.join("")}</ul>`;
+}
+
+/** What this visitor earns per referral: an influencer's own rate, else the standard points. */
+export function referralReward(c: Ctx, summary?: ReferralSummary | null): number {
+  const inf = c.member && c.member.member.isInfluencer ? c.member.influencer : null;
+  if (inf && inf.rewardPoints > 0) return inf.rewardPoints;
+  if (c.member && summary && summary.rewardPoints && summary.rewardPoints > 0) return summary.rewardPoints;
+  return c.cfg.referralPoints;
+}
+
+/** An influencer's public discount code with a copy button ("" for everyone else). */
+export function influencerBox(c: Ctx): string {
+  const m = c.member;
+  const inf = m && m.member.isInfluencer ? m.influencer : null;
+  if (!inf || !inf.code) return "";
+  const off = inf.percent ? `${esc(String(inf.percent))}% off` : "a discount";
+  return (
+    `<section class="hg-card"><h3 class="hg-h">Your creator code</h3><p class="hg-p">Shoppers who use your code get ${off}. You earn ${pts(inf.rewardPoints)} when a new customer's first order with it is delivered and paid.</p>` +
+    `<div class="hg-ref"><label class="hg-sr" for="hg-inf-code">Your creator code</label><input id="hg-inf-code" class="hg-ref__i hg-code__c" type="text" readonly value="${esc(inf.code)}">` +
+    `<button type="button" class="hg-btn hg-btn--sm" data-copy="${esc(inf.code)}">Copy</button></div></section>`
+  );
 }
 
 export function birthdayForm(): string {
@@ -234,7 +253,7 @@ export function rewardsTab(c: Ctx): string {
 }
 
 export function earnTab(c: Ctx): string {
-  return `<section class="hg-card"><h3 class="hg-h">Ways to earn</h3>${earnList(c)}</section>`;
+  return `<section class="hg-card"><h3 class="hg-h">Ways to earn</h3>${earnList(c)}</section>${influencerBox(c)}`;
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -244,7 +263,7 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 export function referTab(c: Ctx, summary: ReferralSummary | null): string {
-  const youGet = summary && summary.rewardPoints && summary.rewardPoints > 0 ? summary.rewardPoints : c.cfg.referralPoints;
+  const youGet = referralReward(c, summary);
   let stats = "";
   if (summary) {
     stats =
@@ -258,7 +277,7 @@ export function referTab(c: Ctx, summary: ReferralSummary | null): string {
   const share = url
     ? `<a class="hg-btn hg-btn--block hg-btn--ghost" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(`Shop with my link and get a welcome gift: ${url}`)}">Share on WhatsApp</a>`
     : "";
-  return `<section class="hg-card"><h3 class="hg-h">Refer &amp; Earn</h3><p class="hg-p">Invite a friend. You are rewarded when their first order is delivered and paid.</p>${referPerks(c, youGet)}${referBox(c)}${share}</section>${stats}`;
+  return `<section class="hg-card"><h3 class="hg-h">Refer &amp; Earn</h3><p class="hg-p">Invite a friend. You are rewarded when their first order is delivered and paid.</p>${referPerks(c, youGet)}${referBox(c)}${share}</section>${influencerBox(c)}${stats}`;
 }
 
 /** "Your progress" comes first, then the three tiers with perks from config. */
@@ -325,8 +344,14 @@ export function historyRows(rows: HistoryRow[]): string {
     .join("");
 }
 
-export function stateMessage(c: Ctx): string {
+export function stateMessage(c: Ctx, state: MemberState = "error"): string {
   const mm = c.member ? c.member.member : null;
+  if (!mm && state === "paused") {
+    return `<section class="hg-card"><h3 class="hg-h">Rewards are paused</h3><p class="hg-p">${esc(c.cfg.programName)} is taking a short break. Your points are safe, so please check back soon.</p></section>`;
+  }
+  if (!mm && state === "not_enrolled") {
+    return `<section class="hg-card"><h3 class="hg-h">Your rewards are being set up</h3><p class="hg-p">We are getting your ${esc(c.cfg.programName)} account ready. Please check again in a few minutes.</p><button type="button" class="hg-btn hg-btn--block" data-act="retry">Check again</button></section>`;
+  }
   if (mm && mm.optedOut) {
     return `<section class="hg-card"><h3 class="hg-h">You have opted out</h3><p class="hg-p">You are not part of ${esc(c.cfg.programName)} at the moment, so orders do not earn points. Contact us if you would like to join again.</p></section>`;
   }

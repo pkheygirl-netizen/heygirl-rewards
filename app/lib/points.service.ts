@@ -99,13 +99,14 @@ async function insertMember(
 ): Promise<MemberRow | null> {
   const customerId = String(customer.id);
   const now = new Date().toISOString();
-  for (let attempt = 0; attempt < 5; attempt++) {
+  let withContact = true;
+  for (let attempt = 0; attempt < 6; attempt++) {
     const { data, error } = await db
       .from("members")
       .insert({
         shopify_customer_id: customerId,
-        email: clean(customer.email),
-        phone: clean(customer.phone),
+        email: withContact ? clean(customer.email) : null,
+        phone: withContact ? clean(customer.phone) : null,
         first_name: clean(customer.first_name),
         last_name: clean(customer.last_name),
         tier: "silver",
@@ -122,8 +123,18 @@ async function insertMember(
     if (!error && data) return data;
     const message = error?.message ?? "";
     if (error?.code === "23505" && !message.includes("referral_slug")) {
-      // Another request created the member a moment ago.
-      return findMember(customerId);
+      // Usually: another request created the member a moment ago.
+      const existing = await findMember(customerId);
+      if (existing) return existing;
+      // Otherwise some other unique value clashed (for example a database
+      // that enforces one member per email). Enrol on the customer id alone
+      // rather than fail the order for ever; the clash is logged for the admin.
+      if (withContact) {
+        console.error(`[insertMember] unique clash for customer ${customerId} (${message}); enrolling without contact details`);
+        withContact = false;
+        continue;
+      }
+      return null;
     }
     if (!message.includes("referral_slug")) {
       console.error("[insertMember] insert error:", message);
@@ -138,6 +149,9 @@ async function insertMember(
 /** Fill in contact details we did not have before (never overwrites a value). */
 function missingDetails(member: MemberRow, customer: CustomerInput): Partial<MemberRow> {
   const patch: Partial<MemberRow> = {};
+  // A member who opted out, or whose details were erased on request, stays
+  // as she is: a later order must not put her name or phone back.
+  if (member.opted_out || (member.email ?? "").endsWith("@redacted.invalid")) return patch;
   if (!member.email && clean(customer.email)) patch.email = clean(customer.email);
   if (!member.phone && clean(customer.phone)) patch.phone = clean(customer.phone);
   if (!member.first_name && clean(customer.first_name)) patch.first_name = clean(customer.first_name);
@@ -282,7 +296,9 @@ export async function enrolFromSignin(input: {
   if (!(await welcomeBonusOutstanding(member))) return { memberId: member.id, welcomeQueued: false };
 
   try {
-    await pointsQueue.add("award_signup_points", { memberId: member.id }, { jobId: `signup-${member.id}` });
+    // No fixed job id: a failed job with the same id would block this one for
+    // as long as failed jobs are kept. The ledger makes the award idempotent.
+    await pointsQueue.add("award_signup_points", { memberId: member.id });
   } catch (err) {
     console.error("[enrolFromSignin] welcome bonus enqueue failed:", err instanceof Error ? err.message : err);
     return { memberId: member.id, welcomeQueued: false, reason: "enqueue_failed" };
@@ -373,8 +389,9 @@ export async function setBirthday(
 
 /**
  * Rule 9: upgrade when lifetime spend crosses a threshold; never downgrade.
- * On upgrade: tier_history row, pending expiry cleared (rule 8), and a job that
- * issues the tier reward code(s) and then tells the member.
+ * The tier change, its tier_history row and clearing the expiry dates happen
+ * in one database transaction (upgrade_member_tier). What follows is driven by
+ * state, not by "this call did the upgrade": see ensureTierFollowUps.
  */
 export async function checkAndUpgradeTier(
   memberId: string,
@@ -384,43 +401,77 @@ export async function checkAndUpgradeTier(
 ): Promise<string> {
   const settings = await getSettings();
   const target = tierForSpend(lifetimeSpendPkr, tierThresholds(settings));
-  if ((TIER_RANK[target] ?? 0) <= (TIER_RANK[currentTier] ?? 0)) return currentTier;
+  let tier = currentTier;
+  if ((TIER_RANK[target] ?? 0) > (TIER_RANK[currentTier] ?? 0)) {
+    const { error } = await db.rpc("upgrade_member_tier", {
+      p_member_id: memberId,
+      p_to_tier: target,
+      p_shopify_order_id: ctx.shopifyOrderId ?? null,
+    });
+    if (error) throw new Error(`tier upgrade failed: ${error.message}`);
+    tier = target; // upgraded now, or a moment ago by another job
+  }
+  if (tier !== "silver") await ensureTierFollowUps(memberId, ctx.shop ?? null);
+  return tier;
+}
 
-  // Conditional on the old tier so two jobs cannot both record the upgrade.
-  const { data: changed, error } = await db
+/**
+ * Make sure a Gold / Diamond member has what the upgrade owes her. Looks only
+ * at what exists, so it can run any number of times and finishes whatever an
+ * interrupted job left undone:
+ *   - no expiry dates on her live points (rule 8)
+ *   - a tier reward code for every upgrade recorded in tier_history (rule 9)
+ * A queueing failure is thrown, never swallowed, so the calling job is retried.
+ */
+export async function ensureTierFollowUps(memberId: string, shop?: string | null): Promise<{ queued: boolean }> {
+  const { data: member, error } = await db
     .from("members")
-    .update({ tier: target })
+    .select("id, tier, is_blocked, opted_out")
     .eq("id", memberId)
-    .eq("tier", currentTier)
-    .select("id");
-  if (error) throw new Error(`tier update failed: ${error.message}`);
-  if (!changed || changed.length === 0) return target; // someone else did it
+    .maybeSingle();
+  if (error) throw new Error(`member lookup failed: ${error.message}`);
+  if (!member || member.tier === "silver") return { queued: false };
 
-  const { error: histErr } = await db.from("tier_history").insert({
-    member_id: memberId,
-    from_tier: currentTier,
-    to_tier: target,
-    shopify_order_id: ctx.shopifyOrderId ?? null,
-  });
-  if (histErr) console.error("[checkAndUpgradeTier] tier_history insert failed:", histErr.message);
-
-  // Gold and Diamond points never expire: stop the clock on what she holds.
   const { error: expErr } = await db
     .from("points_ledger")
     .update({ expires_at: null })
     .eq("member_id", memberId)
     .eq("expired", false)
     .not("expires_at", "is", null);
-  if (expErr) console.error("[checkAndUpgradeTier] clearing expiry failed:", expErr.message);
+  if (expErr) throw new Error(`clearing expiry failed: ${expErr.message}`);
 
-  await pointsQueue
-    .add(
-      "issue_tier_reward",
-      { memberId, fromTier: currentTier, toTier: target, shop: ctx.shop ?? null },
-      { jobId: `tier-reward-${memberId}-${target}` },
-    )
-    .catch((err) => console.error("[checkAndUpgradeTier] tier reward enqueue failed:", err));
-  return target;
+  if (member.is_blocked || member.opted_out) return { queued: false };
+
+  const { data: history, error: histErr } = await db
+    .from("tier_history")
+    .select("from_tier, to_tier")
+    .eq("member_id", memberId);
+  if (histErr) throw new Error(`tier history lookup failed: ${histErr.message}`);
+  // Only upgrades this version recorded earn a code (members who were already
+  // Gold before v3 have no history row and are not suddenly sent one).
+  const reachedGold = (history ?? []).some((h) => h.to_tier === "gold" || (h.to_tier === "diamond" && h.from_tier === "silver"));
+  const reachedDiamond = (history ?? []).some((h) => h.to_tier === "diamond");
+
+  const settings = await getSettings();
+  const owedGold = reachedGold && settings.tier_reward_gold_free_shipping;
+  const owedDiamond = reachedDiamond && member.tier === "diamond" && settings.tier_reward_diamond_pkr > 0;
+  if (!settings.program_enabled || (!owedGold && !owedDiamond)) return { queued: false };
+
+  const keys = [`tier_gold:${memberId}`, `tier_diamond:${memberId}`];
+  const { data: codes, error: codesErr } = await db.from("loyalty_codes").select("issue_key").in("issue_key", keys);
+  if (codesErr) throw new Error(`tier code lookup failed: ${codesErr.message}`);
+  const have = new Set((codes ?? []).map((c) => c.issue_key));
+  const missingGold = owedGold && !have.has(keys[0]);
+  const missingDiamond = owedDiamond && !have.has(keys[1]);
+  if (!missingGold && !missingDiamond) return { queued: false };
+
+  await pointsQueue.add("issue_tier_reward", {
+    memberId,
+    fromTier: missingGold ? "silver" : "gold",
+    toTier: missingDiamond ? "diamond" : "gold",
+    shop: shop ?? null,
+  });
+  return { queued: true };
 }
 
 // ── Social follows (rule 15) ──────────────────────────────────────────────
@@ -489,12 +540,32 @@ export async function expireSilverPoints(
     .from("points_ledger")
     .select("id, member_id, points_remaining, members!inner(tier)")
     .gt("points", 0)
+    .gt("points_remaining", 0) // nothing left = nothing to expire, and no 0-point row
     .eq("expired", false)
     .lt("expires_at", now.toISOString())
     .eq("members.tier", "silver")
     .order("expires_at", { ascending: true })
     .limit(batchSize); // bounded per run; the next run picks up the rest
   if (error) throw new Error(`expiry query failed: ${error.message}`);
+
+  // Overdue tranches that were spent in full are simply closed.
+  const { data: spent, error: spentErr } = await db
+    .from("points_ledger")
+    .select("id, members!inner(tier)")
+    .gt("points", 0)
+    .eq("points_remaining", 0)
+    .eq("expired", false)
+    .lt("expires_at", now.toISOString())
+    .eq("members.tier", "silver")
+    .limit(batchSize);
+  if (spentErr) throw new Error(`expiry query failed: ${spentErr.message}`);
+  if ((spent ?? []).length > 0) {
+    const { error: closeErr } = await db
+      .from("points_ledger")
+      .update({ expired: true })
+      .in("id", (spent ?? []).map((t) => t.id));
+    if (closeErr) throw new Error(`closing spent tranches failed: ${closeErr.message}`);
+  }
 
   const affected = new Set<string>();
   let total = 0;
@@ -511,12 +582,12 @@ export async function expireSilverPoints(
       p_customer_note: "Points expired",
     });
     if (rpcErr) throw new Error(`award_points(expiry) failed: ${rpcErr.message}`);
+    // Counted either way: the database closes the tranche even when the
+    // member's balance was already zero (and then writes no ledger row).
+    count++;
     if (data?.[0]?.awarded) {
-      count++;
-      if ((t.points_remaining ?? 0) > 0) {
-        affected.add(t.member_id);
-        total += t.points_remaining ?? 0;
-      }
+      affected.add(t.member_id);
+      total += t.points_remaining ?? 0;
     }
   }
   return { membersAffected: affected.size, pointsExpired: total, tranches: count };

@@ -11,8 +11,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const event = parseRefundPayload(payload);
   if (!event) return new Response(null, { status: 200 });
   try {
-    // Job id = refund id: a redelivered webhook is not queued twice.
-    await pointsQueue.add("refund_event", { event, shop, topic }, { jobId: `refund-${event.refundId}` });
+    // No fixed job id (a failed job would block a redelivery): the database
+    // counts each refund id once, so a duplicate job changes nothing.
+    await pointsQueue.add("refund_event", { event, shop, topic });
   } catch (err) {
     console.error("[refunds-create] enqueue failed:", err instanceof Error ? err.message : err);
     return new Response(null, { status: 503 }); // Shopify retries

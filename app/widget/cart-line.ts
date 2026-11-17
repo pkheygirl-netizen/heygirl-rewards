@@ -1,7 +1,7 @@
 // app/widget/cart-line.ts
 // The single rewards line shown above the checkout buttons (cart drawer and
 // cart page). Pure HTML builder + an idempotent DOM placement helper.
-import { bestCode, codeValue, discountUrl, esc, fmt, GIFT_ICON, minRedeem, pointsFor, type CartState, type Config, type MemberData } from "./shared";
+import { activeCampaign, bestCode, codeValue, discountUrl, esc, fmt, GIFT_ICON, minRedeem, pointsFor, type CartState, type Config, type MemberData } from "./shared";
 
 export const DRAWER_LINE_ATTR = "data-hg-drawer-line";
 
@@ -47,6 +47,9 @@ export function cartLineHtml(cfg: Config, cart: CartState, member: MemberData | 
   const earn = pointsFor(cart.total, cfg, now);
   if (earn > 0) {
     out.push(`<p class="hg-line__main">${GIFT_ICON}<span>You'll earn <strong>${fmt(earn)} points</strong> on this order</span></p>`);
+    // Campaign wording comes from here (the shopper's clock), never from Liquid.
+    const camp = activeCampaign(cfg, now);
+    if (camp) out.push(`<p class="hg-line__sub">${esc(camp.name || "Bonus points")}: ${esc(String(camp.multiplier))}x points on this order.</p>`);
   }
   if (!signedIn) {
     out.push(`<p class="hg-line__sub">Placing an order enrols you in ${esc(cfg.programName)}.</p>`);
@@ -119,4 +122,29 @@ export function fillCartBlock(el: Element, html: string): boolean {
   m._hg = html;
   (m as HTMLElement).hidden = !html;
   return true;
+}
+
+type Timers = { set: (fn: () => void, ms: number) => unknown; clear: (id: unknown) => void };
+
+/**
+ * Handler for "the theme re-rendered the cart". It first calls `render()`
+ * synchronously, which puts the last known line straight back (Dawn has just
+ * wiped it), so the totals area does not jump; then, debounced, it asks for
+ * fresh cart data and renders again.
+ */
+export function createCartSync(
+  render: () => void,
+  refresh: () => Promise<unknown>,
+  delayMs = 250,
+  timers: Timers = { set: (fn, ms) => setTimeout(fn, ms), clear: (id) => clearTimeout(id as ReturnType<typeof setTimeout>) },
+): () => void {
+  let timer: unknown = null;
+  return () => {
+    render();
+    if (timer !== null) timers.clear(timer);
+    timer = timers.set(() => {
+      timer = null;
+      refresh().then(render, render);
+    }, delayMs);
+  };
 }

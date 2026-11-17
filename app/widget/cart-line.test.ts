@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { cartFromJson, cartLineHtml, DRAWER_LINE_ATTR, ensureDrawerLine, fillCartBlock } from "./cart-line";
+import { cartFromJson, cartLineHtml, createCartSync, DRAWER_LINE_ATTR, ensureDrawerLine, fillCartBlock } from "./cart-line";
 import { makeConfig, makeMember } from "./test-fixtures";
 
 // jsdom is not installed in this repo, so the placement helper is exercised
@@ -164,5 +164,73 @@ describe("cartLineHtml", () => {
     expect(cartLineHtml(makeConfig({ enabled: false }), cart, null, false, "/")).toBe("");
     expect(cartLineHtml(cfg, cart, makeMember({ optedOut: true }), true, "/")).toBe("");
     expect(cartLineHtml(cfg, cart, makeMember({ blocked: true }), true, "/")).toBe("");
+  });
+});
+
+describe("review fixes: cart line", () => {
+  it("item 2: the line is back in the same task as Dawn's re-render, then refreshed after /cart.js", async () => {
+    const d = drawer();
+    let html = "<p>2,500 points</p>";
+    const render = () => void ensureDrawerLine(asEl(d.root), html);
+    render();
+
+    const queued: Array<() => void> = [];
+    let cleared = 0;
+    let fetches = 0;
+    const sync = createCartSync(
+      render,
+      async () => {
+        fetches++;
+        html = "<p>5,000 points</p>";
+      },
+      250,
+      { set: (fn) => queued.push(fn), clear: () => void cleared++ },
+    );
+
+    // Dawn replaces .drawer__inner contents; the observer fires.
+    d.inner.children = [];
+    const ctas = el("cart__ctas");
+    d.inner.append(el("drawer__footer").append(ctas));
+    expect(lines(d.root)).toHaveLength(0);
+    sync();
+    // No timer has run and nothing was fetched, yet the line is already there.
+    expect(fetches).toBe(0);
+    expect(lines(d.root)).toHaveLength(1);
+    expect(ctas.previousElementSibling).toBe(lines(d.root)[0]);
+    expect(lines(d.root)[0].innerHTML).toBe("<p>2,500 points</p>");
+
+    sync(); // a second mutation within the debounce window
+    expect(cleared).toBe(1);
+    expect(lines(d.root)).toHaveLength(1);
+
+    queued[queued.length - 1]();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fetches).toBe(1);
+    expect(lines(d.root)).toHaveLength(1);
+    expect(lines(d.root)[0].innerHTML).toBe("<p>5,000 points</p>");
+  });
+
+  it("item 2: still renders when the cart request fails", async () => {
+    let renders = 0;
+    const queued: Array<() => void> = [];
+    const sync = createCartSync(() => void renders++, () => Promise.reject(new Error("offline")), 250, { set: (fn) => queued.push(fn), clear: () => undefined });
+    sync();
+    queued[0]();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(renders).toBe(2);
+  });
+
+  it("item 11: campaign wording in the cart line follows the script's clock", () => {
+    const campaign = { name: "11.11", multiplier: 2, startsAt: "2026-11-10T00:00:00Z", endsAt: "2026-11-20T00:00:00Z" };
+    const cfg = makeConfig({ campaign });
+    const cart = { total: 250000, count: 1, codes: [] as string[] };
+    const during = cartLineHtml(cfg, cart, null, false, "/cart", Date.parse("2026-11-16T00:00:00Z"));
+    expect(during).toContain("5,000 points");
+    expect(during).toContain("11.11: 2x points on this order.");
+    const after = cartLineHtml(cfg, cart, null, false, "/cart", Date.parse("2026-11-21T00:00:00Z"));
+    expect(after).toContain("2,500 points");
+    expect(after).not.toContain("11.11");
   });
 });

@@ -74,6 +74,7 @@ describe("claimReview", () => {
 describe("release job", () => {
   it("pays due claims once as 'review' points and notifies; claims not yet due are left", async () => {
     const m = seedMember(h.db);
+    awardedOrder(m.shopify_customer_id, "O1", { earning_basis_pkr: 2000, points_awarded_amount: 2000 });
     const due = h.db.seed("review_claims", { member_id: m.id, shopify_order_id: "O1", points: 3000, release_at: "2026-11-01T00:00:00Z" });
     const later = h.db.seed("review_claims", { member_id: m.id, shopify_order_id: "O2", points: 3000, release_at: "2026-12-01T00:00:00Z" });
     const now = new Date("2026-11-10T00:00:00Z");
@@ -106,5 +107,45 @@ describe("rejectReviewClaim", () => {
     expect(await releaseDueReviewClaims(new Date("2026-11-10T00:00:00Z"))).toEqual({ released: 0, rejected: 0 });
     const paid = h.db.seed("review_claims", { member_id: m.id, shopify_order_id: "O2", points: 1, release_at: "2026-11-01T00:00:00Z", status: "awarded" });
     expect(await rejectReviewClaim(String(paid.id), "staff")).toEqual({ ok: false });
+  });
+});
+
+describe("L4: release re-checks the rule and the order", () => {
+  const NOW = new Date("2026-11-10T00:00:00Z");
+  const claimFor = (over = {}) => {
+    const m = seedMember(h.db);
+    const order = awardedOrder(m.shopify_customer_id, "O1", { earning_basis_pkr: 2000, points_awarded_amount: 2000, ...over });
+    const claim = h.db.seed("review_claims", { member_id: m.id, shopify_order_id: "O1", points: 3000, release_at: "2026-11-01T00:00:00Z" });
+    return { m, order, claim };
+  };
+
+  it("rule switched off after the claim: nothing is paid and the claim waits", async () => {
+    const { m, claim } = claimFor();
+    h.db.table("app_settings")[0].earn_rules = { review: { enabled: false } };
+    bustSettingsCache();
+    expect(await releaseDueReviewClaims(NOW)).toMatchObject({ released: 0, rejected: 0, reason: "disabled" });
+    expect(claim.status).toBe("pending");
+    expect(m.points_balance).toBe(0);
+    h.db.table("app_settings")[0].earn_rules = {};
+    bustSettingsCache();
+    expect(await releaseDueReviewClaims(NOW)).toMatchObject({ released: 1 });
+  });
+
+  it("order cancelled during the hold: rejected, no points", async () => {
+    const { m, claim } = claimFor({ cancelled_at: "2026-11-05T00:00:00Z" });
+    expect(await releaseDueReviewClaims(NOW)).toMatchObject({ released: 0, rejected: 1 });
+    expect(claim.status).toBe("rejected");
+    expect(m.points_balance).toBe(0);
+  });
+
+  it("order refunded in full during the hold: rejected; a part refund still pays", async () => {
+    const full = claimFor({ refunded_basis_pkr: 2000, points_reversed_amount: 2000 });
+    expect(await releaseDueReviewClaims(NOW)).toMatchObject({ released: 0, rejected: 1 });
+    expect(full.claim.status).toBe("rejected");
+
+    resetHarness(); bustSettingsCache();
+    const part = claimFor({ refunded_basis_pkr: 500, points_reversed_amount: 500 });
+    expect(await releaseDueReviewClaims(NOW)).toMatchObject({ released: 1, rejected: 0 });
+    expect(part.m.points_balance).toBe(3000);
   });
 });

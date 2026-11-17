@@ -244,6 +244,63 @@ export async function findDiscountIdByCode(admin: AdminGraphqlClient, code: stri
 
 // ── Automatic codes (birthday, referral friend, tier rewards) ─────────────
 
+const FREE_SHIPPING_KINDS = new Set(["referral_friend", "tier_gold"]);
+const KIND_TITLES: Record<string, string> = {
+  birthday: "HeyGirl Rewards: birthday gift",
+  referral_friend: "HeyGirl Rewards: friend welcome, free shipping",
+  tier_gold: "HeyGirl Rewards: Gold tier, free shipping",
+  tier_diamond: "HeyGirl Rewards: Diamond tier reward",
+  reward: "HeyGirl Rewards",
+};
+
+export type PendingCodeRow = {
+  id: string;
+  code: string;
+  kind: string;
+  expires_at: string;
+  discount_amount_pkr: number;
+};
+
+/**
+ * Finish a loyalty_codes row that was left `pending` (the job that created it
+ * ran out of retries, or the process died between the two steps). Creates the
+ * discount with the row's own code, or adopts it if Shopify already has it,
+ * then marks the row active. Used by the pending-code sweep.
+ */
+export async function finishPendingCode(
+  admin: AdminGraphqlClient,
+  row: PendingCodeRow,
+  shopifyCustomerId: string,
+): Promise<{ ok: boolean; freeShipping: boolean; reason?: string }> {
+  const freeShipping = FREE_SHIPPING_KINDS.has(row.kind);
+  const endsAt = new Date(row.expires_at);
+  if (!(endsAt.getTime() > Date.now())) {
+    await db.from("loyalty_codes").update({ status: "expired" }).eq("id", row.id).eq("status", "pending");
+    return { ok: false, freeShipping, reason: "expired" };
+  }
+  const amount = Number(row.discount_amount_pkr ?? 0);
+  const title = freeShipping ? KIND_TITLES[row.kind] : `${KIND_TITLES[row.kind] ?? KIND_TITLES.reward}, Rs. ${amount} off`;
+  let created: DiscountResult = freeShipping
+    ? await createCustomerFreeShippingCode(admin, { code: row.code, title, shopifyCustomerId, endsAt })
+    : await createCustomerAmountOffCode(admin, { code: row.code, title, amountPkr: amount, shopifyCustomerId, endsAt });
+  if (!created.ok && created.reason === "code_taken") {
+    try {
+      const existingId = await findDiscountIdByCode(admin, row.code);
+      if (existingId) created = { ok: true, discountId: existingId };
+    } catch (err) {
+      console.error("[finishPendingCode] lookup failed:", err instanceof Error ? err.message : err);
+    }
+  }
+  if (!created.ok) return { ok: false, freeShipping, reason: "shopify_error" };
+  const { error } = await db
+    .from("loyalty_codes")
+    .update({ status: "active", shopify_discount_id: created.discountId })
+    .eq("id", row.id)
+    .eq("status", "pending");
+  if (error) return { ok: false, freeShipping, reason: "db_error" };
+  return { ok: true, freeShipping };
+}
+
 export type AutoCodeKind = "birthday" | "referral_friend" | "tier_gold" | "tier_diamond";
 
 const AUTO_PREFIX: Record<AutoCodeKind, string> = {

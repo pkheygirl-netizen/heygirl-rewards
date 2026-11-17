@@ -13,6 +13,7 @@ import {
   getActiveLoyaltyCodes,
   redeemPoints,
   returnRedemptionsForCancelledOrder,
+  sweepPendingCodes,
   validateRedemption,
 } from "./redemption.service";
 
@@ -215,5 +216,108 @@ describe("getActiveLoyaltyCodes", () => {
     expect(list.map((c) => c.code)).toEqual(["A"]);
     expect(list[0].kind).toBe("birthday");
     expect(await getActiveLoyaltyCodes("nobody")).toEqual([]);
+  });
+});
+
+describe("H3: pending-code sweep", () => {
+  const OLD = "2026-11-16T09:00:00Z";
+  const NOW = new Date("2026-11-16T10:00:00Z");
+  const pendingReward = (m: Record<string, unknown>, over = {}) =>
+    h.db.seed("loyalty_codes", {
+      member_id: m.id, code: "REWARD-STUCK", kind: "reward", status: "pending", discount_amount: 250, discount_amount_pkr: 250,
+      points_spent: 6000, expires_at: "2026-12-16T09:00:00Z", created_at: OLD, ...over,
+    });
+  const deduct = async (m: Record<string, unknown>, row: Record<string, unknown>) =>
+    h.db.rpc("award_points", { p_member_id: m.id, p_action_type: "redemption", p_reference_id: String(row.id), p_points: -6000 });
+  const notInShopify = (q: string) => (opName(q) === "HgCodeDiscountNodeByCode" ? { codeDiscountNodeByCode: null } : created());
+
+  it("redeem crashed after taking the points and before creating the discount: points returned, row cancelled", async () => {
+    const m = rich();
+    const row = pendingReward(m);
+    await deduct(m, row);
+    expect(m.points_balance).toBe(1000);
+    h.graphql = notInShopify;
+    expect(await sweepPendingCodes(NOW)).toEqual({ finished: 0, returned: 1, cancelled: 0, failed: 0 });
+    expect(m.points_balance).toBe(7000);
+    expect(row.status).toBe("cancelled");
+    // a second sweep finds nothing and returns nothing more
+    expect(await sweepPendingCodes(NOW)).toEqual({ finished: 0, returned: 0, cancelled: 0, failed: 0 });
+    expect(m.points_balance).toBe(7000);
+  });
+
+  it("redeem crashed after Shopify created the discount: the code is activated, points stay spent, member is told", async () => {
+    const m = rich();
+    const row = pendingReward(m);
+    await deduct(m, row);
+    h.graphql = (q) => (opName(q) === "HgCodeDiscountNodeByCode" ? { codeDiscountNodeByCode: { id: NODE } } : created());
+    expect(await sweepPendingCodes(NOW)).toMatchObject({ finished: 1, returned: 0 });
+    expect(row).toMatchObject({ status: "active", shopify_discount_id: NODE });
+    expect(m.points_balance).toBe(1000);
+    expect(h.notifications.named("reward_code_issued")).toHaveLength(1);
+  });
+
+  it("redeem crashed before the points were taken: the row is cancelled and nothing is credited", async () => {
+    const m = rich();
+    const row = pendingReward(m);
+    h.graphql = notInShopify;
+    expect(await sweepPendingCodes(NOW)).toMatchObject({ cancelled: 1, returned: 0 });
+    expect(m.points_balance).toBe(7000);
+    expect(row.status).toBe("cancelled");
+    expect(h.db.table("points_ledger").filter((l) => l.action_type === "redemption_return")).toHaveLength(0);
+  });
+
+  it("rows younger than ten minutes are left alone (their own job may still be running)", async () => {
+    const m = rich();
+    const row = pendingReward(m, { created_at: "2026-11-16T09:55:00Z" });
+    await deduct(m, row);
+    expect(await sweepPendingCodes(NOW)).toEqual({ finished: 0, returned: 0, cancelled: 0, failed: 0 });
+    expect(row.status).toBe("pending");
+    expect(h.graphqlCalls).toHaveLength(0);
+  });
+
+  it("automatic codes whose job gave up are created by issue key and the member is told", async () => {
+    const m = seedMember(h.db, { shopify_customer_id: "90" });
+    const bday = h.db.seed("loyalty_codes", { member_id: m.id, code: "BDAY-AAAA", kind: "birthday", issue_key: `birthday:${m.id}:2026`, status: "pending", discount_amount: 500, discount_amount_pkr: 500, points_spent: 0, expires_at: "2026-12-16T09:00:00Z", created_at: OLD });
+    const gold = h.db.seed("loyalty_codes", { member_id: m.id, code: "GOLD-BBBB", kind: "tier_gold", issue_key: `tier_gold:${m.id}`, status: "pending", discount_amount: 0, points_spent: 0, expires_at: "2026-12-16T09:00:00Z", created_at: OLD });
+    h.graphql = (q) =>
+      opName(q) === "HgDiscountCodeFreeShippingCreate"
+        ? { discountCodeFreeShippingCreate: { codeDiscountNode: { id: "gid://shopify/DiscountCodeNode/61" }, userErrors: [] } }
+        : created();
+    expect(await sweepPendingCodes(NOW)).toEqual({ finished: 2, returned: 0, cancelled: 0, failed: 0 });
+    expect(bday).toMatchObject({ status: "active", shopify_discount_id: NODE });
+    expect(gold).toMatchObject({ status: "active", shopify_discount_id: "gid://shopify/DiscountCodeNode/61" });
+    const calls = h.graphqlCalls.map((c) => opName(c.query));
+    expect(calls).toEqual(["HgDiscountCodeBasicCreate", "HgDiscountCodeFreeShippingCreate"]);
+    expect((h.graphqlCalls[0].variables.basicCodeDiscount as Record<string, any>).code).toBe("BDAY-AAAA"); // the row's own code
+    expect(h.notifications.named("birthday")).toHaveLength(1);
+    expect(h.notifications.named("reward_code_issued")[0].data).toMatchObject({ kind: "tier_gold", freeShipping: true });
+  });
+
+  it("Shopify still down: the row stays pending for the next sweep; nothing is lost or duplicated", async () => {
+    const m = seedMember(h.db);
+    const row = h.db.seed("loyalty_codes", { member_id: m.id, code: "BDAY-CCCC", kind: "birthday", issue_key: `birthday:${m.id}:2026`, status: "pending", discount_amount: 500, discount_amount_pkr: 500, points_spent: 0, expires_at: "2026-12-16T09:00:00Z", created_at: OLD });
+    h.graphql = () => { throw new Error("503"); };
+    expect(await sweepPendingCodes(NOW)).toMatchObject({ finished: 0, failed: 1 });
+    expect(row.status).toBe("pending");
+    h.graphql = created;
+    expect(await sweepPendingCodes(NOW)).toMatchObject({ finished: 1 });
+    expect(h.db.table("loyalty_codes")).toHaveLength(1);
+  });
+
+  it("a pending automatic code for a member blocked meanwhile, or already past its expiry, is closed", async () => {
+    const blocked = seedMember(h.db, { is_blocked: true });
+    const a = h.db.seed("loyalty_codes", { member_id: blocked.id, code: "BDAY-D", kind: "birthday", issue_key: "k1", status: "pending", discount_amount: 1, discount_amount_pkr: 1, points_spent: 0, expires_at: "2026-12-16T09:00:00Z", created_at: OLD });
+    const ok = seedMember(h.db);
+    const b = h.db.seed("loyalty_codes", { member_id: ok.id, code: "BDAY-E", kind: "birthday", issue_key: "k2", status: "pending", discount_amount: 1, discount_amount_pkr: 1, points_spent: 0, expires_at: "2020-01-01T00:00:00Z", created_at: "2019-12-01T00:00:00Z" });
+    expect(await sweepPendingCodes(NOW)).toMatchObject({ cancelled: 2, finished: 0 });
+    expect([a.status, b.status]).toEqual(["cancelled", "expired"]);
+    expect(h.graphqlCalls).toHaveLength(0);
+  });
+
+  it("no admin client: the sweep throws so the cron run is marked failed", async () => {
+    const m = rich();
+    pendingReward(m);
+    h.adminUnavailable = true;
+    await expect(sweepPendingCodes(NOW)).rejects.toThrow(/session/);
   });
 });

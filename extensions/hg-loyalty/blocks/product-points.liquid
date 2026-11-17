@@ -31,7 +31,8 @@
     {%- render 'hg-gift' -%}
     <span>
       Earn <strong><span data-hg-earn-pts>{% render 'hg-num', n: hg_points %}</span> points</strong> with this purchase
-      {%- if hg_mult > 1 %} ({{ cfg.campaign.name | escape }}){% endif -%}
+      {%- comment -%} Campaign wording is written by hg-core.js (Liquid's "now" can be stale). {%- endcomment -%}
+      <span data-hg-camp hidden></span>
     </span>
   </div>
 {%- endif -%}

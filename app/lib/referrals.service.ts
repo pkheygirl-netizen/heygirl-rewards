@@ -213,7 +213,7 @@ export async function recordReferralVisit(input: {
     } catch (err) {
       console.error("[recordReferralVisit] friend code not issued yet, queued:", err instanceof Error ? err.message : err);
       await pointsQueue
-        .add("issue_referral_friend_code", { referralId: inserted.id, shop: input.shop ?? null }, { jobId: `friend-code-${inserted.id}` })
+        .add("issue_referral_friend_code", { referralId: inserted.id, shop: input.shop ?? null })
         .catch((e) => console.error("[recordReferralVisit] friend code enqueue failed:", e));
     }
   }
@@ -230,6 +230,9 @@ type OrderLite = {
   created_at: string;
   earning_basis_pkr: number | null;
   refunded_basis_pkr: number;
+  refund_basis_at_award_pkr: number;
+  points_awarded_amount: number;
+  points_reversed_amount: number;
 };
 
 /**
@@ -240,7 +243,7 @@ type OrderLite = {
 export async function firstQualifyingOrder(shopifyCustomerId: string): Promise<OrderLite | null> {
   const { data, error } = await db
     .from("order_webhook_state")
-    .select("shopify_order_id, points_awarded, cancelled_at, placed_at, created_at, earning_basis_pkr, refunded_basis_pkr")
+    .select("shopify_order_id, points_awarded, cancelled_at, placed_at, created_at, earning_basis_pkr, refunded_basis_pkr, refund_basis_at_award_pkr, points_awarded_amount, points_reversed_amount")
     .eq("shopify_customer_id", shopifyCustomerId)
     .is("cancelled_at", null)
     .order("created_at", { ascending: true })
@@ -252,8 +255,19 @@ export async function firstQualifyingOrder(shopifyCustomerId: string): Promise<O
   return rows.slice().sort((a, b) => when(a) - when(b))[0];
 }
 
-const fullyRefunded = (o: OrderLite): boolean =>
-  Number(o.earning_basis_pkr ?? 0) > 0 && Number(o.refunded_basis_pkr ?? 0) >= Number(o.earning_basis_pkr ?? 0);
+/**
+ * Nothing left of the order: it was refunded before the award (awarded on a
+ * zero basis), every awarded point has been reversed, or less than one paisa
+ * of the awarded basis remains. Compared on the stored remaining amount, not
+ * on rounded sums.
+ */
+const fullyRefunded = (o: OrderLite): boolean => {
+  const basis = Number(o.earning_basis_pkr ?? 0);
+  if (basis <= 0) return true;
+  if (o.points_awarded_amount > 0 && o.points_reversed_amount >= o.points_awarded_amount) return true;
+  const since = Math.max(0, Number(o.refunded_basis_pkr ?? 0) - Number(o.refund_basis_at_award_pkr ?? 0));
+  return basis - since < 0.01;
+};
 
 async function payReferral(
   referral: ReferralRow,
@@ -364,9 +378,15 @@ export async function approveReferral(
   const referral = updated?.[0] as ReferralRow | undefined;
   if (!referral) return { ok: false, paid: false, reason: "not_flagged" };
 
-  await pointsQueue
-    .add("issue_referral_friend_code", { referralId: referral.id, shop: shop || null }, { jobId: `friend-code-${referral.id}` })
-    .catch((err) => console.error("[approveReferral] friend code enqueue failed:", err));
+  // Issue the friend's code now. This writes the code row first (pending),
+  // so even if Shopify is down the pending-code sweep finishes it later.
+  try {
+    const issued = await issueReferralFriendCode(referral.id, shop || null);
+    if (!issued.issued && issued.reason === "shopify_error") throw new Error("shopify_error");
+  } catch (err) {
+    console.error("[approveReferral] friend code not issued yet:", err instanceof Error ? err.message : err);
+    await pointsQueue.add("issue_referral_friend_code", { referralId: referral.id, shop: shop || null });
+  }
 
   if (!referral.referred_shopify_customer_id) return { ok: true, paid: false };
   const result = await completeReferralForCustomer(referral.referred_shopify_customer_id);

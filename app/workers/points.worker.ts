@@ -1,5 +1,5 @@
 import { Worker } from "bullmq";
-import { makeRedis, notificationQueue } from "../lib/queue.server";
+import { addUnique, makeRedis, notificationQueue } from "../lib/queue.server";
 import { awardSignup, enrolMember } from "../lib/points.service";
 import {
   processOrderCancelled,
@@ -58,10 +58,12 @@ export const pointsWorker = new Worker(
           shop: shopOf(job.data),
         });
         // The upgrade email carries the codes, so it is sent from here.
-        await notificationQueue.add(
+        // Fixed id so a retried job does not mail twice; a failed mail job is replaced.
+        await addUnique(
+          notificationQueue,
           "tier_upgrade",
           { memberId: job.data.memberId, newTier: job.data.toTier, codes: result.issued },
-          { jobId: `tier-upgrade-mail-${job.data.memberId}-${job.data.toTier}` },
+          `tier-upgrade-mail-${job.data.memberId}-${job.data.toTier}`,
         );
         return result;
       }

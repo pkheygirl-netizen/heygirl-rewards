@@ -5,7 +5,12 @@ import crypto from "node:crypto";
 import { db } from "../db.server";
 import { notificationQueue } from "./queue.server";
 import { getAdminForShop } from "./worker-admin.server";
-import { createCustomerAmountOffCode, deactivateDiscount, findDiscountIdByCode } from "./discounts.server";
+import {
+  createCustomerAmountOffCode,
+  deactivateDiscount,
+  findDiscountIdByCode,
+  finishPendingCode,
+} from "./discounts.server";
 import { getSettings, type RedemptionTier } from "./settings.server";
 import { expiresAtForTier } from "./points.service";
 
@@ -291,6 +296,113 @@ export async function returnRedemptionsForCancelledOrder(
     }
   }
   return { returned: total, codes: count };
+}
+
+export const PENDING_CODE_GRACE_MS = 10 * 60 * 1000;
+
+/**
+ * Cron sweep (every 10 minutes): nothing may stay `pending` for good.
+ *   automatic codes (birthday, friend, tier): the discount is created (or
+ *     adopted) and the member is told, as the original job would have done
+ *   reward codes: redeemPoints died between taking the points and creating
+ *     the discount. If Shopify has the code it is activated; if not, the
+ *     points go back and the row is cancelled. If the points were never
+ *     taken, the row is just cancelled.
+ * Rows younger than ten minutes are left alone: their own job may still be running.
+ */
+export async function sweepPendingCodes(
+  now: Date = new Date(),
+  shop?: string | null,
+): Promise<{ finished: number; returned: number; cancelled: number; failed: number }> {
+  const cutoff = new Date(now.getTime() - PENDING_CODE_GRACE_MS).toISOString();
+  const { data: rows, error } = await db
+    .from("loyalty_codes")
+    .select("id, member_id, code, kind, expires_at, discount_amount_pkr, points_spent, issue_key")
+    .eq("status", "pending")
+    .lt("created_at", cutoff)
+    .order("created_at", { ascending: true })
+    .limit(200);
+  if (error) throw new Error(`pending code query failed: ${error.message}`);
+  const out = { finished: 0, returned: 0, cancelled: 0, failed: 0 };
+  if (!rows || rows.length === 0) return out;
+
+  const admin = await getAdminForShop(shop ?? undefined); // throws: the cron run is marked failed and retried
+  for (const row of rows) {
+    try {
+      const { data: member } = await db
+        .from("members")
+        .select("id, shopify_customer_id, tier, is_blocked, opted_out")
+        .eq("id", row.member_id)
+        .maybeSingle();
+      const cancel = async () =>
+        db.from("loyalty_codes").update({ status: "cancelled", cancelled_at: new Date().toISOString() }).eq("id", row.id).eq("status", "pending");
+
+      if (row.kind === "reward") {
+        const { data: deduction } = await db
+          .from("points_ledger")
+          .select("id")
+          .eq("member_id", row.member_id)
+          .eq("action_type", "redemption")
+          .eq("reference_id", String(row.id))
+          .maybeSingle();
+        if (!deduction || !member) {
+          await cancel(); // the points were never taken
+          out.cancelled++;
+          continue;
+        }
+        const existingId = await findDiscountIdByCode(admin, row.code);
+        if (existingId) {
+          // The discount was created; only the last step was missed.
+          await db.from("loyalty_codes").update({ status: "active", shopify_discount_id: existingId }).eq("id", row.id).eq("status", "pending");
+          await notificationQueue.add("reward_code_issued", {
+            memberId: row.member_id, code: row.code, discountPkr: row.discount_amount_pkr, expiresAt: row.expires_at, kind: "reward",
+          });
+          out.finished++;
+          continue;
+        }
+        await returnPointsForCode({
+          memberId: row.member_id,
+          tier: member.tier,
+          codeId: String(row.id),
+          points: row.points_spent,
+          reasonNote: "auto return: reward code was never created in Shopify (found by the pending-code sweep)",
+          customerNote: "Reward could not be created, points returned",
+        });
+        await cancel();
+        out.returned++;
+        continue;
+      }
+
+      // automatic kinds
+      if (!member || member.is_blocked || member.opted_out) {
+        await cancel();
+        out.cancelled++;
+        continue;
+      }
+      const done = await finishPendingCode(admin, row, member.shopify_customer_id);
+      if (!done.ok) {
+        if (done.reason === "expired") out.cancelled++;
+        else out.failed++; // stays pending; the next sweep tries again
+        continue;
+      }
+      await notificationQueue.add(row.kind === "birthday" ? "birthday" : "reward_code_issued", {
+        memberId: row.member_id,
+        code: row.code,
+        discountPkr: row.discount_amount_pkr,
+        expiresAt: row.expires_at,
+        kind: row.kind,
+        freeShipping: done.freeShipping,
+      });
+      if (row.kind === "referral_friend" && row.issue_key) {
+        await db.from("referrals").update({ friend_code_id: row.id }).eq("id", row.issue_key.replace(/^referral_friend:/, ""));
+      }
+      out.finished++;
+    } catch (err) {
+      console.error("[sweepPendingCodes] row", row.id, "failed:", err instanceof Error ? err.message : err);
+      out.failed++;
+    }
+  }
+  return out;
 }
 
 export async function getActiveLoyaltyCodes(shopifyCustomerId: string): Promise<

@@ -154,7 +154,24 @@ ALTER TABLE public.order_webhook_state
   ADD COLUMN IF NOT EXISTS points_reversed_amount integer NOT NULL DEFAULT 0,
   ADD COLUMN IF NOT EXISTS discount_codes         text[] NOT NULL DEFAULT '{}',
   ADD COLUMN IF NOT EXISTS influencer_member_id   uuid REFERENCES public.members(id),
-  ADD COLUMN IF NOT EXISTS is_first_order         boolean;
+  ADD COLUMN IF NOT EXISTS is_first_order         boolean,
+  -- Reconciliation on totals (refunds and order updates can arrive in any order):
+  --   gross_basis_pkr           highest basis the order ever had
+  --   refunded_basis_pkr        total basis refunded / removed so far (only grows)
+  --   refund_events_basis_pkr   the part of that reported by refunds/create
+  --   refund_ids                refunds already counted (replay protection)
+  --   refund_basis_at_award_pkr refunded_basis_pkr at the moment of the award
+  --   spend_reversed_pkr        lifetime spend already taken back
+  --   source_updated_at         Shopify updated_at of the newest order payload applied
+  --   points_rate               purchase rate in force (0 when the member cannot earn)
+  ADD COLUMN IF NOT EXISTS gross_basis_pkr           numeric(12,2),
+  ADD COLUMN IF NOT EXISTS refund_events_basis_pkr   numeric(12,2) NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS refund_ids                text[] NOT NULL DEFAULT '{}',
+  ADD COLUMN IF NOT EXISTS refund_basis_at_award_pkr numeric(12,2) NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS spend_reversed_pkr        numeric(12,2) NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS source_updated_at         timestamptz,
+  ADD COLUMN IF NOT EXISTS points_rate               numeric(8,4),
+  ADD COLUMN IF NOT EXISTS taxes_included            boolean NOT NULL DEFAULT false;
 
 CREATE INDEX IF NOT EXISTS idx_order_webhook_state_customer
   ON public.order_webhook_state (shopify_customer_id);
@@ -177,6 +194,46 @@ UPDATE public.order_webhook_state o
    AND o.points_awarded = true
    AND o.points_awarded_amount = 0
    AND s.earned > 0;
+
+-- ...and the matching refunded share, so a new refund of such an order is
+-- measured against what was already reversed.
+UPDATE public.order_webhook_state o
+   SET refunded_basis_pkr = ROUND(COALESCE(o.earning_basis_pkr, 0) * o.points_reversed_amount / o.points_awarded_amount, 2),
+       spend_reversed_pkr = ROUND(COALESCE(o.earning_basis_pkr, 0) * o.points_reversed_amount / o.points_awarded_amount, 2)
+ WHERE o.points_awarded = true
+   AND o.points_awarded_amount > 0
+   AND o.points_reversed_amount > 0
+   AND o.refunded_basis_pkr = 0
+   AND o.gross_basis_pkr IS NULL;
+
+-- ─────────────────────────── bonus_campaigns ───────────────────────────
+-- Rule 2: a campaign switched off AFTER an order was placed still counts for
+-- that order. The admin only flips is_active, so the moment is recorded here.
+ALTER TABLE public.bonus_campaigns
+  ADD COLUMN IF NOT EXISTS deactivated_at timestamptz;
+
+CREATE OR REPLACE FUNCTION public.bonus_campaigns_track_deactivation()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    IF NOT NEW.is_active AND NEW.deactivated_at IS NULL THEN NEW.deactivated_at := now(); END IF;
+  ELSIF OLD.is_active AND NOT NEW.is_active THEN
+    NEW.deactivated_at := now();
+  ELSIF NEW.is_active AND NOT OLD.is_active THEN
+    NEW.deactivated_at := NULL;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_bonus_campaigns_deactivation ON public.bonus_campaigns;
+CREATE TRIGGER trg_bonus_campaigns_deactivation
+  BEFORE INSERT OR UPDATE ON public.bonus_campaigns
+  FOR EACH ROW EXECUTE FUNCTION public.bonus_campaigns_track_deactivation();
+
+-- Campaigns already off: when is unknown, so they count for no earlier order.
+UPDATE public.bonus_campaigns SET deactivated_at = created_at
+ WHERE is_active = false AND deactivated_at IS NULL;
 
 -- ──────────────────────────── loyalty_codes ────────────────────────────
 ALTER TABLE public.loyalty_codes
@@ -360,7 +417,8 @@ DROP FUNCTION IF EXISTS public.award_points(uuid, text, text, integer, timestamp
 --   * 'redemption' is refused when the balance is too low; every other
 --     deduction is floored at zero
 --   * 'expiry' (reference = the tranche's ledger id) removes exactly what is
---     left in that tranche
+--     left in that tranche; Silver members only; a fully spent tranche is
+--     closed without a ledger row
 CREATE OR REPLACE FUNCTION public.award_points(
   p_member_id           uuid,
   p_action_type         text,
@@ -426,6 +484,17 @@ BEGIN
        AND pl.expired = false
        FOR UPDATE;
     IF NOT FOUND THEN
+      RETURN QUERY SELECT false, v_current, v_lifetime;
+      RETURN;
+    END IF;
+    -- Only Silver points expire (rule 8), whatever the caller asks.
+    IF v_tier <> 'silver' THEN
+      RETURN QUERY SELECT false, v_current, v_lifetime;
+      RETURN;
+    END IF;
+    -- A tranche that was spent in full just closes: no 0-point ledger row.
+    IF v_src_left <= 0 OR v_current <= 0 THEN
+      UPDATE public.points_ledger SET points_remaining = 0, expired = true WHERE id = v_src_id;
       RETURN QUERY SELECT false, v_current, v_lifetime;
       RETURN;
     END IF;
@@ -498,8 +567,123 @@ BEGIN
 END;
 $$;
 
--- award_order_points: award one order exactly once, and never after it was
--- cancelled. Lock order: order row first, then the member (inside award_points).
+-- ── Order points: reconciliation on totals ─────────────────────────────────
+-- Shopify delivers refunds/create, orders/updated and orders/cancelled in no
+-- guaranteed order, and a failed job is retried later with an old payload. So
+-- nothing here works on "this event's amount" alone. Each order row keeps
+--   gross_basis_pkr     the highest basis the order ever had
+--   refunded_basis_pkr  the total refunded / removed so far (only ever grows)
+-- and the points to reverse are always worked out from those totals:
+--   before the award  the award is made on gross - refunded
+--   after the award   reversed points = awarded x (refunded since award) / awarded basis
+-- Whichever event arrives first, the row ends in the same state.
+-- Lock order everywhere: order row first, then the member row.
+
+-- reconcile_order_points: bring the points reversed for an awarded order in
+-- line with the row's totals. A cancelled order is reversed in full.
+CREATE OR REPLACE FUNCTION public.reconcile_order_points(
+  p_shopify_order_id text,
+  p_reference_id     text,
+  p_note             text DEFAULT 'Order refunded'
+) RETURNS TABLE(reversed integer, new_balance integer)
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_order     public.order_webhook_state%ROWTYPE;
+  v_member_id uuid;
+  v_balance   integer;
+  v_basis     numeric;
+  v_post      numeric;
+  v_target    integer;
+  v_amount    integer;
+  v_cut       numeric;
+  v_action    text;
+  v_ref       text;
+  v_actual    integer := 0;
+  v_note      text := p_note;
+  v_cancelled boolean;
+BEGIN
+  SELECT * INTO v_order
+    FROM public.order_webhook_state o
+   WHERE o.shopify_order_id = p_shopify_order_id
+     FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT 0, NULL::integer;
+    RETURN;
+  END IF;
+
+  SELECT m.id, m.points_balance INTO v_member_id, v_balance
+    FROM public.members m
+   WHERE m.shopify_customer_id = v_order.shopify_customer_id
+     FOR UPDATE;
+
+  IF v_member_id IS NULL OR NOT v_order.points_awarded THEN
+    RETURN QUERY SELECT 0, v_balance;
+    RETURN;
+  END IF;
+
+  v_cancelled := v_order.cancelled_at IS NOT NULL;
+  v_basis := GREATEST(COALESCE(v_order.earning_basis_pkr, v_order.order_total_pkr, 0), 0);
+  IF v_cancelled THEN
+    v_post   := v_basis;
+    v_target := v_order.points_awarded_amount;
+  ELSE
+    v_post := LEAST(GREATEST(v_order.refunded_basis_pkr - v_order.refund_basis_at_award_pkr, 0), v_basis);
+    v_target := CASE WHEN v_basis > 0
+                     THEN ROUND(v_order.points_awarded_amount * v_post / v_basis)::integer
+                     ELSE 0 END;
+  END IF;
+
+  v_amount := LEAST(GREATEST(v_target - v_order.points_reversed_amount, 0),
+                    GREATEST(v_order.points_awarded_amount - v_order.points_reversed_amount, 0));
+  v_cut := GREATEST(v_post - v_order.spend_reversed_pkr, 0);
+
+  IF v_amount <= 0 AND v_cut <= 0 THEN
+    RETURN QUERY SELECT 0, v_balance;
+    RETURN;
+  END IF;
+
+  IF v_amount > 0 THEN
+    v_action := CASE WHEN v_cancelled THEN 'order_cancelled' ELSE 'refund_deduction' END;
+    v_ref := p_reference_id;
+    -- The totals decide the amount; the reference only has to be unique.
+    IF EXISTS (SELECT 1 FROM public.points_ledger pl
+                WHERE pl.member_id = v_member_id AND pl.action_type = v_action
+                  AND pl.reference_id IS NOT DISTINCT FROM v_ref) THEN
+      v_ref := COALESCE(v_ref, p_shopify_order_id) || ':' || v_order.points_reversed_amount::text;
+    END IF;
+    IF v_order.order_name IS NOT NULL THEN
+      v_note := v_note || ' (' || v_order.order_name || ')';
+    END IF;
+    PERFORM public.award_points(
+      v_member_id, v_action, v_ref, -v_amount,
+      NULL, p_shopify_order_id, CASE WHEN v_cancelled THEN 'cancel' ELSE 'refund' END, NULL, v_note);
+    SELECT -pl.points, pl.balance_after INTO v_actual, v_balance
+      FROM public.points_ledger pl
+     WHERE pl.member_id = v_member_id AND pl.action_type = v_action
+       AND pl.reference_id IS NOT DISTINCT FROM v_ref;
+  END IF;
+
+  UPDATE public.order_webhook_state
+     SET points_reversed_amount = points_reversed_amount + v_amount,
+         spend_reversed_pkr = v_post,
+         updated_at = now()
+   WHERE id = v_order.id;
+
+  IF v_cut > 0 THEN
+    UPDATE public.members
+       SET lifetime_spend_pkr = GREATEST(COALESCE(lifetime_spend_pkr, 0) - v_cut, 0),
+           updated_at = now()
+     WHERE id = v_member_id;
+  END IF;
+
+  RETURN QUERY SELECT COALESCE(v_actual, 0), v_balance;
+END;
+$$;
+
+-- award_order_points: award one order exactly once, never after it was
+-- cancelled, and always net of whatever has been refunded so far. When the
+-- row carries its own figures (every order seen by v3 does) those are used,
+-- because the caller's p_points / p_basis may come from an older read.
 CREATE OR REPLACE FUNCTION public.award_order_points(
   p_shopify_order_id text,
   p_member_id        uuid,
@@ -513,8 +697,8 @@ DECLARE
   v_order    public.order_webhook_state%ROWTYPE;
   v_balance  integer;
   v_lifetime numeric;
-  v_points   integer := GREATEST(COALESCE(p_points, 0), 0);
-  v_basis    numeric := GREATEST(COALESCE(p_basis_pkr, 0), 0);
+  v_points   integer;
+  v_basis    numeric;
   v_awarded  boolean;
   v_existing integer;
 BEGIN
@@ -539,6 +723,14 @@ BEGIN
     RETURN;
   END IF;
 
+  IF v_order.gross_basis_pkr IS NOT NULL THEN
+    v_points := GREATEST(COALESCE(v_order.pending_points, 0), 0);
+    v_basis  := GREATEST(COALESCE(v_order.earning_basis_pkr, 0), 0);
+  ELSE
+    v_points := GREATEST(COALESCE(p_points, 0), 0);
+    v_basis  := GREATEST(COALESCE(p_basis_pkr, 0), 0);
+  END IF;
+
   IF v_points > 0 THEN
     SELECT a.awarded, a.new_balance, a.new_lifetime_spend_pkr
       INTO v_awarded, v_balance, v_lifetime
@@ -559,6 +751,7 @@ BEGIN
              points_awarded_amount = GREATEST(v_existing, 0),
              pending_points = 0,
              earning_basis_pkr = COALESCE(earning_basis_pkr, v_basis),
+             refund_basis_at_award_pkr = refunded_basis_pkr,
              updated_at = now()
        WHERE id = v_order.id;
       RETURN QUERY SELECT false, v_balance, v_lifetime;
@@ -576,8 +769,11 @@ BEGIN
   UPDATE public.order_webhook_state
      SET points_awarded = true,
          points_awarded_amount = v_points,
-         multiplier_used = COALESCE(p_multiplier, multiplier_used),
+         multiplier_used = COALESCE(multiplier_used, p_multiplier),
          earning_basis_pkr = v_basis,
+         gross_basis_pkr = COALESCE(gross_basis_pkr, v_basis + refunded_basis_pkr),
+         refund_basis_at_award_pkr = refunded_basis_pkr,
+         spend_reversed_pkr = 0,
          pending_points = 0,
          updated_at = now()
    WHERE id = v_order.id;
@@ -590,14 +786,13 @@ BEGIN
 END;
 $$;
 
--- reverse_order_points: refund or cancellation (rule 6).
---   refund: reverse awarded x refunded basis / earning basis (cumulative, so
---           several part refunds never add up to more than a full refund)
---   cancel: mark the order cancelled (blocks any later award) and reverse
---           whatever is still un-reversed
--- Never more than was awarded for the order; the order row lock serialises a
--- refund and a cancellation that arrive together. `reversed` is what actually
--- left the balance (the balance is floored at zero).
+-- reverse_order_points: a refund event or a cancellation (rule 6).
+--   refund: the refund is counted once (by its id) into the order's refunded
+--           total, whether or not the order has been awarded yet. Before the
+--           award that lowers the pending points; after it, points are reversed.
+--   cancel: the order is marked cancelled (no later award) and whatever is
+--           still un-reversed is taken back.
+-- `reversed` is what actually left the balance (the balance is floored at zero).
 CREATE OR REPLACE FUNCTION public.reverse_order_points(
   p_shopify_order_id   text,
   p_kind               text,
@@ -606,25 +801,17 @@ CREATE OR REPLACE FUNCTION public.reverse_order_points(
 ) RETURNS TABLE(reversed integer, new_balance integer)
 LANGUAGE plpgsql AS $$
 DECLARE
-  v_order        public.order_webhook_state%ROWTYPE;
-  v_member_id    uuid;
-  v_balance      integer;
-  v_lifetime     numeric;
-  v_action       text;
-  v_left         integer;
-  v_amount       integer := 0;
-  v_basis        numeric;
-  v_refund       numeric := GREATEST(COALESCE(p_refunded_basis_pkr, 0), 0);
-  v_refund_total numeric;
-  v_spend_cut    numeric := 0;
-  v_target       integer;
-  v_actual       integer := 0;
-  v_note         text;
+  v_order    public.order_webhook_state%ROWTYPE;
+  v_refund   numeric := GREATEST(COALESCE(p_refunded_basis_pkr, 0), 0);
+  v_gross    numeric;
+  v_events   numeric;
+  v_total    numeric;
+  v_earning  numeric;
+  v_pending  integer;
 BEGIN
   IF p_kind NOT IN ('refund', 'cancel') THEN
     RAISE EXCEPTION 'reverse_order_points: unknown kind %', p_kind;
   END IF;
-  v_action := CASE WHEN p_kind = 'refund' THEN 'refund_deduction' ELSE 'order_cancelled' END;
 
   SELECT * INTO v_order
     FROM public.order_webhook_state o
@@ -635,89 +822,176 @@ BEGIN
     RETURN;
   END IF;
 
-  SELECT m.id, m.points_balance, COALESCE(m.lifetime_spend_pkr, 0)
-    INTO v_member_id, v_balance, v_lifetime
-    FROM public.members m
-   WHERE m.shopify_customer_id = v_order.shopify_customer_id
-     FOR UPDATE;
-
   IF p_kind = 'cancel' THEN
     UPDATE public.order_webhook_state
        SET cancelled_at = COALESCE(cancelled_at, now()),
            pending_points = 0,
            updated_at = now()
      WHERE id = v_order.id;
-  END IF;
-
-  IF v_member_id IS NULL
-     OR NOT v_order.points_awarded THEN
-    RETURN QUERY SELECT 0, v_balance;
+    RETURN QUERY SELECT r.reversed, r.new_balance
+      FROM public.reconcile_order_points(p_shopify_order_id, p_reference_id, 'Order cancelled') r;
     RETURN;
   END IF;
 
-  -- Replay of the same refund / cancellation: nothing more to do.
-  IF EXISTS (
-    SELECT 1 FROM public.points_ledger pl
-     WHERE pl.member_id = v_member_id
-       AND pl.action_type = v_action
-       AND pl.reference_id IS NOT DISTINCT FROM p_reference_id
-  ) THEN
-    RETURN QUERY SELECT 0, v_balance;
-    RETURN;
-  END IF;
+  -- refund
+  IF v_refund > 0 AND NOT (COALESCE(p_reference_id, '') = ANY (v_order.refund_ids)) THEN
+    v_gross := COALESCE(
+      v_order.gross_basis_pkr,
+      CASE WHEN v_order.points_awarded
+           THEN COALESCE(v_order.earning_basis_pkr, v_order.order_total_pkr, 0) + v_order.refund_basis_at_award_pkr
+           ELSE COALESCE(v_order.earning_basis_pkr, v_order.order_total_pkr, 0) + v_order.refunded_basis_pkr END);
+    v_events := v_order.refund_events_basis_pkr + v_refund;
+    v_total  := LEAST(v_gross, GREATEST(v_order.refunded_basis_pkr, v_events));
 
-  v_basis := COALESCE(v_order.earning_basis_pkr, v_order.order_total_pkr, 0);
-  v_left  := GREATEST(v_order.points_awarded_amount - v_order.points_reversed_amount, 0);
-
-  IF p_kind = 'refund' THEN
-    IF v_refund <= 0 OR v_basis <= 0 THEN
-      RETURN QUERY SELECT 0, v_balance;
-      RETURN;
+    IF v_order.points_awarded OR v_order.cancelled_at IS NOT NULL THEN
+      v_earning := v_order.earning_basis_pkr;
+      v_pending := v_order.pending_points;
+    ELSE
+      v_earning := GREATEST(v_gross - v_total, 0);
+      v_pending := CASE
+        WHEN v_order.points_rate IS NOT NULL
+          THEN FLOOR(v_earning * v_order.points_rate * COALESCE(v_order.multiplier_used, 1) + 0.000001)::integer
+        WHEN COALESCE(v_order.earning_basis_pkr, 0) > 0
+          THEN FLOOR(v_order.pending_points * v_earning / v_order.earning_basis_pkr)::integer
+        ELSE 0 END;
     END IF;
-    v_refund_total := LEAST(v_order.refunded_basis_pkr + v_refund, v_basis);
-    v_spend_cut    := v_refund_total - LEAST(v_order.refunded_basis_pkr, v_basis);
-    v_target       := ROUND(v_order.points_awarded_amount * v_refund_total / v_basis)::integer;
-    v_amount       := LEAST(GREATEST(v_target - v_order.points_reversed_amount, 0), v_left);
-    v_note         := 'Order refunded';
-  ELSE
-    v_refund_total := GREATEST(v_basis, v_order.refunded_basis_pkr);
-    v_spend_cut    := GREATEST(v_basis - v_order.refunded_basis_pkr, 0);
-    v_amount       := v_left;
-    v_note         := 'Order cancelled';
+
+    UPDATE public.order_webhook_state
+       SET gross_basis_pkr = v_gross,
+           refund_events_basis_pkr = v_events,
+           refund_ids = array_append(refund_ids, COALESCE(p_reference_id, '')),
+           refunded_basis_pkr = v_total,
+           earning_basis_pkr = v_earning,
+           pending_points = GREATEST(COALESCE(v_pending, 0), 0),
+           updated_at = now()
+     WHERE id = v_order.id;
   END IF;
 
-  IF v_amount <= 0 AND v_spend_cut <= 0 THEN
-    RETURN QUERY SELECT 0, v_balance;
+  RETURN QUERY SELECT r.reversed, r.new_balance
+    FROM public.reconcile_order_points(p_shopify_order_id, p_reference_id, 'Order refunded') r;
+END;
+$$;
+
+-- sync_order_snapshot: apply one order payload (orders/create, /updated,
+-- /fulfilled). p_gross_basis_pkr is the basis from the order's original
+-- figures, p_current_basis_pkr from its current figures (after edits and
+-- refunds). A payload older than the newest one already applied is ignored,
+-- so a retried job can never undo newer state. For an awarded order the
+-- difference is reversed at once.
+CREATE OR REPLACE FUNCTION public.sync_order_snapshot(
+  p_shopify_order_id  text,
+  p_source_updated_at timestamptz,
+  p_gross_basis_pkr   numeric,
+  p_current_basis_pkr numeric,
+  p_points_rate       numeric,
+  p_can_earn          boolean
+) RETURNS TABLE(applied boolean, reversed integer, pending_points integer)
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_order    public.order_webhook_state%ROWTYPE;
+  v_current  numeric := GREATEST(COALESCE(p_current_basis_pkr, 0), 0);
+  v_gross    numeric;
+  v_total    numeric;
+  v_earning  numeric;
+  v_rate     numeric := CASE WHEN COALESCE(p_can_earn, false) THEN GREATEST(COALESCE(p_points_rate, 0), 0) ELSE 0 END;
+  v_pending  integer;
+  v_reversed integer := 0;
+BEGIN
+  SELECT * INTO v_order
+    FROM public.order_webhook_state o
+   WHERE o.shopify_order_id = p_shopify_order_id
+     FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT false, 0, 0;
     RETURN;
   END IF;
 
-  IF v_order.order_name IS NOT NULL THEN
-    v_note := v_note || ' (' || v_order.order_name || ')';
+  IF p_source_updated_at IS NOT NULL
+     AND v_order.source_updated_at IS NOT NULL
+     AND p_source_updated_at < v_order.source_updated_at THEN
+    RETURN QUERY SELECT false, 0, v_order.pending_points;  -- stale payload
+    RETURN;
   END IF;
 
-  -- Always written (even for 0 points) so a replay is recognised above.
-  PERFORM public.award_points(
-    v_member_id, v_action, p_reference_id, -v_amount,
-    NULL, p_shopify_order_id, p_kind, NULL, v_note);
+  v_gross := GREATEST(
+    COALESCE(v_order.gross_basis_pkr,
+             CASE WHEN v_order.points_awarded
+                  THEN COALESCE(v_order.earning_basis_pkr, 0) + v_order.refund_basis_at_award_pkr
+                  ELSE 0 END),
+    COALESCE(p_gross_basis_pkr, 0),
+    v_current);
+  v_total := LEAST(v_gross, GREATEST(v_order.refunded_basis_pkr, v_gross - v_current, v_order.refund_events_basis_pkr));
 
-  SELECT -pl.points, pl.balance_after INTO v_actual, v_balance
-    FROM public.points_ledger pl
-   WHERE pl.member_id = v_member_id
-     AND pl.action_type = v_action
-     AND pl.reference_id IS NOT DISTINCT FROM p_reference_id;
+  IF v_order.points_awarded OR v_order.cancelled_at IS NOT NULL THEN
+    UPDATE public.order_webhook_state
+       SET gross_basis_pkr = v_gross,
+           refunded_basis_pkr = v_total,
+           source_updated_at = COALESCE(p_source_updated_at, source_updated_at),
+           updated_at = now()
+     WHERE id = v_order.id;
+    IF v_order.points_awarded AND v_order.cancelled_at IS NULL THEN
+      SELECT r.reversed INTO v_reversed
+        FROM public.reconcile_order_points(
+               p_shopify_order_id,
+               'sync:' || p_shopify_order_id || ':' || COALESCE(EXTRACT(EPOCH FROM p_source_updated_at)::bigint::text, 'na'),
+               'Order refunded') r;
+    END IF;
+    RETURN QUERY SELECT true, COALESCE(v_reversed, 0), 0;
+    RETURN;
+  END IF;
+
+  v_earning := GREATEST(v_gross - v_total, 0);
+  v_pending := FLOOR(v_earning * v_rate * COALESCE(v_order.multiplier_used, 1) + 0.000001)::integer;
 
   UPDATE public.order_webhook_state
-     SET points_reversed_amount = points_reversed_amount + v_amount,
-         refunded_basis_pkr = v_refund_total,
+     SET gross_basis_pkr = v_gross,
+         refunded_basis_pkr = v_total,
+         earning_basis_pkr = v_earning,
+         points_rate = v_rate,
+         pending_points = GREATEST(v_pending, 0),
+         source_updated_at = COALESCE(p_source_updated_at, source_updated_at),
          updated_at = now()
    WHERE id = v_order.id;
 
-  UPDATE public.members
-     SET lifetime_spend_pkr = GREATEST(COALESCE(lifetime_spend_pkr, 0) - v_spend_cut, 0),
-         updated_at = now()
-   WHERE id = v_member_id;
+  RETURN QUERY SELECT true, 0, GREATEST(v_pending, 0);
+END;
+$$;
 
-  RETURN QUERY SELECT COALESCE(v_actual, 0), v_balance;
+-- upgrade_member_tier: tier change, history row and "stop the expiry clock"
+-- in one transaction, so a crash cannot leave one without the others.
+-- Tiers only ever go up (rule 9). Returns true when this call did the upgrade.
+CREATE OR REPLACE FUNCTION public.upgrade_member_tier(
+  p_member_id        uuid,
+  p_to_tier          text,
+  p_shopify_order_id text DEFAULT NULL
+) RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_tier text;
+  v_rank_from integer;
+  v_rank_to integer;
+BEGIN
+  SELECT m.tier INTO v_tier FROM public.members m WHERE m.id = p_member_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'member % not found', p_member_id;
+  END IF;
+  v_rank_from := CASE v_tier WHEN 'diamond' THEN 2 WHEN 'gold' THEN 1 ELSE 0 END;
+  v_rank_to   := CASE p_to_tier WHEN 'diamond' THEN 2 WHEN 'gold' THEN 1 WHEN 'silver' THEN 0 ELSE -1 END;
+  IF v_rank_to < 0 THEN
+    RAISE EXCEPTION 'upgrade_member_tier: unknown tier %', p_to_tier;
+  END IF;
+  IF v_rank_to <= v_rank_from THEN
+    RETURN false;
+  END IF;
+
+  UPDATE public.members SET tier = p_to_tier, updated_at = now() WHERE id = p_member_id;
+  INSERT INTO public.tier_history (member_id, from_tier, to_tier, shopify_order_id)
+  VALUES (p_member_id, v_tier, p_to_tier, p_shopify_order_id);
+  -- Gold and Diamond points never expire: stop the clock on what she holds.
+  UPDATE public.points_ledger
+     SET expires_at = NULL
+   WHERE member_id = p_member_id AND expired = false AND expires_at IS NOT NULL;
+  RETURN true;
 END;
 $$;
 
@@ -730,7 +1004,10 @@ BEGIN
   FOREACH fn IN ARRAY ARRAY[
     'public.award_points(uuid, text, text, integer, timestamptz, text, text, numeric, text)',
     'public.award_order_points(text, uuid, integer, numeric, numeric, timestamptz)',
-    'public.reverse_order_points(text, text, text, numeric)'
+    'public.reverse_order_points(text, text, text, numeric)',
+    'public.reconcile_order_points(text, text, text)',
+    'public.sync_order_snapshot(text, timestamptz, numeric, numeric, numeric, boolean)',
+    'public.upgrade_member_tier(uuid, text, text)'
   ] LOOP
     EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC', fn);
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN

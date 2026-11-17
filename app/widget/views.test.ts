@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { earnList, errorText, guestHome, historyRows, instagramHandle, redeemList, referTab, rewardsTab, stateMessage, tiersView, type Ctx } from "./views";
+import { readFileSync } from "node:fs";
+import { earnList, earnTab, errorText, guestHome, historyRows, influencerBox, instagramHandle, redeemList, referralReward, referTab, rewardsTab, stateMessage, tiersView, type Ctx } from "./views";
 import { makeConfig, makeMember } from "./test-fixtures";
 
 const ctx = (over: Partial<Ctx> = {}): Ctx => ({ cfg: makeConfig(), member: null, loginUrl: "/customer_authentication/login", path: "/", origin: "https://shop.example", ...over });
@@ -105,5 +106,61 @@ describe("member views", () => {
     expect(errorText("insufficient_points")).toContain("enough points");
     expect(errorText("something_new")).toContain("Something went wrong");
     expect(errorText(undefined)).toContain("Something went wrong");
+  });
+});
+
+describe("review fixes: views", () => {
+  const INF = { code: "SARA10", percent: 10, rewardPoints: 9000 };
+
+  it("item 3: an influencer sees her real reward and her code with a copy button", () => {
+    const m = makeMember({ isInfluencer: true }, { influencer: INF });
+    const c = ctx({ member: m });
+    expect(referralReward(c)).toBe(9000);
+    const earn = earnTab(c);
+    expect(earn).toContain("9,000 points");
+    expect(earn).not.toContain("6,000 points");
+    expect(earn).toContain('data-copy="SARA10"');
+    const refer = referTab(c, null); // before the summary request returns
+    expect(refer).toContain("9,000 points");
+    expect(refer).toContain('data-copy="SARA10"');
+    expect(refer).toContain("10% off");
+  });
+
+  it("item 3: nothing influencer-specific for ordinary members, or without a code", () => {
+    expect(influencerBox(ctx({ member: makeMember() }))).toBe("");
+    expect(influencerBox(ctx({ member: makeMember({ isInfluencer: false }, { influencer: INF }) }))).toBe("");
+    expect(influencerBox(ctx({ member: makeMember({ isInfluencer: true }, { influencer: { code: null, percent: null, rewardPoints: 9000 } }) }))).toBe("");
+    expect(referralReward(ctx({ member: makeMember() }))).toBe(6000);
+    expect(referralReward(ctx())).toBe(6000);
+  });
+
+  it("item 4: paused and not-enrolled are their own states, not a connection error", () => {
+    const paused = stateMessage(ctx(), "paused");
+    expect(paused).toContain("Rewards are paused");
+    expect(paused).not.toContain("connection");
+    const none = stateMessage(ctx(), "not_enrolled");
+    expect(none).toContain("being set up");
+    expect(none).not.toContain("connection");
+    expect(stateMessage(ctx(), "error")).toContain("connection");
+  });
+
+  it("item 5: a fractional rate is shown as it is", () => {
+    expect(earnList(ctx({ cfg: makeConfig({ pointsRate: 0.5 }) }))).toContain("1 point for every Rs. 2 spent");
+    expect(earnList(ctx({ cfg: makeConfig({ pointsRate: 2 }) }))).toContain("2 points for every Rs. 1 spent");
+  });
+
+  it("item 10: no duration is quoted for social points, and unused attributes are gone", () => {
+    for (const f of ["app/widget/hub.ts", "app/widget/views.ts", "app/widget/core.ts"]) {
+      const src = readFileSync(f, "utf8");
+      expect(src).not.toMatch(/24[ -]hours?/i);
+    }
+    expect(earnList(ctx({ member: makeMember() }))).not.toContain("data-points=");
+  });
+
+  it("item 11: campaign text in the earn list is time-checked", () => {
+    const campaign = { name: "11.11", multiplier: 2, startsAt: "2026-11-10T00:00:00Z", endsAt: "2026-11-20T00:00:00Z" };
+    const cfg = makeConfig({ campaign });
+    expect(earnList(ctx({ cfg, now: Date.parse("2026-11-16T00:00:00Z") }))).toContain("11.11: 2x points until 20 Nov 2026");
+    expect(earnList(ctx({ cfg, now: Date.parse("2026-11-21T00:00:00Z") }))).not.toContain("11.11");
   });
 });

@@ -7,19 +7,15 @@
 {%- if cfg and cfg.enabled -%}
   {%- liquid
     assign r = cfg.earnRules
-    capture hg_mult
-      render 'hg-mult', cfg: cfg
-    endcapture
-    assign hg_mult = hg_mult | strip | times: 1.0
     assign hg_ig = cfg.social.instagram.url | split: 'instagram.com/' | last | split: '/' | first | split: '?' | first
   -%}
   <style>
     .hg-lp{max-width:960px;margin:0 auto;padding:0 16px 32px;color:#1a1a1a;font-size:16px;line-height:1.5;letter-spacing:normal}
     .hg-lp *{box-sizing:border-box;letter-spacing:normal}
-    .hg-lp h1,.hg-lp h2,.hg-lp h3,.hg-lp p,.hg-lp ul,.hg-lp ol{margin:0;padding:0}
+    .hg-lp h2,.hg-lp h3,.hg-lp p,.hg-lp ul,.hg-lp ol{margin:0;padding:0}
     .hg-lp ul,.hg-lp ol{list-style:none}
     .hg-lp__hero{background:linear-gradient(135deg,#f3bd1c,#e0a400);border-radius:18px;padding:32px 20px;text-align:center}
-    .hg-lp__hero h1{font-size:30px;line-height:1.2;font-weight:800;color:#1a1a1a}
+    .hg-lp__title{font-size:30px;line-height:1.2;font-weight:800;color:#1a1a1a}
     .hg-lp__hero p{margin-top:8px;font-size:17px;color:#1a1a1a}
     .hg-lp__btns{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;margin-top:18px}
     .hg-lp__btn{display:inline-flex;align-items:center;justify-content:center;min-height:48px;padding:0 24px;border-radius:999px;border:2px solid #1a1a1a;background:#1a1a1a;color:#fff;font:inherit;font-weight:700;text-decoration:none;cursor:pointer}
@@ -38,20 +34,21 @@
     .hg-lp__tbl tr:last-child td,.hg-lp__tbl tr:last-child th{border-bottom:0}
     .hg-lp__tbl td:last-child,.hg-lp__tbl thead th:last-child{text-align:right;font-weight:700;white-space:nowrap}
     .hg-lp__tbl tbody th{font-weight:400}
-    .hg-lp__tier{border-top:5px solid #c9c9c9}
-    .hg-lp__tier--gold{border-top-color:#e8ad00}
+    .hg-lp__tier{border-top:5px solid #8a8a8a}
+    .hg-lp__tier--gold{border-top-color:#b98900}
     .hg-lp__tier--diamond{border-top-color:#8f6fe0}
     .hg-lp__tier li{padding:3px 0 3px 18px;position:relative}
-    .hg-lp__tier li:before{content:"";position:absolute;left:2px;top:12px;width:7px;height:7px;border-radius:50%;background:#e8ad00}
+    .hg-lp__tier li:before{content:"";position:absolute;left:2px;top:12px;width:7px;height:7px;border-radius:50%;background:#7a5c00}
     .hg-lp details{background:#fff;border:1px solid #e9e2cc;border-radius:12px;margin-bottom:8px}
     .hg-lp summary{min-height:48px;padding:12px 14px;font-weight:700;cursor:pointer}
     .hg-lp details>div{padding:0 14px 14px;color:#595959}
     .hg-lp__terms{color:#595959;font-size:14px}
-    @media (min-width:750px){.hg-lp__grid{grid-template-columns:repeat(3,1fr)}.hg-lp__hero h1{font-size:38px}}
+    @media (min-width:750px){.hg-lp__grid{grid-template-columns:repeat(3,1fr)}.hg-lp__title{font-size:38px}}
   </style>
   <div class="hg-lp" {{ block.shopify_attributes }}>
     <div class="hg-lp__hero">
-      <h1>{{ cfg.programName | escape }}</h1>
+      {%- comment -%} The page template already prints the page title as the h1. {%- endcomment -%}
+      <h2 class="hg-lp__title">{{ cfg.programName | escape }}</h2>
       {%- if cfg.tagline != blank -%}<p>{{ cfg.tagline | escape }}</p>{%- endif -%}
       <div class="hg-lp__btns">
         {%- if customer -%}
@@ -81,7 +78,7 @@
             <tr><th scope="row">Join {{ cfg.programName | escape }}</th><td>{% render 'hg-num', n: cfg.signupPoints %}</td></tr>
           {%- endif -%}
           {%- if r.purchase.enabled != false and cfg.pointsRate > 0 -%}
-            <tr><th scope="row">Place an order{% if hg_mult > 1 %} ({{ cfg.campaign.name | escape }}: {{ hg_mult | round: 2 }}x points until {{ cfg.campaign.endsAt | date: '%-d %b %Y' }}){% endif %}</th><td>{{ cfg.pointsRate }} per Rs. 1</td></tr>
+            <tr><th scope="row">Place an order<span data-hg-camp hidden></span></th><td>{{ cfg.pointsRate }} per Rs. 1</td></tr>
           {%- endif -%}
           {%- if r.instagram.enabled != false and cfg.social.instagram.enabled and cfg.social.instagram.points > 0 -%}
             <tr><th scope="row">Follow us on Instagram</th><td>{% render 'hg-num', n: cfg.social.instagram.points %}</td></tr>

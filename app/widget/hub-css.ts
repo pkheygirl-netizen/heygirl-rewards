@@ -1,5 +1,7 @@
 // app/widget/hub-css.ts — styles for the hub panel, injected once on first open.
 // Text colours meet 4.5:1 on their backgrounds; every control is at least 44px.
+// Bright gold (#e8ad00, 2:1 on white) is only ever a fill behind dark ink; every
+// edge, underline or bar that carries meaning uses the dark gold (#7a5c00, 6:1).
 export const HUB_CSS = `
 .hg-hub{--g:#e8ad00;--gd:#7a5c00;--ink:#1a1a1a;--mute:#595959;--ln:#e9e2cc;--bg:#faf7ee;position:fixed;z-index:2147483001;right:16px;bottom:88px;width:384px;max-width:calc(100vw - 32px);height:min(660px,calc(100vh - 108px));display:flex;flex-direction:column;background:var(--bg);color:var(--ink);border-radius:16px;box-shadow:0 12px 40px rgba(0,0,0,.22);overflow:hidden;font-size:15px;line-height:1.45;letter-spacing:normal;text-align:left;opacity:0;transform:translateY(12px);transition:opacity .18s ease,transform .18s ease}
 .hg-hub--left{right:auto;left:16px}
@@ -26,7 +28,7 @@ export const HUB_CSS = `
 .hg-tabs{display:flex;flex:none;overflow-x:auto;background:#fff;border-bottom:1px solid var(--ln);scrollbar-width:none}
 .hg-tabs::-webkit-scrollbar{display:none}
 .hg-tab{flex:1 0 auto;min-height:46px;padding:0 13px;background:none;border:0;border-bottom:3px solid transparent;font-size:14px;font-weight:600;color:var(--mute);cursor:pointer;white-space:nowrap}
-.hg-tab[aria-selected=true]{color:var(--ink);border-bottom-color:var(--g)}
+.hg-tab[aria-selected=true]{color:var(--ink);border-bottom-color:var(--gd)}
 .hg-msg{flex:none;margin:10px 12px 0;padding:10px 12px;border-radius:10px;background:#e7f4e8;color:#14491b;font-size:14px;font-weight:600}
 .hg-msg:empty{display:none}
 .hg-msg--err{background:#fde8e6;color:#8a1c12}
@@ -44,14 +46,14 @@ export const HUB_CSS = `
 .hg-nav{width:100%;min-height:56px;display:flex;align-items:center;gap:12px;padding:8px 0;background:none;border:0;cursor:pointer;text-align:left}
 .hg-nav__t{flex:1;font-weight:600;font-size:15px}
 .hg-nav>.hg-ic{width:28px;height:28px;stroke-width:2.6;color:var(--ink)}
-.hg-btn{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 18px;border-radius:999px;border:2px solid var(--g);background:var(--g);color:var(--ink)!important;font-weight:700;font-size:15px;text-decoration:none;cursor:pointer;white-space:nowrap}
+.hg-btn{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 18px;border-radius:999px;border:2px solid var(--gd);background:var(--g);color:var(--ink)!important;font-weight:700;font-size:15px;text-decoration:none;cursor:pointer;white-space:nowrap}
 .hg-btn:hover{background:#f3bd1c}
 .hg-btn--sm{padding:0 14px;font-size:14px;flex:none}
 .hg-btn--ghost{background:#fff}
 .hg-btn--block{display:flex;width:100%;margin-top:6px}
 .hg-btn[disabled]{opacity:.55;cursor:default}
 .hg-signin{text-align:center;font-size:14px;color:var(--mute);margin-top:10px!important}
-.hg-signin a{display:inline-block;padding:10px 4px;font-weight:700}
+.hg-signin a{display:inline-flex;align-items:center;min-height:44px;min-width:44px;padding:0 6px;font-weight:700}
 .hg-foot{padding:0 4px 8px}
 .hg-done{display:inline-flex;align-items:center;gap:4px;color:#14611f;font-weight:700;font-size:14px;flex:none}
 .hg-done .hg-ic{width:18px;height:18px;stroke-width:2.6}
@@ -63,7 +65,8 @@ export const HUB_CSS = `
 .hg-bal__n{font-size:34px;font-weight:800;line-height:1.15;color:#ffd24a;margin:2px 0 8px!important}
 .hg-bal__n span{font-size:15px;font-weight:600;color:#fff}
 .hg-tier{display:inline-block;padding:3px 12px;border-radius:999px;font-size:13px;font-weight:700;background:#e4e4e4;color:#1a1a1a}
-.hg-tier--gold{background:#f3bd1c}
+.hg-tier{border:1px solid #595959}
+.hg-tier--gold{background:#f3bd1c;border-color:var(--gd)}
 .hg-tier--diamond{background:#d9ccff}
 .hg-note{display:flex;gap:10px;align-items:flex-start;background:#fff;border:1px solid var(--ln);border-radius:12px;padding:10px 12px;margin-bottom:12px!important;font-size:14px}
 .hg-note .hg-ic{color:var(--gd);margin-top:1px}
@@ -77,8 +80,9 @@ export const HUB_CSS = `
 .hg-stats p{flex:1;background:var(--bg);border-radius:10px;padding:10px 6px;text-align:center;font-size:12px;color:var(--mute)}
 .hg-stats strong{display:block;font-size:18px;color:var(--ink)}
 .hg-bar{height:10px;border-radius:999px;background:#eee4c2;overflow:hidden;margin:4px 0 8px}
-.hg-bar span{display:block;height:100%;background:var(--g);border-radius:999px}
-.hg-tcard--me{border:2px solid var(--g)}
+.hg-bar{border:1px solid var(--gd)}
+.hg-bar span{display:block;height:100%;background:var(--gd);border-radius:999px}
+.hg-tcard--me{border:2px solid var(--gd)}
 .hg-perks li{display:flex;gap:8px;align-items:flex-start;font-size:14px;padding:4px 0}
 .hg-perks .hg-ic{width:18px;height:18px;color:#14611f;stroke-width:2.6;margin-top:2px}
 .hg-chips{display:flex;gap:8px;overflow-x:auto;padding-bottom:10px;scrollbar-width:none}
