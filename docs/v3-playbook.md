@@ -169,12 +169,12 @@ Each returns: findings with file:line and a concrete failure scenario, severity,
 
 ## 10. Dev-store acceptance test (needed before any claim above 90)
 
-Deploy the branch to the dev store (apply migrations 010–012 to `heygirl-rewards-dev` first, set env, `npm run build`, `shopify app deploy`, enable the embed and blocks). Then:
+Deploy the branch to the dev store (confirm Railway `SUPABASE_SERVICE_KEY` is the service-role key, then apply migrations 010–013 to `heygirl-rewards-dev`, set env, `npm run build`, `shopify app deploy`, enable the embed and blocks). Then:
 
 1. Guest: launcher shows; network tab shows no request to `/apps/loyalty`.
 2. Sign in as a new customer: member created, +welcome bonus once; reload does not add again.
 3. Place a COD order: pending points appear; mark fulfilled, then paid: points awarded once with correct amount; tier and lifetime spend update.
-4. Order with a reward code and with a gift card: earning basis excludes both.
+4. Order with a reward code and with a gift card: earning basis excludes both. Order with a free-shipping code: basis excludes shipping and tax and is not reduced by the undiscounted shipping price (compare `total_shipping_price_set`, `current_shipping_price_set`, `shipping_lines[].discounted_price` in the webhook against the awarded basis).
 5. Redeem: code created in Shopify, locked to the customer, applies from the drawer link; second redeem with insufficient points is refused.
 6. Refund part of a delivered order: proportional reversal. Cancel it: remainder reversed, never below zero, no double reversal.
 7. Cancel an unfulfilled order that used a reward code: redeemed points returned.
@@ -243,3 +243,4 @@ Deploy the branch to the dev store (apply migrations 010–012 to `heygirl-rewar
 - Known and not fixed: `classifyLookupError` in the import has name checks that can never match (status checks still catch the cases); `rewards-page.server.ts` mutation has no 5xx retry; hub.ts click handling has no automated DOM test.
 - Not done: re-verification of the V-round by the independent agent; dev-store test (section 10). Nothing has run on a store.
 - Branch `v3-rebuild` is not ready to merge to `main` until the dev-store test passes.
+- 2026-11-17: Second and third independent passes on `7a5d4d5` and `ce84374`: V-round fixes confirmed; new M1 (influencer code retry could leave an unrecorded public discount) and L1-L4 fixed in `ce84374`; double-submit race found in that fix and fixed in `1f708bd`. Reviewer scores: engine 80, storefront 71, admin 77, import 66, overall 70. Lead checks at `1f708bd`: tsc clean, 884/884 tests, build OK (core 5.42 KB, hub 12.33 KB gzip). Open with owner: should a switched-off program stop purchase points (engine still awards today, orders.server.ts); add FAQ line about points on amount paid after discounts.
