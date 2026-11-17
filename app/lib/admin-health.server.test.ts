@@ -24,14 +24,19 @@ describe("classifyHeartbeats", () => {
   it("separates alerts, worker signals and other signals, and marks a quiet worker stale", async () => {
     const mod = await load();
     const rows = mod.classifyHeartbeats([
-      { key: "worker:points", at: minsAgo(2), detail: { jobs: 4 } },
+      { key: "worker", at: minsAgo(2), detail: { jobs: 4 } },
       { key: "worker:cron", at: minsAgo(40), detail: {} },
+      { key: "cron_failed:expiry", at: minsAgo(5), detail: { error: "boom" } },
+      { key: "cron:expiry", at: minsAgo(600), detail: {} },
       { key: "alert:shop_redact", at: minsAgo(60), detail: { shop: "x.myshopify.com", nested: { a: 1 } } },
       { key: "cron:birthday", at: minsAgo(60 * 24 * 10), detail: {} },
     ], now);
-    expect(rows.map((r) => [r.kind, r.stale])).toEqual([["worker", false], ["worker", true], ["alert", false], ["signal", false]]);
+    expect(rows.map((r) => [r.kind, r.stale])).toEqual([
+      ["worker", false], ["worker", true], ["alert", false], ["signal", false], ["alert", false], ["signal", false],
+    ]);
     expect(rows[0].detail).toBe("jobs: 4");
-    expect(rows[2].detail).toBe("shop: x.myshopify.com"); // nested values are not echoed
+    expect(rows[2].detail).toBe("error: boom");
+    expect(rows[4].detail).toBe("shop: x.myshopify.com"); // nested values are not echoed
   });
 });
 
@@ -53,6 +58,15 @@ describe("summariseHealth", () => {
     expect(mod.summariseHealth(alert, 0).status).toBe("attention");
     const oldAlert = mod.classifyHeartbeats([{ key: "worker:points", at: minsAgo(1), detail: {} }, { key: "alert:shop_redact", at: minsAgo(60 * 24 * 30), detail: {} }], now);
     expect(mod.summariseHealth(oldAlert, 0).status).toBe("healthy");
+  });
+
+  it("a failed job that has run successfully since is no longer an alert", async () => {
+    const mod = await load();
+    const w = { key: "worker", at: minsAgo(1), detail: {} };
+    const stillFailing = mod.classifyHeartbeats([w, { key: "cron_failed:expiry", at: minsAgo(30), detail: {} }, { key: "cron:expiry", at: minsAgo(600), detail: {} }], now);
+    expect(mod.summariseHealth(stillFailing, 0).status).toBe("attention");
+    const recovered = mod.classifyHeartbeats([w, { key: "cron_failed:expiry", at: minsAgo(600), detail: {} }, { key: "cron:expiry", at: minsAgo(30), detail: {} }], now);
+    expect(mod.summariseHealth(recovered, 0).status).toBe("healthy");
   });
 
   it("is unknown, not healthy, when the worker has never reported or the count is unavailable", async () => {
@@ -89,6 +103,17 @@ describe("getSystemHealth", () => {
     expect(h.status).toBe("healthy");
     expect(h.failedJobs).toBe(0);
     expect(h.heartbeats).toHaveLength(1);
+  });
+
+  it("falls back to the worker's own failed-job counts when Redis cannot be asked", async () => {
+    const mod = await load("throws");
+    readHeartbeats.mockResolvedValueOnce([{ key: "worker", at: minsAgo(1), detail: { failed: { points: 2, notifications: 1 } } }]);
+    const h = await mod.getSystemHealth(now);
+    expect(h.failedJobs).toBe(3);
+    expect(h.status).toBe("attention");
+    expect(mod.failedFromHeartbeat([{ key: "worker", detail: {} }])).toBeNull();
+    expect(mod.failedFromHeartbeat([{ key: "worker", detail: { failed: 0 } }])).toBe(0);
+    expect(mod.failedFromHeartbeat([{ key: "cron:expiry", detail: { failed: 9 } }])).toBeNull();
   });
 
   it("reports unknown when heartbeats cannot be read, without throwing", async () => {

@@ -41,9 +41,11 @@ export function classifyHeartbeats(
 ): HeartbeatView[] {
   return rows.map((r) => {
     const ageMinutes = Math.max(0, Math.round((now.getTime() - new Date(r.at).getTime()) / 60000));
-    const kind: HeartbeatView["kind"] = r.key.startsWith("alert:")
+    // Keys written by the engine: `worker` (liveness), `cron:<job>` (last good run),
+    // `cron_failed:<job>` (last failed run) and `alert:<what>`.
+    const kind: HeartbeatView["kind"] = r.key.startsWith("alert:") || r.key.startsWith("cron_failed:")
       ? "alert"
-      : r.key.startsWith("worker")
+      : r.key === "worker" || r.key.startsWith("worker:")
         ? "worker"
         : "signal";
     return {
@@ -67,7 +69,14 @@ function age(minutes: number): string {
 
 export function summariseHealth(heartbeats: HeartbeatView[], failedJobs: number | null): Pick<SystemHealth, "status" | "summary"> {
   const workers = heartbeats.filter((h) => h.kind === "worker");
-  const alerts = heartbeats.filter((h) => h.kind === "alert" && h.ageMinutes <= ALERT_WINDOW_MINUTES);
+  // A failed job that has since run successfully (`cron:<job>` newer than
+  // `cron_failed:<job>`) has recovered and is no longer an alert.
+  const recovered = (h: HeartbeatView) => {
+    if (!h.key.startsWith("cron_failed:")) return false;
+    const good = heartbeats.find((x) => x.key === `cron:${h.key.slice("cron_failed:".length)}`);
+    return Boolean(good && good.ageMinutes < h.ageMinutes);
+  };
+  const alerts = heartbeats.filter((h) => h.kind === "alert" && h.ageMinutes <= ALERT_WINDOW_MINUTES && !recovered(h));
   const parts: string[] = [];
   let status: SystemHealth["status"] = "healthy";
 
@@ -109,8 +118,23 @@ export async function countFailedJobs(timeoutMs = 1500): Promise<number | null> 
   }
 }
 
+/**
+ * The worker writes its own failed-job counts into its heartbeat
+ * (`worker` → detail.failed = { <queue>: n }). Used when this process cannot
+ * ask Redis itself. null when the heartbeat carries no counts.
+ */
+export function failedFromHeartbeat(
+  rows: Array<{ key: string; detail: Record<string, unknown> }>,
+): number | null {
+  const failed = rows.find((r) => r.key === "worker")?.detail?.failed;
+  if (typeof failed === "number" && Number.isFinite(failed)) return failed;
+  if (!failed || typeof failed !== "object") return null;
+  const counts = Object.values(failed as Record<string, unknown>).filter((v): v is number => typeof v === "number");
+  return counts.length ? counts.reduce((a, b) => a + b, 0) : null;
+}
+
 export async function getSystemHealth(now: Date = new Date()): Promise<SystemHealth> {
-  const [rows, failedJobs] = await Promise.all([
+  const [rows, liveFailed] = await Promise.all([
     readHeartbeats().catch((e: unknown) => {
       console.error("[admin] heartbeats unreadable:", e instanceof Error ? e.message : e);
       return null;
@@ -118,8 +142,9 @@ export async function getSystemHealth(now: Date = new Date()): Promise<SystemHea
     countFailedJobs(),
   ]);
   if (rows === null) {
-    return { status: "unknown", summary: "System health could not be read.", heartbeats: [], failedJobs };
+    return { status: "unknown", summary: "System health could not be read.", heartbeats: [], failedJobs: liveFailed };
   }
+  const failedJobs = liveFailed ?? failedFromHeartbeat(rows);
   const heartbeats = classifyHeartbeats(rows, now);
   return { ...summariseHealth(heartbeats, failedJobs), heartbeats, failedJobs };
 }

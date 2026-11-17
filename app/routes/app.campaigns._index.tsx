@@ -149,7 +149,7 @@ export default function Campaigns() {
                       <IndexTable.Cell>
                         <BlockStack gap="050" inlineAlign="end">
                           <Text as="span">{fmtInt(c.results.pointsIssued)}</Text>
-                          {c.results.pointsPending > 0 ? <Text as="span" tone="subdued" variant="bodySm">{fmtInt(c.results.pointsPending)} pending</Text> : null}
+                          {c.results.pointsPending > 0 ? <Text as="span" tone="subdued" variant="bodySm">{`${fmtInt(c.results.pointsPending)} pending`}</Text> : null}
                         </BlockStack>
                       </IndexTable.Cell>
                       <IndexTable.Cell>

@@ -205,6 +205,15 @@ Deploy the branch to the dev store (apply migrations 010–012 to `heygirl-rewar
   - Heartbeat keys: `worker`, `cron:<job>`, `cron_failed:<job>`, `alert:shop_redact`.
   - Owner action: copy the example toml changes into the real `shopify.app.toml`, then `shopify app deploy`.
   - Open doubts: tax-inclusive prices may make refund reversal slightly high (still capped); an out-of-order webhook retry can overwrite newer order status until the next event; WhatsApp sender and real email untested.
-- 2026-11-16: **Stream C stopped by the usage limit, partly written.** The tree does not typecheck yet: about 20 errors and 15 failing tests, all in C's files (`admin-*.server.test.ts`, `app.settings.tsx`). Resume the same agent; it must also fix those tests (mock `queue.server` in the referrals test), call `bustSettingsCache()` and `syncStorefrontConfig(admin)` after every save, pass `p_customer_note` on adjustments, and provide social URL and FAQ `[{q,a}]` fields.
-- Not started: stream D (import), integration (section 8), the three reviews (section 9), the dev-store test (section 10).
-- Work in progress is on branch `v3-rebuild`. It is not ready to merge.
+- 2026-11-16: **Stream C finished.** Whole repo verified by the lead: `npx tsc --noEmit` clean; `npx vitest run` 44 files, 564 tests, all pass. Migration 011 applied on a local Postgres 16 after 001–010 with 40+ assertions. Production build succeeds. Not opened in a real embedded admin. Its deviations:
+  - No per-rule "name customers see"; panel texts are program name and tagline only.
+  - Theme-embed on/off status is not shown (needs `read_themes`).
+  - "Earned" excludes `import` and `redemption_return`.
+  - Admin reads `app_settings` directly, then calls `bustSettingsCache()` and `syncStorefrontConfig(admin)`; a failed sync is a warning, the save stands.
+  - Influencer custom multiplier limited to 1–10. Block/unblock writes `members.is_blocked` directly.
+  - Added dependency `@shopify/app-bridge-react`.
+  - Unverified: the literal theme-editor deep-link path and parameter names; nav, save bar, toasts and CSV download inside a real admin.
+- 2026-11-16: **Stream D (import) started, stopped by the usage limit** with one file written (`app/lib/smile-import-core.ts`). Resume the same agent.
+- 2026-11-16: **Reviewers 1 (accounting) and 2 (storefront) started, stopped by the usage limit** before reporting. Resume them. Reviewer 3 (admin and security) not started.
+- Not done: finish D; three reviews; fixes and a verification pass; README to list migrations 011 and 012; dev-store test (section 10).
+- Branch `v3-rebuild` typechecks and passes its tests but is unreviewed. Do not merge yet.

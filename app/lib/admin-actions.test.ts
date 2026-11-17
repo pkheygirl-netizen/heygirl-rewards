@@ -46,6 +46,12 @@ function setup(script: Parameters<typeof fakeDb>[0] = {}) {
 function post(url: string, fields: Record<string, string>): Request {
   return new Request(`https://app.test${url}`, { method: "POST", body: new URLSearchParams(fields) });
 }
+type Body = {
+  ok: boolean; message?: string; error?: string; warning?: string;
+  errors?: Record<string, string>; conflicts?: Array<{ id: string; name: string }>;
+};
+/** The JSON an action answered with, read loosely so a test can look at any field. */
+const read = async (res: Response): Promise<Body> => (await res.json()) as Body;
 type Args = { request: Request; params: Record<string, string>; context: Record<string, never> };
 const args = (request: Request, params: Record<string, string> = {}): Args => ({ request, params, context: {} });
 
@@ -61,7 +67,7 @@ describe("customer profile action", () => {
     const { action } = await import("../routes/app.customers.$id");
     const res = await action(args(post(`/app/customers/${ID}`, { ...adjust, points: "", reason: "" }), { id: ID }));
     expect(res.status).toBe(400);
-    const body = await res.json();
+    const body = await read(res);
     expect(body.ok).toBe(false);
     expect(body.errors).toMatchObject({ points: "Points is required.", reason: "Reason is required." });
     expect(fake.rpcCalls("award_points")).toHaveLength(0);
@@ -71,8 +77,8 @@ describe("customer profile action", () => {
     let n = 0;
     const fake = setup({ rpc: () => ({ data: [{ awarded: n++ === 0, new_balance: 18950 }] }) });
     const { action } = await import("../routes/app.customers.$id");
-    const first = await (await action(args(post(`/app/customers/${ID}`, adjust), { id: ID }))).json();
-    const second = await (await action(args(post(`/app/customers/${ID}`, adjust), { id: ID }))).json();
+    const first = await read(await action(args(post(`/app/customers/${ID}`, adjust), { id: ID })));
+    const second = await read(await action(args(post(`/app/customers/${ID}`, adjust), { id: ID })));
     expect(first).toMatchObject({ ok: true, message: "Balance adjusted. New balance 18,950 points" });
     expect(second).toMatchObject({ ok: true, message: "This adjustment was already applied. The balance was not changed again" });
     const calls = fake.rpcCalls("award_points");
@@ -93,7 +99,7 @@ describe("customer profile action", () => {
     setup({ from: () => ({ data: { id: CODE } }) });
     svc.cancelRewardCode.mockResolvedValueOnce({ ok: true, pointsReturned: 6000 });
     const { action } = await import("../routes/app.customers.$id");
-    const body = await (await action(args(post(`/app/customers/${ID}`, { intent: "cancel_code", code_id: CODE }), { id: ID }))).json();
+    const body = await read(await action(args(post(`/app/customers/${ID}`, { intent: "cancel_code", code_id: CODE }), { id: ID })));
     expect(body).toMatchObject({ ok: true, message: "Code cancelled and 6,000 points returned" });
     expect(svc.cancelRewardCode).toHaveBeenCalledWith({ codeId: CODE, shop: SHOP, actor: "Ayesha" });
   });
@@ -104,7 +110,7 @@ describe("customer profile action", () => {
     const { action } = await import("../routes/app.customers.$id");
     const res = await action(args(post(`/app/customers/${ID}`, { intent: "cancel_code", code_id: CODE }), { id: ID }));
     expect(res.status).toBe(409);
-    expect((await res.json()).error).toContain("already been used, cancelled or has expired");
+    expect((await read(res)).error).toContain("already been used, cancelled or has expired");
   });
 
   it("sets a birthday as admin, and opt-out and influencer through the engine", async () => {
@@ -137,7 +143,7 @@ describe("program action", () => {
     const { action } = await import("../routes/app.program");
     const res = await action(args(post("/app/program", { intent: "save_rule", rule: "signup", enabled: "true", signup_points: "" })));
     expect(res.status).toBe(400);
-    expect((await res.json()).errors.signup_points).toBe("Points given is required.");
+    expect((await read(res)).errors?.signup_points).toBe("Points given is required.");
     expect(fake.calls.some((c) => c.chain.some(([m]) => m === "update"))).toBe(false);
     expect(svc.syncStorefrontConfig).not.toHaveBeenCalled();
     expect(svc.bustSettingsCache).not.toHaveBeenCalled();
@@ -146,7 +152,7 @@ describe("program action", () => {
   it("after a valid save it drops the settings cache and syncs the storefront config", async () => {
     const fake = setup({ from: () => ({ data: { earn_rules: {} } }) });
     const { action } = await import("../routes/app.program");
-    const body = await (await action(args(post("/app/program", { intent: "save_expiry", silver_expiry_days: "365", reward_code_expiry_days: "30" })))).json();
+    const body = await read(await action(args(post("/app/program", { intent: "save_expiry", silver_expiry_days: "365", reward_code_expiry_days: "30" }))));
     expect(body).toMatchObject({ ok: true, message: "Expiry saved" });
     expect(fake.firstArg("app_settings", "update")).toEqual({ silver_expiry_days: 365, reward_code_expiry_days: 30 });
     expect(svc.bustSettingsCache).toHaveBeenCalledTimes(1);
@@ -157,7 +163,7 @@ describe("program action", () => {
     setup({ from: () => ({ data: { earn_rules: {} } }) });
     svc.syncStorefrontConfig.mockResolvedValueOnce({ ok: false, reason: "metafield_write_failed" });
     const { action } = await import("../routes/app.program");
-    const body = await (await action(args(post("/app/program", { intent: "toggle_rule", rule: "review", enabled: "true" })))).json();
+    const body = await read(await action(args(post("/app/program", { intent: "toggle_rule", rule: "review", enabled: "true" }))));
     expect(body.ok).toBe(true);
     expect(body.warning).toContain("metafield_write_failed");
   });
@@ -180,7 +186,7 @@ describe("campaigns action", () => {
     const { action } = await import("../routes/app.campaigns._index");
     const res = await action(args(post("/app/campaigns", save)));
     expect(res.status).toBe(409);
-    expect((await res.json()).conflicts).toEqual([{ id: CODE, name: "Winter Glow" }]);
+    expect((await read(res)).conflicts).toEqual([{ id: CODE, name: "Winter Glow" }]);
     expect(fake.calls.some((c) => c.chain.some(([m]) => m === "insert" || m === "update"))).toBe(false);
     expect(svc.syncStorefrontConfig).not.toHaveBeenCalled();
   });
@@ -188,7 +194,7 @@ describe("campaigns action", () => {
   it("stores Pakistan times as UTC and publishes after saving (R6)", async () => {
     const fake = setup({ from: (_t, chain) => (chain.some(([m]) => m === "lt") ? { data: [] } : { data: [{ id: ID }] }) });
     const { action } = await import("../routes/app.campaigns._index");
-    const body = await (await action(args(post("/app/campaigns", save)))).json();
+    const body = await read(await action(args(post("/app/campaigns", save))));
     expect(body.ok).toBe(true);
     expect(fake.firstArg("bonus_campaigns", "insert")).toMatchObject({ starts_at: "2026-12-01T19:00:00.000Z", ends_at: "2026-12-05T19:00:00.000Z" });
     expect(svc.syncStorefrontConfig).toHaveBeenCalledWith(admin);
@@ -199,7 +205,7 @@ describe("campaigns action", () => {
     const { action } = await import("../routes/app.campaigns._index");
     const res = await action(args(post("/app/campaigns", { ...save, multiplier: "", ends_at: "2026-12-01T00:00" })));
     expect(res.status).toBe(400);
-    expect(Object.keys((await res.json()).errors)).toContain("multiplier");
+    expect(Object.keys((await read(res)).errors ?? {})).toContain("multiplier");
   });
 });
 
