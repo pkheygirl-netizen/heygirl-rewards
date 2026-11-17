@@ -162,6 +162,27 @@ describe("influencer discount code (rule 12)", () => {
     expect(h.graphqlCalls.map((c) => opName(c.query))).toEqual(["HgDiscountCodeBasicCreate", "HgDiscountCodeDelete"]);
   });
 
+  it("two saves at the same moment: the one that loses does not delete the code the other just stored (review race)", async () => {
+    const m = seedMember(h.db, { is_influencer: true, first_name: "Sana" });
+    h.graphql = (q) =>
+      opName(q) === "HgDiscountCodeDelete"
+        ? { discountCodeDelete: { deletedCodeDiscountId: NODE, userErrors: [] } }
+        : { discountCodeBasicCreate: { codeDiscountNode: { id: NODE }, userErrors: [] } };
+    // The other request stored the same code and discount between our create and our save.
+    const realFrom = h.db.from.bind(h.db);
+    let raced = false;
+    (h.db as any).from = (t: string) => {
+      if (t === "members" && !raced && h.graphqlCalls.length > 0) {
+        raced = true;
+        Object.assign(m, { influencer_code: "SANA10", influencer_code_percent: 10, influencer_code_discount_id: NODE });
+      }
+      return realFrom(t);
+    };
+    expect(await createInfluencerCode({ memberId: String(m.id), code: "SANA10", percentOff: 10, shop: "s" })).toEqual({ ok: true });
+    expect(h.graphqlCalls.map((c) => opName(c.query))).not.toContain("HgDiscountCodeDelete");
+    (h.db as any).from = realFrom;
+  });
+
   it("remove: deletes in Shopify first, then clears the member", async () => {
     const m = seedMember(h.db, { is_influencer: true, influencer_code: "AYESHA10", influencer_code_percent: 10, influencer_code_discount_id: NODE });
     h.graphql = () => ({ discountCodeDelete: { deletedCodeDiscountId: NODE, userErrors: [] } });

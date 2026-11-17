@@ -166,7 +166,25 @@ export async function createInfluencerCode(input: {
     .is("influencer_code", null)
     .select("id");
   if (saveErr || !saved || saved.length === 0) {
-    // Do not leave a live public code that the app does not know about.
+    // A second save at the same moment (double submit, two tabs) may already
+    // have stored this very code for her: that is success, and the Shopify
+    // code must stay.
+    const { data: now, error: rereadErr } = await db
+      .from("members")
+      .select("influencer_code, influencer_code_discount_id")
+      .eq("id", member.id)
+      .maybeSingle();
+    if (!rereadErr && now?.influencer_code === code && now?.influencer_code_discount_id === created.discountId) {
+      return { ok: true };
+    }
+    // Otherwise do not leave a live public code that the app does not know
+    // about. If the re-read itself failed, keep the code: deleting one that
+    // may be saved would break it for customers, while a stray code shows up
+    // as "code taken" and can be adopted on the next try.
+    if (rereadErr) {
+      console.error("[createInfluencerCode] saving failed and the member could not be re-read; Shopify code kept:", rereadErr.message);
+      return { ok: false, reason: "db_error" };
+    }
     console.error("[createInfluencerCode] saving failed, removing the Shopify code:", saveErr?.message ?? "no row updated");
     await deleteDiscount(admin, created.discountId);
     return { ok: false, reason: saveErr?.code === "23505" ? "code_taken" : "db_error" };

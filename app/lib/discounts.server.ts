@@ -248,7 +248,6 @@ export async function deleteDiscount(
   }
 }
 
-/** Discount node id for a code, or null when Shopify has no such code. */
 const FIND_CODE_DETAIL = `#graphql
   query HgFindCodeDetail($code: String!) {
     codeDiscountNodeByCode(code: $code) {
@@ -270,6 +269,7 @@ export async function findDiscountByCode(
   return { id: node.id, title: typeof node.codeDiscount?.title === "string" ? node.codeDiscount.title : null };
 }
 
+/** Discount node id for a code, or null when Shopify has no such code. */
 export async function findDiscountIdByCode(admin: AdminGraphqlClient, code: string): Promise<string | null> {
   const data = await shopifyGraphqlWithRetry<{ codeDiscountNodeByCode: { id: string } | null }>(admin, FIND_CODE, { code });
   return data.codeDiscountNodeByCode?.id ?? null;
