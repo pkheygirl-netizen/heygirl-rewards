@@ -2,7 +2,7 @@
 // campaign and period filters as the page). With ?id: that influencer's referrals.
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
-import { parsePeriodKey, periodRange } from "../components/karachi";
+import { fmtDateTime, parsePeriodKey, periodRange } from "../components/karachi";
 import { adb, num, str, UUID_RE, type Row } from "../lib/admin-db.server";
 import { INFLUENCER_CSV_COLUMNS, influencerCsvRows, listInfluencers } from "../lib/admin-influencers.server";
 import { referralLink } from "../lib/admin-members.server";
@@ -29,16 +29,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       status: STATUS_LABELS[str(r.status)] ?? str(r.status),
       points: r.reward_points === null || r.reward_points === undefined ? null : num(r.reward_points),
       order: str(r.shopify_order_id),
-      created: str(r.created_at),
-      completed: str(r.completed_at),
+      created: fmtDateTime(str(r.created_at)),
+      completed: fmtDateTime(str(r.completed_at)),
     }));
     return csvResponse("influencer-referrals.csv", toCsv(out, [
       { key: "friend", header: "Friend" },
       { key: "status", header: "Stage" },
       { key: "points", header: "Points paid" },
       { key: "order", header: "Shopify order id" },
-      { key: "created", header: "Referred at (UTC)" },
-      { key: "completed", header: "Completed at (UTC)" },
+      { key: "created", header: "Referred at (Asia/Karachi)" },
+      { key: "completed", header: "Completed at (Asia/Karachi)" },
     ] as const));
   }
 

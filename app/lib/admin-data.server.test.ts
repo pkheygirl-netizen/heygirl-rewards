@@ -77,13 +77,13 @@ describe("tiers and attention", () => {
     const { mod } = await load({
       rpc: (name) => name === "admin_tier_counts"
         ? { data: { silver: 1869, gold: 34, diamond: 9, near_gold: 12, near_diamond: 2, near_gold_within_pkr: "5000.00", near_diamond_within_pkr: 10000 } }
-        : { data: { referrals_flagged: 3, review_claims_pending: 2, expiring_members: 41, expiring_points: 90000, gdpr_open: 1 } },
+        : { data: { referrals_flagged: 3, review_claims_pending: 2, expiring_members: 41, expiring_points: 90000, expiring_overdue_members: 4, gdpr_open: 1 } },
     });
     expect(await mod.getTierCounts()).toEqual({
       silver: 1869, gold: 34, diamond: 9, nearGold: 12, nearDiamond: 2, nearGoldWithinPkr: 5000, nearDiamondWithinPkr: 10000,
     });
     expect(await mod.getAttention(30)).toEqual({
-      referralsFlagged: 3, reviewClaimsPending: 2, expiringMembers: 41, expiringPoints: 90000, gdprOpen: 1,
+      referralsFlagged: 3, reviewClaimsPending: 2, expiringMembers: 41, expiringPoints: 90000, expiringOverdueMembers: 4, gdprOpen: 1,
     });
   });
 

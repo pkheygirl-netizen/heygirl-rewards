@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { FormReader, errorMessage, firstError, invalid, reasonText } from "./admin-validate.server";
+import { vi } from "vitest";
+import { FormReader, GENERIC_ERROR, UserError, errorMessage, firstError, invalid, reasonText } from "./admin-validate.server";
 import { formOf } from "./admin-test-helpers";
 
 describe("FormReader.int", () => {
@@ -98,8 +99,25 @@ describe("messages", () => {
     expect(reasonText("code_taken")).toContain("already in use");
     expect(reasonText("something_new", "Not saved.")).toBe("Not saved. (something new)");
     expect(reasonText(undefined, "Not saved.")).toBe("Not saved.");
-    expect(errorMessage(new Error("boom"))).toBe("boom");
-    expect(errorMessage({})).toBe("Something went wrong. Please try again.");
-    expect(errorMessage(new Error("x".repeat(500))).length).toBe(300);
+  });
+
+  it("never shows raw database or system error text to staff; it is logged instead (A10)", () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const raw = 'could not save the note: insert or update on table "staff_notes" violates foreign key constraint "staff_notes_member_id_fkey" DETAIL: Key (member_id)=(abc) is not present';
+    expect(errorMessage(new Error(raw))).toBe(GENERIC_ERROR);
+    expect(errorMessage(new Error(raw))).not.toMatch(/staff_notes|constraint|member_id/);
+    expect(errorMessage("a thrown string with select * from members")).toBe(GENERIC_ERROR);
+    expect(errorMessage({})).toBe(GENERIC_ERROR);
+    // the detail is kept for the developer, on the server
+    expect(log.mock.calls.some((c) => String(c[1]).includes("staff_notes_member_id_fkey"))).toBe(true);
+    log.mockRestore();
+  });
+
+  it("shows a message that was written for staff", () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    expect(errorMessage(new UserError("Write a note before saving."))).toBe("Write a note before saving.");
+    expect(errorMessage(new UserError("x".repeat(500))).length).toBe(300);
+    expect(log).not.toHaveBeenCalled();
+    log.mockRestore();
   });
 });

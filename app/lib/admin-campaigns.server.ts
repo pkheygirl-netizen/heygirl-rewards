@@ -3,9 +3,10 @@
 //
 // Times are typed and shown in Asia/Karachi and stored in UTC (handbook R6).
 // Switching a campaign on only ever switches off the campaigns whose dates
-// overlap it, and only after the admin confirms (handbook R7). The database
-// refuses two active campaigns with overlapping dates.
-import { adb, num, rpcRows, str, UUID_RE, type Row } from "./admin-db.server";
+// overlap it, and only after the admin confirms (handbook R7); that switch-off
+// and the save are one database transaction. The database refuses two active
+// campaigns with overlapping dates.
+import { adb, num, rpcObject, rpcRows, str, UUID_RE, type Row } from "./admin-db.server";
 import { FormReader, type FieldErrors } from "./admin-validate.server";
 import { fetchAllPages } from "./csv.server";
 
@@ -91,83 +92,59 @@ export async function listCampaigns(now: Date = new Date()): Promise<CampaignRow
   return ((res.data ?? []) as Row[]).map((c) => toCampaign(c, results, now));
 }
 
-/** Active campaigns whose dates overlap [startsAt, endsAt), other than `exceptId`. */
-export async function findOverlapping(
-  startsAt: string, endsAt: string, exceptId: string | null,
-): Promise<Array<{ id: string; name: string }>> {
-  let q = adb().from("bonus_campaigns").select("id, name")
-    .eq("is_active", true).lt("starts_at", endsAt).gt("ends_at", startsAt);
-  if (exceptId) q = q.neq("id", exceptId);
-  const { data, error } = await q;
-  if (error) throw new Error(`could not check for overlapping campaigns: ${error.message}`);
-  return ((data ?? []) as Row[]).map((c) => ({ id: str(c.id), name: str(c.name) }));
-}
-
 export type SaveCampaignResult =
   | { ok: true; switchedOff: string[] }
   | { ok: false; conflicts: Array<{ id: string; name: string }> }
   | { ok: false; error: string };
 
+const CAMPAIGN_ERRORS: Record<string, string> = {
+  not_found: "That campaign no longer exists.",
+  overlap: "Another active campaign now overlaps these dates. Reload the page and try again.",
+  ended: "This campaign has already ended. Edit its end time first, then switch it on.",
+};
+
+function readCampaignResult(r: Row): SaveCampaignResult {
+  if (r.ok === true) {
+    return { ok: true, switchedOff: Array.isArray(r.switched_off) ? r.switched_off.map(str) : [] };
+  }
+  if (Array.isArray(r.conflicts) && r.conflicts.length > 0) {
+    return { ok: false, conflicts: (r.conflicts as Row[]).map((c) => ({ id: str(c.id), name: str(c.name) })) };
+  }
+  return { ok: false, error: CAMPAIGN_ERRORS[str(r.error)] ?? "The campaign could not be saved." };
+}
+
 /**
- * Create (id null) or update. When the campaign is on and other active
+ * Create (id null) or update, in ONE database transaction (SQL function
+ * admin_save_campaign in 011). When the campaign is on and other active
  * campaigns overlap its dates, nothing is saved unless `replaceOverlapping` is
- * true; then only those overlapping campaigns are switched off. Campaigns that
- * do not overlap, including future ones, are never touched.
+ * true; then those campaigns are switched off and this one is saved together,
+ * or neither happens. Campaigns that do not overlap are never touched.
+ *
+ * Switching off follows contract rule 2: a campaign that has started ends now
+ * (ends_at = least(ends_at, now()), deactivated_at = now()) so orders already
+ * placed during it keep its multiplier; one that has not started is only
+ * switched off and keeps its dates.
  */
 export async function saveCampaign(
   id: string | null, input: CampaignInput, opts: { replaceOverlapping?: boolean } = {},
 ): Promise<SaveCampaignResult> {
   if (id !== null && !UUID_RE.test(id)) return { ok: false, error: "That campaign could not be found." };
-  let switchedOff: string[] = [];
-  if (input.isActive) {
-    const conflicts = await findOverlapping(input.startsAt, input.endsAt, id);
-    if (conflicts.length > 0) {
-      if (!opts.replaceOverlapping) return { ok: false, conflicts };
-      const { error } = await adb().from("bonus_campaigns").update({ is_active: false })
-        .in("id", conflicts.map((c) => c.id));
-      if (error) throw new Error(`could not switch off the overlapping campaigns: ${error.message}`);
-      switchedOff = conflicts.map((c) => c.name);
-    }
-  }
-  const row = {
-    name: input.name, multiplier: input.multiplier,
-    starts_at: input.startsAt, ends_at: input.endsAt, is_active: input.isActive,
-  };
-  const res = id
-    ? await adb().from("bonus_campaigns").update(row).eq("id", id).select("id")
-    : await adb().from("bonus_campaigns").insert(row).select("id");
-  if (res.error) {
-    // 23P01 = exclusion constraint: another active campaign took these dates in the meantime
-    if ((res.error as { code?: string }).code === "23P01") {
-      return { ok: false, error: "Another active campaign now overlaps these dates. Reload the page and try again." };
-    }
-    throw new Error(`could not save the campaign: ${res.error.message}`);
-  }
-  if (id && (!res.data || (res.data as unknown[]).length === 0)) {
-    return { ok: false, error: "That campaign no longer exists." };
-  }
-  return { ok: true, switchedOff };
+  const r = await rpcObject("admin_save_campaign", {
+    p_id: id,
+    p_name: input.name,
+    p_multiplier: input.multiplier,
+    p_starts_at: input.startsAt,
+    p_ends_at: input.endsAt,
+    p_is_active: input.isActive,
+    p_replace_overlapping: opts.replaceOverlapping === true,
+  });
+  return readCampaignResult(r);
 }
 
+/** Switch one campaign on or off (SQL function admin_set_campaign_active; same rules as above). */
 export async function setCampaignActive(id: string, active: boolean): Promise<SaveCampaignResult> {
   if (!UUID_RE.test(id)) return { ok: false, error: "That campaign could not be found." };
-  if (active) {
-    const { data, error } = await adb().from("bonus_campaigns")
-      .select("name, multiplier, starts_at, ends_at").eq("id", id).maybeSingle();
-    if (error) throw new Error(`could not read the campaign: ${error.message}`);
-    if (!data) return { ok: false, error: "That campaign no longer exists." };
-    const c = data as Row;
-    const conflicts = await findOverlapping(str(c.starts_at), str(c.ends_at), id);
-    if (conflicts.length > 0) return { ok: false, conflicts };
-  }
-  const { error } = await adb().from("bonus_campaigns").update({ is_active: active }).eq("id", id);
-  if (error) {
-    if ((error as { code?: string }).code === "23P01") {
-      return { ok: false, error: "Another active campaign overlaps these dates." };
-    }
-    throw new Error(`could not update the campaign: ${error.message}`);
-  }
-  return { ok: true, switchedOff: [] };
+  return readCampaignResult(await rpcObject("admin_set_campaign_active", { p_id: id, p_active: active }));
 }
 
 /**

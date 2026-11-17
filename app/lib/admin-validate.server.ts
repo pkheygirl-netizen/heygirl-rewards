@@ -137,10 +137,29 @@ export function invalid(errors: FieldErrors): { ok: false; error: string; errors
   return { ok: false, error: firstError(errors) || "Please check the form.", errors };
 }
 
-/** Turn anything thrown into text that is safe to show staff (never a stack). */
+/**
+ * An error whose message was written for staff to read ("Write a note before
+ * saving."). Anything else that is thrown is a fault, not a message.
+ */
+export class UserError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UserError";
+  }
+}
+
+export const GENERIC_ERROR = "Something went wrong and the change may not have been saved. Reload the page and check, then try again.";
+
+/**
+ * Text that is safe to show staff. Only a UserError's own message is shown.
+ * Every other error (database, network, a bug) is written to the server log
+ * with its detail and the page gets a generic sentence: raw database text can
+ * name tables and columns and can echo the values that were sent.
+ */
 export function errorMessage(e: unknown): string {
-  const m = e instanceof Error ? e.message : typeof e === "string" ? e : "";
-  return m ? m.slice(0, 300) : "Something went wrong. Please try again.";
+  if (e instanceof UserError) return e.message.slice(0, 300);
+  console.error("[admin] action failed:", e instanceof Error ? e.stack ?? e.message : e);
+  return GENERIC_ERROR;
 }
 
 const REASONS: Record<string, string> = {

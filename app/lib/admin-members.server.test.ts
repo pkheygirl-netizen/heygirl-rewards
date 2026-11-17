@@ -82,17 +82,25 @@ describe("getCustomerProfile", () => {
           last_seen_ip: "10.0.0.1",
         },
       }),
-      rpc: () => ({ data: { pending_points: 4250, referrals_completed: 2, referrals_pending: 1, referrals_held: 0, next_expiry: { points: 900, at: "2026-12-01T00:00:00Z" } } }),
+      rpc: () => ({ data: { pending_points: 4250, referrals_completed: 2, referrals_pending: 1, referrals_held: 0, next_expiry: { points: 900, at: "2999-12-01T00:00:00Z" } } }),
     });
     const p = await mod.getCustomerProfile(ID);
     expect(p).toMatchObject({
       name: "03001234567", email: null, shopifyNumericId: "778899", pointsBalance: 18450, pendingPoints: 4250,
       lifetimeSpendPkr: 71201, optedOut: true, birthdayMonth: 8, birthdayDay: 12,
-      referrals: { completed: 2, pending: 1, held: 0 }, nextExpiry: { points: 900, at: "2026-12-01T00:00:00Z" },
+      referrals: { completed: 2, pending: 1, held: 0 }, nextExpiry: { points: 900, at: "2999-12-01T00:00:00Z", overdue: false },
     });
     expect(p!.influencer).toMatchObject({ isInfluencer: true, multiplier: 2, campaign: "Winter Glow", code: "SARA10", codePercent: 10 });
     // her network address is never part of what the page receives
     expect(JSON.stringify(p)).not.toContain("10.0.0.1");
+  });
+
+  it("marks an expiry whose date has passed as overdue: expiring now (A9)", async () => {
+    const { mod } = await load({
+      from: () => ({ data: { id: ID, shopify_customer_id: "1", tier: "silver", referral_slug: "s" } }),
+      rpc: () => ({ data: { next_expiry: { points: 700, at: "2020-01-01T00:00:00Z" } } }),
+    });
+    expect((await mod.getCustomerProfile(ID))!.nextExpiry).toEqual({ points: 700, at: "2020-01-01T00:00:00Z", overdue: true });
   });
 
   it("returns null when the member does not exist", async () => {
@@ -176,37 +184,67 @@ describe("adjust balance", () => {
 
   it("sends the reason and the customer note to separate columns, keyed by the form's key", async () => {
     const { fake, mod } = await load({ rpc: () => ({ data: [{ awarded: true, new_balance: 18950 }] }) });
-    const res = await mod.adjustBalance(ID, { direction: "remove", points: 500, reason: "Entered twice", customerNote: null, idempotencyKey: "key-12345" });
+    const res = await mod.adjustBalance(ID, { direction: "remove", points: 500, reason: "Entered twice", customerNote: null, idempotencyKey: "key-12345" }, "Ayesha R");
     expect(res).toEqual({ applied: true, newBalance: 18950 });
     expect(fake.rpcCalls("award_points")[0].args).toEqual({
       p_member_id: ID, p_action_type: "adjustment", p_reference_id: "admin-adjust:key-12345",
-      p_points: -500, p_reason_note: "Entered twice", p_customer_note: null,
+      p_points: -500, p_reason_note: "[by Ayesha R] Entered twice", p_customer_note: null,
     });
+  });
+
+  it("records who made the adjustment in the internal reason, never in the customer note (A6)", async () => {
+    const { fake, mod } = await load({ rpc: () => ({ data: [{ awarded: true, new_balance: 1 }] }) });
+    await mod.adjustBalance(ID, { direction: "add", points: 1, reason: "Goodwill", customerNote: "Sorry", idempotencyKey: "key-12345" }, "Ayesha R");
+    const args = fake.rpcCalls("award_points")[0].args as { p_reason_note: string; p_customer_note: string };
+    expect(args.p_reason_note).toBe("[by Ayesha R] Goodwill");
+    expect(args.p_customer_note).toBe("Sorry");
+    expect(mod.withActor("", "x")).toBe("[by Store staff] x");
+    expect(mod.withActor("Eve] fake\n[by Boss", "x")).toBe("[by Eve  fake  by Boss] x"); // cannot forge a second tag
   });
 
   it("a second submit with the same key is reported as not applied again", async () => {
     let n = 0;
     const { fake, mod } = await load({ rpc: () => ({ data: [{ awarded: n++ === 0, new_balance: 1500 }] }) });
     const a = { direction: "add" as const, points: 500, reason: "x", customerNote: null, idempotencyKey: "same-key-1" };
-    expect((await mod.adjustBalance(ID, a)).applied).toBe(true);
-    expect((await mod.adjustBalance(ID, a)).applied).toBe(false);
+    expect((await mod.adjustBalance(ID, a, "Ayesha")).applied).toBe(true);
+    expect((await mod.adjustBalance(ID, a, "Ayesha")).applied).toBe(false);
     const refs = fake.rpcCalls("award_points").map((c) => (c.args as { p_reference_id: string }).p_reference_id);
     expect(refs).toEqual(["admin-adjust:same-key-1", "admin-adjust:same-key-1"]);
   });
 
   it("throws when the database refuses", async () => {
     const { mod } = await load({ rpc: () => ({ error: { message: "nope" } }) });
-    await expect(mod.adjustBalance(ID, { direction: "add", points: 1, reason: "x", customerNote: null, idempotencyKey: "k-123456" }))
+    await expect(mod.adjustBalance(ID, { direction: "add", points: 1, reason: "x", customerNote: null, idempotencyKey: "k-123456" }, "Ayesha"))
       .rejects.toThrow("could not adjust the balance: nope");
   });
 });
 
 describe("block and notes", () => {
-  it("sets the blocked flag on that member only", async () => {
-    const { fake, mod } = await load();
-    await mod.setBlocked(ID, true);
-    const chain = fake.tableCalls("members")[0].chain;
-    expect(chain).toEqual([["update", [{ is_blocked: true }]], ["eq", ["id", ID]]]);
+  it("blocks that member only and writes who did it to her staff notes (A6)", async () => {
+    const { fake, mod } = await load({ from: (t) => (t === "members" ? { data: [{ id: ID }] } : {}) });
+    expect(await mod.setBlocked(ID, true, "Ayesha R")).toBe(true);
+    expect(fake.tableCalls("members")[0].chain).toEqual([["update", [{ is_blocked: true }]], ["eq", ["id", ID]], ["select", ["id"]]]);
+    expect(fake.firstArg("staff_notes", "insert")).toEqual({ member_id: ID, note: "Blocked this customer", author: "Ayesha R" });
+  });
+
+  it("unblocking is recorded too", async () => {
+    const { fake, mod } = await load({ from: (t) => (t === "members" ? { data: [{ id: ID }] } : {}) });
+    await mod.setBlocked(ID, false, "Ayesha R");
+    expect(fake.firstArg("staff_notes", "insert")).toEqual({ member_id: ID, note: "Unblocked this customer", author: "Ayesha R" });
+  });
+
+  it("reports a member that does not exist and writes no audit note for her (A6)", async () => {
+    const { fake, mod } = await load({ from: () => ({ data: [] }) });
+    expect(await mod.setBlocked(ID, true, "Ayesha R")).toBe(false);
+    expect(fake.tableCalls("staff_notes")).toHaveLength(0);
+  });
+
+  it("the block stands when only the audit note fails, and the failure is logged", async () => {
+    const { mod } = await load({ from: (t) => (t === "members" ? { data: [{ id: ID }] } : { error: { message: "down" } }) });
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    expect(await mod.setBlocked(ID, true, "Ayesha R")).toBe(true);
+    expect(log).toHaveBeenCalled();
+    log.mockRestore();
   });
 
   it("saves a trimmed note with its author and refuses empty or oversized notes", async () => {

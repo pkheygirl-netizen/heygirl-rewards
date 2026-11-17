@@ -129,6 +129,14 @@ function InfluencerList({ d }: { d: ListData }) {
             <Select label="Results for" labelInline value={d.periodKey} onChange={(v) => setParam("period", v, "all")} options={PERIODS} />
           </InlineStack>
         </Layout.Section>
+        <Layout.Section>
+          <Text as="p" tone="subdued" variant="bodySm">
+            {d.periodKey === "all"
+              ? "All-time results."
+              : `${d.periodLabel}: each number counts what happened in the period. Friends by the day they signed in, completed referrals by the day they completed, orders and sales by the day the order was placed, points by the day they were paid or taken back.`}{" "}
+            Sales count her link and her code; an order that completed a link referral counts for that link only, whichever code was used. Cancelled orders are left out and points are net of reversals.
+          </Text>
+        </Layout.Section>
         <Layout.Section><ResultBanner data={fetcher.data} /></Layout.Section>
         {d.capped ? (
           <Layout.Section>

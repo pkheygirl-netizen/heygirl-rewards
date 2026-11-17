@@ -174,7 +174,7 @@ export default function Home() {
               {d.attention.expiringMembers > 0 ? (
                 <AttentionRow
                   title={`${fmtInt(d.attention.expiringMembers)} member${d.attention.expiringMembers === 1 ? " has" : "s have"} points expiring in 30 days`}
-                  detail={`${fmtInt(d.attention.expiringPoints)} points in total. A reminder goes out 30 days before expiry.`}
+                  detail={`${fmtInt(d.attention.expiringPoints)} points in total. A reminder goes out 30 days before expiry.${d.attention.expiringOverdueMembers > 0 ? ` ${fmtInt(d.attention.expiringOverdueMembers)} of them ${d.attention.expiringOverdueMembers === 1 ? "has" : "have"} points expiring now: the date has passed and they are removed at the next nightly run.` : ""}`}
                   action={<Button onClick={() => setSp(withParams({ view: "expiring", page: null }), { preventScrollReset: true })}>See list</Button>}
                 />
               ) : null}
@@ -261,7 +261,9 @@ export default function Home() {
                       <IndexTable.Cell><Link url={`/app/customers/${m.memberId}`}>{m.name}</Link></IndexTable.Cell>
                       <IndexTable.Cell>{m.email ?? m.phone ?? ""}</IndexTable.Cell>
                       <IndexTable.Cell>{fmtInt(m.points)}</IndexTable.Cell>
-                      <IndexTable.Cell>{fmtDate(m.firstExpiry)}</IndexTable.Cell>
+                      <IndexTable.Cell>
+                        {new Date(m.firstExpiry) < new Date(d.now) ? <Badge tone="attention">{`Expiring now (due ${fmtDate(m.firstExpiry)})`}</Badge> : fmtDate(m.firstExpiry)}
+                      </IndexTable.Cell>
                     </IndexTable.Row>
                   ))}
                 </IndexTable>

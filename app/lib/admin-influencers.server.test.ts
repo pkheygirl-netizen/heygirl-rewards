@@ -16,15 +16,20 @@ function effectiveReferralPoints(
   return m.influencer_referral_rate ?? standard;
 }
 
+const setInfluencer = vi.fn();
+const removeInfluencerCode = vi.fn();
+
 beforeEach(() => {
   vi.resetModules();
+  setInfluencer.mockReset();
+  removeInfluencerCode.mockReset();
 });
 
 async function load(script: Parameters<typeof fakeDb>[0] = {}) {
   vi.resetModules();
   const fake = fakeDb(script);
   vi.doMock("../db.server", () => ({ db: fake.db }));
-  vi.doMock("./influencer.service", () => ({ effectiveReferralPoints }));
+  vi.doMock("./influencer.service", () => ({ effectiveReferralPoints, setInfluencer, removeInfluencerCode }));
   const mod = await import("./admin-influencers.server");
   return { fake, mod };
 }
@@ -139,6 +144,69 @@ describe("getInfluencerDetail", () => {
     // orders are looked up only for friends still pending, never the whole table
     const orders = fake.tableCalls("order_webhook_state")[0].chain;
     expect(orders).toContainEqual(["in", ["shopify_customer_id", ["C2", "C3"]]]);
+  });
+});
+
+describe("influencerState (A5)", () => {
+  it("reads whether she is an influencer now and whether she holds a code", async () => {
+    const { fake, mod } = await load({ from: () => ({ data: { id: A, is_influencer: true, influencer_code: "SANA10" } }) });
+    expect(await mod.influencerState(A)).toEqual({ isInfluencer: true, code: "SANA10" });
+    expect(fake.tableCalls("members")[0].chain).toContainEqual(["eq", ["id", A]]);
+    const former = await load({ from: () => ({ data: { id: A, is_influencer: false, influencer_code: null } }) });
+    expect(await former.mod.influencerState(A)).toEqual({ isInfluencer: false, code: null });
+  });
+
+  it("is null for an unknown member or a malformed id", async () => {
+    const { fake, mod } = await load({ from: () => ({ data: null }) });
+    expect(await mod.influencerState(A)).toBeNull();
+    expect(await mod.influencerState("x' or 1=1")).toBeNull();
+    expect(fake.calls).toHaveLength(1);
+  });
+});
+
+describe("removeInfluencerStatus (A1)", () => {
+  const SHOP = "heygirl-pk.myshopify.com";
+  const withCode = { from: () => ({ data: { id: A, is_influencer: true, influencer_code: "SANA10" } }) };
+
+  it("deletes her Shopify code first, then removes the status", async () => {
+    const { mod } = await load(withCode);
+    const order: string[] = [];
+    removeInfluencerCode.mockImplementation(async () => { order.push("code"); return { ok: true }; });
+    setInfluencer.mockImplementation(async () => { order.push("status"); return { ok: true }; });
+    expect(await mod.removeInfluencerStatus(A, SHOP)).toEqual({ ok: true, codeRemoved: "SANA10" });
+    expect(order).toEqual(["code", "status"]);
+    expect(removeInfluencerCode).toHaveBeenCalledWith({ memberId: A, shop: SHOP });
+    expect(setInfluencer).toHaveBeenCalledWith(A, { isInfluencer: false });
+  });
+
+  it("when Shopify cannot delete the code she stays an influencer: the status is not touched", async () => {
+    const { mod } = await load(withCode);
+    removeInfluencerCode.mockResolvedValueOnce({ ok: false, reason: "shopify_unavailable" });
+    expect(await mod.removeInfluencerStatus(A, SHOP)).toEqual({ ok: false, reason: "shopify_unavailable", stage: "code" });
+    expect(setInfluencer).not.toHaveBeenCalled();
+  });
+
+  it("a code that is already gone does not block the removal", async () => {
+    const { mod } = await load(withCode);
+    removeInfluencerCode.mockResolvedValueOnce({ ok: false, reason: "no_code" });
+    setInfluencer.mockResolvedValueOnce({ ok: true });
+    expect((await mod.removeInfluencerStatus(A, SHOP)).ok).toBe(true);
+  });
+
+  it("with no code it only removes the status, and reports a status failure", async () => {
+    const { mod } = await load({ from: () => ({ data: { id: A, is_influencer: true, influencer_code: null } }) });
+    setInfluencer.mockResolvedValueOnce({ ok: true });
+    expect(await mod.removeInfluencerStatus(A, SHOP)).toEqual({ ok: true, codeRemoved: null });
+    expect(removeInfluencerCode).not.toHaveBeenCalled();
+    setInfluencer.mockResolvedValueOnce({ ok: false, reason: "db_error" });
+    expect(await mod.removeInfluencerStatus(A, SHOP)).toEqual({ ok: false, reason: "db_error", stage: "status" });
+  });
+
+  it("an unknown member changes nothing", async () => {
+    const { mod } = await load({ from: () => ({ data: null }) });
+    expect(await mod.removeInfluencerStatus(A, SHOP)).toEqual({ ok: false, reason: "member_not_found", stage: "lookup" });
+    expect(removeInfluencerCode).not.toHaveBeenCalled();
+    expect(setInfluencer).not.toHaveBeenCalled();
   });
 });
 

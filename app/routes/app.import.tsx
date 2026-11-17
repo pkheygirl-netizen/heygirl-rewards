@@ -15,11 +15,10 @@ import { fmtDateTime, fmtInt } from "../components/karachi";
 import { actorFromSession } from "../lib/admin-members.server";
 import { errorMessage } from "../lib/admin-validate.server";
 import {
-  LIMITS, SMILE_HEADER, buildReportCsv, confirmRun, createRun, discardRun, getLatestRun, purgeRunRows, resumeRun,
-  type ImportRun,
+  LIMITS, SMILE_HEADER, buildReportCsv, confirmRun, createRun, discardRun, getLatestRun, getLaunchState,
+  purgeExpiredRows, purgeRunRows, resumeRun, type ImportRun,
 } from "../lib/smile-import.server";
 
-const STALL_MS = 3 * 60 * 1000;
 
 function view(run: ImportRun | null) {
   if (!run) return null;
@@ -29,15 +28,19 @@ function view(run: ImportRun | null) {
     options: { tierFromSmile: run.options?.tierFromSmile === true },
     totals: run.totals ?? {},
     progress: { done: Number(run.progress?.done ?? 0), total: Number(run.progress?.total ?? 0) },
-    rowsCleared: (run.progress as { rowsCleared?: boolean } | null)?.rowsCleared === true,
+    rowsCleared: Boolean(run.rows_purged_at),
     createdAt: run.created_at, startedAt: run.started_at, finishedAt: run.finished_at, updatedAt: run.updated_at,
-    stalled: working && Date.now() - new Date(run.updated_at).getTime() > STALL_MS,
+    stalled: working && Date.now() - new Date(run.updated_at).getTime() > LIMITS.stallMs,
   };
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
-  return json({ run: view(await getLatestRun()), header: SMILE_HEADER.join(","), maxMb: LIMITS.maxFileBytes / 1024 / 1024 });
+  await purgeExpiredRows(); // retention: rows of imports closed more than 30 days ago
+  return json({
+    run: view(await getLatestRun()), launch: await getLaunchState(), header: SMILE_HEADER.join(","),
+    maxMb: LIMITS.maxFileBytes / 1024 / 1024, retentionDays: LIMITS.retentionDays,
+  });
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -125,8 +128,14 @@ function Summary({ t, done }: { t: Totals; done: boolean }) {
         />
         <Stat label={done ? "Members created" : "Members to create"} value={n(t.membersToCreate)} />
         <Stat label={done ? "Existing members updated" : "Existing members to update"} value={n(t.membersToUpdate)} sub="points added once, nothing else changed" />
-        <Stat label="Already imported before" value={n(t.skipped)} sub="skipped" />
+        <Stat label="Skipped" value={n(t.skipped)} sub="already imported before, opted out or blocked" />
+        <Stat label="Already have the welcome bonus" value={n(t.welcomeAlready)} sub="matched members; they keep it" />
       </InlineGrid>
+      {Number(t.pointsUnreadable ?? 0) > 0 ? (
+        <Banner tone="warning">
+          <p>{n(t.pointsUnreadable)} rows have a points balance that is not a number. They are not imported and cannot be counted in the file total; they are listed in the download.</p>
+        </Banner>
+      ) : null}
       {statuses.length > 0 ? (
         <Text as="p" tone="subdued">
           Smile status in the file: {statuses.map(([k, v]) => `${k} ${n(v.rows)} rows (${n(v.points)} points)`).join(" · ")}.
@@ -160,7 +169,7 @@ function Reconciliation({ t }: { t: Totals }) {
 }
 
 export default function ImportPage() {
-  const { run, header, maxMb } = useLoaderData<typeof loader>();
+  const { run, launch, header, maxMb, retentionDays } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const reportFetcher = useFetcher<typeof action>();
   const revalidator = useRevalidator();
@@ -230,6 +239,33 @@ export default function ImportPage() {
             <ResultBanner data={fetcher.data} />
             {reportFetcher.data?.ok === false ? <ResultBanner data={reportFetcher.data} /> : null}
 
+            <Banner
+              tone={launch.welcomeBonusesGiven > 0 || launch.signedInMembers > 0 ? "warning" : "info"}
+              title="Run the import before you switch the storefront launcher on"
+            >
+              <BlockStack gap="100">
+                <p>
+                  The welcome bonus is given at a customer's first sign-in, and only to customers who have no imported Smile balance.
+                  Import first, then enable the Rewards launcher (the app embed in your theme). A customer who signs in before the import
+                  gets the welcome bonus and keeps it, and still receives her Smile points on top.
+                </p>
+                {launch.welcomeBonusesGiven > 0 || launch.signedInMembers > 0 ? (
+                  <p>
+                    <Text as="span" fontWeight="semibold">
+                      Customers are already signing in: {fmtInt(launch.welcomeBonusesGiven)} welcome bonuses have been given and {fmtInt(launch.signedInMembers)} members joined by signing in.
+                    </Text>{" "}
+                    The launcher appears to be on. Those customers keep their welcome bonus; the dry run shows how many of them are in the file.
+                  </p>
+                ) : (
+                  <p>No welcome bonus has been given and nobody has joined by signing in yet, so the order is still right.</p>
+                )}
+                <p>
+                  The app cannot see the theme's app-embed switch itself; check it under Online Store → Themes → Customize → App embeds.
+                  {launch.programEnabled ? "" : " The program is currently paused in Settings, so no welcome bonus is given while it stays paused."}
+                </p>
+              </BlockStack>
+            </Banner>
+
             {run ? (
               <Card>
                 <BlockStack gap="400">
@@ -275,6 +311,8 @@ export default function ImportPage() {
                         <List.Item>Customers are matched by email only. Rows with no email, or with an email no Shopify customer has, are not imported; download them below.</List.Item>
                         <List.Item>Balances come in as they are (below zero becomes 0) and expire one year from today for Silver members.</List.Item>
                         <List.Item>No welcome bonus is given by the import. Date of birth is not imported.</List.Item>
+                        <List.Item>Members who opted out or are blocked receive no points; they are listed in the download.</List.Item>
+                        <List.Item>{n(t.welcomeAlready)} matched members already have the welcome bonus and keep it.</List.Item>
                         <List.Item>Running the import again never adds a customer's Smile points twice.</List.Item>
                       </List>
                     </Banner>
@@ -298,6 +336,11 @@ export default function ImportPage() {
                       <Button variant="plain" onClick={() => setClosing("purge")}>Delete stored rows</Button>
                     ) : null}
                   </InlineStack>
+                  <Text as="p" tone="subdued" variant="bodySm">
+                    {run.rowsCleared
+                      ? "The stored rows of this import have been deleted; only the totals are kept."
+                      : `Personal data: only the email of each row is stored, for the report. The Shopify name and phone held during the dry run are removed when the import closes. A discarded dry run is deleted at once; all other stored rows are deleted automatically ${retentionDays} days after the import closes, or now with "Delete stored rows".`}
+                  </Text>
                 </BlockStack>
               </Card>
             ) : null}

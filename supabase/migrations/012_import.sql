@@ -8,7 +8,11 @@
 --   Personal data kept: the e-mail (needed for matching and for the report).
 --   Names, date of birth and referral url from the file are never stored.
 --   The Shopify name and phone of a matched customer are held only between
---   the dry run and the import of that row, then cleared.
+--   the dry run and the import of that row, then cleared; whatever is left is
+--   cleared when the run closes. The rows themselves are deleted 30 days after
+--   the run closed (at once for a discarded dry run): import_runs.rows_purged_at.
+-- import_runs.locked_by / locked_until: the lease of the worker processing the
+--   run, taken with a conditional UPDATE so two workers cannot share a run.
 
 CREATE TABLE IF NOT EXISTS public.import_runs (
   id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -25,8 +29,15 @@ CREATE TABLE IF NOT EXISTS public.import_runs (
   created_at   timestamptz NOT NULL DEFAULT now(),
   started_at   timestamptz,
   finished_at  timestamptz,
-  updated_at   timestamptz NOT NULL DEFAULT now()
+  updated_at   timestamptz NOT NULL DEFAULT now(),
+  locked_by    text,
+  locked_until timestamptz,
+  rows_purged_at timestamptz
 );
+ALTER TABLE public.import_runs
+  ADD COLUMN IF NOT EXISTS locked_by      text,
+  ADD COLUMN IF NOT EXISTS locked_until   timestamptz,
+  ADD COLUMN IF NOT EXISTS rows_purged_at timestamptz;
 
 -- Only one run may be open at a time. A failed run stays open until it is
 -- resumed or discarded, so a half-finished import is never forgotten.
@@ -52,9 +63,12 @@ CREATE TABLE IF NOT EXISTS public.import_rows (
   shopify_phone       text,
   member_id           uuid,
   member_existed      boolean,
+  member_has_welcome  boolean,
   points_awarded      integer,
   PRIMARY KEY (run_id, row_number)
 );
+ALTER TABLE public.import_rows
+  ADD COLUMN IF NOT EXISTS member_has_welcome boolean;
 
 CREATE INDEX IF NOT EXISTS import_rows_state_idx
   ON public.import_rows (run_id, state, row_number);
@@ -62,3 +76,6 @@ CREATE INDEX IF NOT EXISTS import_rows_state_idx
 -- Service-key access only, like every other table of the app.
 ALTER TABLE public.import_runs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.import_rows ENABLE ROW LEVEL SECURITY;
+
+-- Ask PostgREST to pick up the new tables.
+NOTIFY pgrst, 'reload schema';

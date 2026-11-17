@@ -57,7 +57,7 @@ export default function Analytics() {
             <Metric title="Points earned" value={fmtInt(s.pointsEarned)} change={fmtChange(s.pointsEarned, p.pointsEarned)}
               sub={`Previous period ${fmtInt(p.pointsEarned)}`} />
             <Metric title="Points redeemed" value={fmtInt(s.pointsRedeemed)} change={fmtChange(s.pointsRedeemed, p.pointsRedeemed)}
-              sub={`${fmtInt(s.redemptions)} reward code${s.redemptions === 1 ? "" : "s"} created`} />
+              sub={`${fmtInt(s.redemptions)} reward code${s.redemptions === 1 ? "" : "s"} created. Net of cancelled codes, counted on the day of the cancellation`} />
             <Metric title="Points expired" value={fmtInt(s.pointsExpired)} change={fmtChange(s.pointsExpired, p.pointsExpired)}
               sub={`${fmtInt(s.pointsReversed)} reversed for refunds and cancellations`} />
           </InlineGrid>
@@ -144,7 +144,7 @@ export default function Analytics() {
                 <Row label="Held for review" value={fmtInt(d.funnel.flagged)} />
                 <Row label="Rejected or blocked" value={fmtInt(d.funnel.rejected + d.funnel.blocked)} />
                 <Row label="Points paid to referrers" value={fmtInt(d.funnel.pointsPaid)} />
-                <Text as="p" tone="subdued" variant="bodySm">Referrals recorded in the period. <Link url="/app/referrals?status=all">Open referrals</Link></Text>
+                <Text as="p" tone="subdued" variant="bodySm">Referrals recorded in the period. Points paid is net of rewards taken back after a refund or cancellation. <Link url="/app/referrals?status=all">Open referrals</Link></Text>
               </BlockStack>
             </Card>
             <Card>

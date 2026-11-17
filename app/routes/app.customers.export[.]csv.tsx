@@ -13,10 +13,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
   const filters = parseCustomerFilters(new URL(request.url).searchParams);
   const all: CustomerRow[] = [];
-  for (let page = 0; page * PAGE < MAX_ROWS; page++) {
-    const { customers } = await searchCustomers({ ...filters, page }, PAGE);
+  // Stops on an empty page, never on a short one: a short page can be a server
+  // row cap rather than the end of the list. The next request starts after the
+  // rows that actually came back, so a capped page loses nothing.
+  while (all.length < MAX_ROWS) {
+    const { customers } = await searchCustomers(filters, PAGE, all.length);
+    if (customers.length === 0) break;
     all.push(...customers);
-    if (customers.length < PAGE) break;
   }
   const out = all.map((c) => ({
     name: c.name, email: c.email ?? "", phone: c.phone ?? "", tier: c.tier,

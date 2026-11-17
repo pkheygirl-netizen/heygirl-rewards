@@ -8,8 +8,11 @@
 // negative points stay numbers that can be summed.
 
 const FORMULA_START = /^[=+\-@\t\r]/;
+/** "+92 300 1234567": a plus, a digit, then only digits, spaces and dashes. Cannot be a formula with a function or cell reference. */
+const PLAIN_PHONE = /^\+\d[\d\s-]*$/;
 
 export function neutraliseFormula(text: string): string {
+  if (PLAIN_PHONE.test(text)) return text;
   return FORMULA_START.test(text) ? `'${text}` : text;
 }
 
@@ -57,15 +60,20 @@ export async function fetchAllPages<T>(
   const pageSize = opts.pageSize ?? 1000;
   const maxRows = opts.maxRows ?? 200000;
   const rows: T[] = [];
-  for (let from = 0; from < maxRows; from += pageSize) {
+  let from = 0;
+  while (from < maxRows) {
     const to = Math.min(from + pageSize, maxRows) - 1;
     const { data, error } = await page(from, to);
     if (error) throw new Error(`export failed: ${error.message}`);
     const batch = data ?? [];
+    // Only an EMPTY page means the end. A short page does not: the server may
+    // cap rows per request below the page size asked for, and stopping there
+    // would silently cut the export. The next page starts after the rows that
+    // actually came back.
+    if (batch.length === 0) return { rows, truncated: false };
     rows.push(...batch);
-    // Fewer rows than asked for means the end of the data was reached.
-    if (batch.length < to - from + 1) return { rows, truncated: false };
+    from += batch.length;
   }
-  // The cap was reached with every page full: there may be more rows.
+  // The cap was reached without seeing an empty page: there may be more rows.
   return { rows, truncated: true };
 }

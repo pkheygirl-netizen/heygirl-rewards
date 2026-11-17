@@ -4,7 +4,7 @@
 // createInfluencerCode, removeInfluencerCode); nothing here writes those columns.
 import { adb, memberName, num, rpcRows, str, strOrNull, UUID_RE, type Row } from "./admin-db.server";
 import { FormReader, type FieldErrors } from "./admin-validate.server";
-import { effectiveReferralPoints } from "./influencer.service";
+import { effectiveReferralPoints, removeInfluencerCode, setInfluencer } from "./influencer.service";
 
 import { INFLUENCER_LIMITS, MULTIPLIER_PRESETS } from "../components/admin-constants";
 export { INFLUENCER_LIMITS, MULTIPLIER_PRESETS };
@@ -234,6 +234,50 @@ export async function getInfluencerDetail(
     }),
     referralsTotal: num(refsRes.count),
   };
+}
+
+// ── guards ───────────────────────────────────────────────────────────────────
+
+/**
+ * Is she an influencer right now, and does she hold a discount code? Read
+ * before any rate, pause or resume action: those go through setInfluencer with
+ * isInfluencer=true, so a tab left open after she was removed would otherwise
+ * quietly make her an influencer again. null = no such member.
+ */
+export async function influencerState(memberId: string): Promise<{ isInfluencer: boolean; code: string | null } | null> {
+  if (!UUID_RE.test(memberId)) return null;
+  const { data, error } = await adb().from("members").select("id, is_influencer, influencer_code").eq("id", memberId).maybeSingle();
+  if (error) throw new Error(`could not read the member: ${error.message}`);
+  const m = data as Row | null;
+  if (!m) return null;
+  return { isInfluencer: m.is_influencer === true, code: strOrNull(m.influencer_code) };
+}
+
+export const NOT_AN_INFLUENCER = "She is no longer an influencer, so nothing was changed. Reload the page.";
+
+export type RemoveInfluencerResult =
+  | { ok: true; codeRemoved: string | null }
+  | { ok: false; reason: string; stage: "code" | "status" | "lookup" };
+
+/**
+ * Remove influencer status. Her public Shopify discount code is deleted FIRST:
+ * if that fails she stays an influencer and the caller reports the failure, so
+ * a code that still works at checkout can never be left behind on a member the
+ * admin no longer lists as an influencer.
+ */
+export async function removeInfluencerStatus(memberId: string, shop: string): Promise<RemoveInfluencerResult> {
+  const state = await influencerState(memberId);
+  if (!state) return { ok: false, reason: "member_not_found", stage: "lookup" };
+  let codeRemoved: string | null = null;
+  if (state.code) {
+    const res = await removeInfluencerCode({ memberId, shop });
+    // "no_code" means it was already gone: nothing is live, carry on.
+    if (!res.ok && res.reason !== "no_code") return { ok: false, reason: res.reason ?? "shopify_error", stage: "code" };
+    codeRemoved = state.code;
+  }
+  const res = await setInfluencer(memberId, { isInfluencer: false });
+  if (!res.ok) return { ok: false, reason: res.reason ?? "db_error", stage: "status" };
+  return { ok: true, codeRemoved };
 }
 
 // ── forms ────────────────────────────────────────────────────────────────────

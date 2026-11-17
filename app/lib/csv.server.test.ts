@@ -31,10 +31,20 @@ describe("toCsv", () => {
     );
     const lines = csv.split("\n").slice(1);
     expect(lines[0].startsWith("\"'=HYPERLINK")).toBe(true);
-    expect(lines[1]).toBe("'+92 300 1234567,2");
+    expect(lines[1]).toBe("+92 300 1234567,2"); // a plain phone number is left as typed (A7)
     expect(lines[2]).toBe("'-cmd,3");
     expect(lines[3]).toBe("'@SUM(A1),4");
     expect(lines[4].startsWith("'\t=1+1")).toBe(true);
+  });
+
+  it("does not put an apostrophe on plain phone numbers, but still does on anything else starting with +", () => {
+    for (const phone of ["+923001234567", "+92 300 1234567", "+92-300-123-4567", "+1 555 0100"]) {
+      expect(neutraliseFormula(phone), phone).toBe(phone);
+    }
+    for (const risky of ["+1+1", "+SUM(A1)", "+92300*2", "+", "+ 92300", "+92300;=1", "+A1", "+92300\t=1", "+92(300)", "+92300=1"]) {
+      expect(neutraliseFormula(risky), risky).toBe(`'${risky}`);
+    }
+    expect(neutraliseFormula("-923001234567")).toBe("'-923001234567");
   });
 
   it("leaves number cells alone, so negative points stay numbers", () => {
@@ -61,7 +71,7 @@ describe("csvResponse", () => {
 });
 
 describe("fetchAllPages", () => {
-  it("keeps reading until a short page, so nothing is cut off at 1,000 rows (R1)", async () => {
+  it("keeps reading until an empty page, so nothing is cut off at 1,000 rows (R1)", async () => {
     const all = Array.from({ length: 2500 }, (_, i) => i);
     const ranges: Array<[number, number]> = [];
     const { rows, truncated } = await fetchAllPages<number>(async (from, to) => {
@@ -70,7 +80,26 @@ describe("fetchAllPages", () => {
     });
     expect(rows).toHaveLength(2500);
     expect(truncated).toBe(false);
-    expect(ranges).toEqual([[0, 999], [1000, 1999], [2000, 2999]]);
+    expect(ranges).toEqual([[0, 999], [1000, 1999], [2000, 2999], [2500, 3499]]);
+  });
+
+  it("a short page is not the end: a server that caps each request at 400 rows still exports everything (A8)", async () => {
+    const all = Array.from({ length: 1050 }, (_, i) => i);
+    const ranges: Array<[number, number]> = [];
+    const { rows, truncated } = await fetchAllPages<number>(async (from, to) => {
+      ranges.push([from, to]);
+      return { data: all.slice(from, Math.min(to + 1, from + 400)), error: null }; // never more than 400 at once
+    });
+    expect(rows).toEqual(all); // complete, in order, no row twice
+    expect(truncated).toBe(false);
+    expect(ranges.map((r) => r[0])).toEqual([0, 400, 800, 1050]);
+  });
+
+  it("an empty result is one request and no rows", async () => {
+    let calls = 0;
+    const res = await fetchAllPages<number>(async () => { calls++; return { data: [], error: null }; });
+    expect(res).toEqual({ rows: [], truncated: false });
+    expect(calls).toBe(1);
   });
 
   it("stops at the cap and says the export was cut", async () => {

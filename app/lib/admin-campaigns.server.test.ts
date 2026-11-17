@@ -68,84 +68,61 @@ describe("listCampaigns", () => {
   });
 });
 
-describe("saveCampaign (R7)", () => {
-  it("looks only for active campaigns that overlap the dates, excluding itself", async () => {
-    const { fake, mod } = await load({ from: () => ({ data: [] }) });
-    await mod.findOverlapping(input.startsAt, input.endsAt, A);
-    expect(fake.tableCalls("bonus_campaigns")[0].chain).toEqual([
-      ["select", ["id, name"]], ["eq", ["is_active", true]], ["lt", ["starts_at", input.endsAt]],
-      ["gt", ["ends_at", input.startsAt]], ["neq", ["id", A]],
-    ]);
-  });
-
-  it("saves nothing and reports the conflict until the admin confirms", async () => {
-    const { fake, mod } = await load({
-      from: (_t, chain) => (chain.some(([m]) => m === "lt") ? { data: [{ id: B, name: "Winter Glow" }] } : { data: [{ id: A }] }),
-    });
-    const res = await mod.saveCampaign(null, input);
-    expect(res).toEqual({ ok: false, conflicts: [{ id: B, name: "Winter Glow" }] });
-    const wrote = fake.tableCalls("bonus_campaigns").some((c) => c.chain.some(([m]) => m === "insert" || m === "update"));
-    expect(wrote).toBe(false);
-  });
-
-  it("on confirmation switches off only the overlapping campaigns, then saves", async () => {
-    const { fake, mod } = await load({
-      from: (_t, chain) => (chain.some(([m]) => m === "lt") ? { data: [{ id: B, name: "Winter Glow" }] } : { data: [{ id: A }] }),
-    });
+describe("saveCampaign (R7, A2, A3)", () => {
+  it("is one database call, so switching off the overlap and saving cannot be half done", async () => {
+    const { fake, mod } = await load({ rpc: () => ({ data: { ok: true, id: A, switched_off: ["Winter Glow"] } }) });
     const res = await mod.saveCampaign(null, input, { replaceOverlapping: true });
     expect(res).toEqual({ ok: true, switchedOff: ["Winter Glow"] });
-    const calls = fake.tableCalls("bonus_campaigns");
-    const off = calls.find((c) => c.chain[0][0] === "update")!;
-    // scoped to the overlapping ids: never "every other campaign"
-    expect(off.chain).toEqual([["update", [{ is_active: false }]], ["in", ["id", [B]]]]);
-    const insert = calls.find((c) => c.chain[0][0] === "insert")!;
-    expect(insert.chain[0][1][0]).toEqual({ name: "Eid Edit", multiplier: 2, starts_at: input.startsAt, ends_at: input.endsAt, is_active: true });
-  });
-
-  it("does not look for overlaps when the campaign is saved switched off", async () => {
-    const { fake, mod } = await load({ from: () => ({ data: [{ id: A }] }) });
-    const res = await mod.saveCampaign(A, { ...input, isActive: false });
-    expect(res).toEqual({ ok: true, switchedOff: [] });
-    const calls = fake.tableCalls("bonus_campaigns");
-    expect(calls).toHaveLength(1);
-    expect(calls[0].chain[0][0]).toBe("update");
-    expect(calls[0].chain).toContainEqual(["eq", ["id", A]]);
-  });
-
-  it("turns the database's no-overlap rule into a plain message", async () => {
-    const { mod } = await load({
-      from: (_t, chain) => (chain.some(([m]) => m === "insert") ? { error: { message: "conflicting key value violates exclusion constraint", code: "23P01" } } : { data: [] }),
+    expect(fake.rpcCalls("admin_save_campaign")).toHaveLength(1);
+    expect(fake.rpcCalls("admin_save_campaign")[0].args).toEqual({
+      p_id: null, p_name: "Eid Edit", p_multiplier: 2, p_starts_at: input.startsAt, p_ends_at: input.endsAt,
+      p_is_active: true, p_replace_overlapping: true,
     });
-    const res = await mod.saveCampaign(null, input);
-    expect(res.ok).toBe(false);
-    expect(!res.ok && "error" in res && res.error).toContain("overlaps these dates");
+    // no separate table writes from the application: nothing to leave half finished
+    expect(fake.db.from).not.toHaveBeenCalled();
   });
 
-  it("reports a campaign that no longer exists, and refuses a malformed id", async () => {
-    const { mod } = await load({ from: () => ({ data: [] }) });
-    expect(await mod.saveCampaign(A, { ...input, isActive: false })).toEqual({ ok: false, error: "That campaign no longer exists." });
+  it("reports the overlapping campaigns when the admin has not confirmed, and does not ask to replace", async () => {
+    const { fake, mod } = await load({ rpc: () => ({ data: { ok: false, conflicts: [{ id: B, name: "Winter Glow" }] } }) });
+    expect(await mod.saveCampaign(null, input)).toEqual({ ok: false, conflicts: [{ id: B, name: "Winter Glow" }] });
+    expect((fake.rpcCalls("admin_save_campaign")[0].args as { p_replace_overlapping: boolean }).p_replace_overlapping).toBe(false);
+  });
+
+  it("turns the database's answers into plain messages", async () => {
+    const overlap = await load({ rpc: () => ({ data: { ok: false, error: "overlap" } }) });
+    const r1 = await overlap.mod.saveCampaign(null, input);
+    expect(!r1.ok && "error" in r1 && r1.error).toContain("overlaps these dates");
+    const gone = await load({ rpc: () => ({ data: { ok: false, error: "not_found" } }) });
+    expect(await gone.mod.saveCampaign(A, input)).toEqual({ ok: false, error: "That campaign no longer exists." });
+    const odd = await load({ rpc: () => ({ data: { ok: false, error: "something_else" } }) });
+    expect(await odd.mod.saveCampaign(A, input)).toEqual({ ok: false, error: "The campaign could not be saved." });
+  });
+
+  it("refuses a malformed id without calling the database, and throws when the call itself fails", async () => {
+    const { fake, mod } = await load();
     expect((await mod.saveCampaign("1; drop", input)).ok).toBe(false);
+    expect(fake.calls).toHaveLength(0);
+    const broken = await load({ rpc: () => ({ error: { message: "function admin_save_campaign does not exist" } }) });
+    await expect(broken.mod.saveCampaign(null, input)).rejects.toThrow("admin_save_campaign failed");
   });
 });
 
 describe("switch on, switch off, delete", () => {
-  it("switching on is refused while another active campaign overlaps", async () => {
-    const { fake, mod } = await load({
-      from: (_t, chain) => {
-        if (chain.some(([m]) => m === "maybeSingle")) return { data: { name: "Eid", starts_at: input.startsAt, ends_at: input.endsAt } };
-        if (chain.some(([m]) => m === "lt")) return { data: [{ id: B, name: "Winter Glow" }] };
-        return {};
-      },
-    });
-    const res = await mod.setCampaignActive(A, true);
-    expect(res).toEqual({ ok: false, conflicts: [{ id: B, name: "Winter Glow" }] });
-    expect(fake.tableCalls("bonus_campaigns").some((c) => c.chain[0][0] === "update")).toBe(false);
+  it("switching on or off is one database call that applies the rule-2 switch-off", async () => {
+    const { fake, mod } = await load({ rpc: () => ({ data: { ok: true } }) });
+    expect(await mod.setCampaignActive(A, false)).toEqual({ ok: true, switchedOff: [] });
+    expect(fake.rpcCalls("admin_set_campaign_active")[0].args).toEqual({ p_id: A, p_active: false });
+    // the application never writes is_active itself (that would skip ends_at = least(ends_at, now()))
+    expect(fake.db.from).not.toHaveBeenCalled();
   });
 
-  it("switching off touches only that campaign", async () => {
-    const { fake, mod } = await load();
-    expect(await mod.setCampaignActive(A, false)).toEqual({ ok: true, switchedOff: [] });
-    expect(fake.tableCalls("bonus_campaigns")[0].chain).toEqual([["update", [{ is_active: false }]], ["eq", ["id", A]]]);
+  it("switching on is refused while another active campaign overlaps, or once it has ended", async () => {
+    const clash = await load({ rpc: () => ({ data: { ok: false, conflicts: [{ id: B, name: "Winter Glow" }] } }) });
+    expect(await clash.mod.setCampaignActive(A, true)).toEqual({ ok: false, conflicts: [{ id: B, name: "Winter Glow" }] });
+    const ended = await load({ rpc: () => ({ data: { ok: false, error: "ended" } }) });
+    const res = await ended.mod.setCampaignActive(A, true);
+    expect(!res.ok && "error" in res && res.error).toContain("already ended");
+    expect((await ended.mod.setCampaignActive("nope", true)).ok).toBe(false);
   });
 
   it("a campaign with orders is kept as a record", async () => {
@@ -171,16 +148,18 @@ describe("ledger export", () => {
       members: { first_name: "=Evil", last_name: null, email: "e@x.com" },
     });
     const { fake, mod } = await load({
-      from: () => ({ data: page++ === 0 ? Array.from({ length: 1000 }, (_, i) => row(i)) : [row(1000)] }),
+      from: () => ({ data: page === 0 ? (page++, Array.from({ length: 1000 }, (_, i) => row(i))) : page++ === 1 ? [row(1000)] : [] }),
     });
     const res = await mod.listLedger({ from: "a", to: "b", actionType: "adjustment" });
     expect(res.rows).toHaveLength(1001);
     expect(res.truncated).toBe(false);
     expect(res.rows[0]).toMatchObject({ memberName: "=Evil", points: -500, reason: "entered twice", customerNote: "Correction" });
     const calls = fake.tableCalls("points_ledger");
-    expect(calls).toHaveLength(2);
+    // third request is the empty page that proves the end was reached (A8)
+    expect(calls).toHaveLength(3);
     expect(calls[0].chain).toContainEqual(["range", [0, 999]]);
     expect(calls[1].chain).toContainEqual(["range", [1000, 1999]]);
+    expect(calls[2].chain).toContainEqual(["range", [1001, 2000]]);
     expect(calls[0].chain).toContainEqual(["eq", ["action_type", "adjustment"]]);
     expect(calls[0].chain).toContainEqual(["lt", ["earned_at", "b"]]);
   });

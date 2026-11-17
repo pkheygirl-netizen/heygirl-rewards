@@ -9,9 +9,13 @@ beforeEach(() => {
   readHeartbeats.mockReset();
 });
 
-async function load(queue?: Record<string, unknown> | "throws") {
+async function load(queue?: Record<string, unknown> | "throws", importQueue?: unknown | "missing") {
   vi.resetModules();
   vi.doMock("./heartbeat.server", () => ({ readHeartbeats }));
+  vi.doMock("./smile-import-queue.server", () => {
+    if (importQueue === "missing") throw new Error("module not found");
+    return { IMPORT_QUEUE_NAME: "smile-import", importQueue };
+  });
   vi.doMock("./queue.server", () => {
     if (queue === "throws") throw new Error("REDIS_URL is required");
     return queue ?? {};
@@ -80,6 +84,16 @@ describe("summariseHealth", () => {
 describe("countFailedJobs", () => {
   it("adds up failed jobs across the queues", async () => {
     const mod = await load({ pointsQueue: q(2), socialQueue: q(0), notificationQueue: q(1), cronQueue: q(0) });
+    expect(await mod.countFailedJobs()).toBe(3);
+  });
+
+  it("includes failed jobs of the smile-import queue", async () => {
+    const mod = await load({ pointsQueue: q(2), socialQueue: q(0), notificationQueue: q(1), cronQueue: q(0) }, q(4));
+    expect(await mod.countFailedJobs()).toBe(7);
+  });
+
+  it("still counts the engine queues when the import queue module is not there", async () => {
+    const mod = await load({ pointsQueue: q(2), socialQueue: q(0), notificationQueue: q(1), cronQueue: q(0) }, "missing");
     expect(await mod.countFailedJobs()).toBe(3);
   });
 

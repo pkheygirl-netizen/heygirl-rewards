@@ -33,31 +33,37 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       if (!parsed.ok) return json({ ...invalid(parsed.errors), intent }, { status: 400 });
       const id = String(form.get("id") ?? "") || null;
       const res = await saveCampaign(id, parsed.value, { replaceOverlapping: form.get("replace_overlapping") === "true" });
+      // The storefront copy is rewritten after every save attempt, whatever its
+      // outcome, so it can never lag behind what the campaigns table says.
+      const { warning } = await publishSettings(admin);
       if (!res.ok) {
         if ("conflicts" in res) {
           return json({ ok: false as const, intent, conflicts: res.conflicts, error: "Another active campaign overlaps these dates." }, { status: 409 });
         }
         return fail(res.error, 409);
       }
-      const { warning } = await publishSettings(admin);
       const off = res.switchedOff.length ? ` ${res.switchedOff.join(", ")} switched off.` : "";
       return json({ ok: true as const, intent, message: `Campaign saved.${off}`, warning });
     }
     if (intent === "set_active") {
-      const res = await setCampaignActive(String(form.get("id") ?? ""), form.get("active") === "true");
+      const active = form.get("active") === "true";
+      const res = await setCampaignActive(String(form.get("id") ?? ""), active);
+      const { warning } = await publishSettings(admin);
       if (!res.ok) {
         if ("conflicts" in res) {
           return fail(`It overlaps ${res.conflicts.map((c) => c.name).join(", ")}. Switch that off or change the dates first.`, 409);
         }
         return fail(res.error, 409);
       }
-      const { warning } = await publishSettings(admin);
-      return json({ ok: true as const, intent, message: form.get("active") === "true" ? "Campaign switched on" : "Campaign switched off", warning });
+      return json({
+        ok: true as const, intent, warning,
+        message: active ? "Campaign switched on" : "Campaign switched off. Orders already placed during it keep its multiplier",
+      });
     }
     if (intent === "delete") {
       const res = await deleteCampaign(String(form.get("id") ?? ""));
-      if (!res.ok) return fail(res.error, 409);
       const { warning } = await publishSettings(admin);
+      if (!res.ok) return fail(res.error, 409);
       return json({ ok: true as const, intent, message: "Campaign deleted", warning });
     }
     return fail("Unknown action.");
@@ -156,7 +162,7 @@ export default function Campaigns() {
                         <InlineStack gap="200" wrap={false}>
                           <Button size="slim" onClick={() => edit(c)}>Edit</Button>
                           {c.status === "ended" ? null : c.isActive ? (
-                            <Button size="slim" variant="plain" onClick={() => setConfirm({ kind: "off", c })}>Switch off</Button>
+                            <Button size="slim" variant="plain" onClick={() => setConfirm({ kind: "off", c })}>{c.status === "live" ? "End now" : "Switch off"}</Button>
                           ) : (
                             <Button size="slim" variant="plain" loading={busy}
                               onClick={() => fetcher.submit({ intent: "set_active", id: c.id, active: "true" }, { method: "post" })}>
@@ -211,7 +217,7 @@ export default function Campaigns() {
                 </FormLayout.Group>
                 <Checkbox
                   label="Switched on" checked={draft.is_active} onChange={(v) => setDraft({ ...draft, is_active: v })}
-                  helpText="A campaign that is switched on starts and ends by itself at the times above."
+                  helpText="A campaign that is switched on starts and ends by itself at the times above. Un-ticking this for a campaign that is running ends it now."
                 />
               </FormLayout>
               {draft.id ? (
@@ -234,7 +240,7 @@ export default function Campaigns() {
       >
         <Text as="p">
           {(conflicts ?? []).map((c) => c.name).join(", ")} {conflicts && conflicts.length > 1 ? "are" : "is"} switched on for some of the same time.
-          Only one campaign can run at a time. Saving will switch {conflicts && conflicts.length > 1 ? "them" : "it"} off; campaigns that do not overlap are left alone.
+          Only one campaign can run at a time. Saving will switch {conflicts && conflicts.length > 1 ? "them" : "it"} off in the same step: a campaign that is running ends now and orders already placed during it keep its multiplier; one that has not started keeps its dates. Campaigns that do not overlap are left alone.
           Choose Cancel to go back and change the dates instead.
         </Text>
       </ConfirmModal>
@@ -242,8 +248,8 @@ export default function Campaigns() {
       <ConfirmModal
         open={confirm !== null}
         loading={busy}
-        title={confirm?.kind === "delete" ? `Delete "${confirm.c.name}"?` : `Switch off "${confirm?.c.name ?? ""}"?`}
-        confirmLabel={confirm?.kind === "delete" ? "Delete campaign" : "Switch off"}
+        title={confirm?.kind === "delete" ? `Delete "${confirm.c.name}"?` : confirm?.c.status === "live" ? `End "${confirm.c.name}" now?` : `Switch off "${confirm?.c.name ?? ""}"?`}
+        confirmLabel={confirm?.kind === "delete" ? "Delete campaign" : confirm?.c.status === "live" ? "End campaign now" : "Switch off"}
         onClose={() => setConfirm(null)}
         onConfirm={() => {
           if (!confirm) return;
@@ -257,7 +263,9 @@ export default function Campaigns() {
         <Text as="p">
           {confirm?.kind === "delete"
             ? "No orders were placed under this campaign, so it can be removed completely."
-            : "New orders stop earning the multiplier straight away. Orders already placed during the campaign keep it."}
+            : confirm?.c.status === "live"
+              ? "The campaign's end time is set to now. New orders stop earning the multiplier straight away; every order already placed during the campaign keeps it, including orders that are paid later. To run it again, edit its end time and switch it on."
+              : "It has not started yet, so no order is affected. Its dates are kept and you can switch it on again."}
         </Text>
       </ConfirmModal>
     </Page>

@@ -34,6 +34,7 @@ function mockAll(script: Parameters<typeof fakeDb>[0]) {
     readHeartbeats: async () => [{ key: "worker", at: new Date().toISOString(), detail: { failed: { points: 0 } } }],
   }));
   vi.doMock("./queue.server", () => ({}));
+  vi.doMock("./smile-import-queue.server", () => ({}));
   vi.doMock("./csv-download.client", () => ({ downloadCsv: vi.fn() }));
   vi.doMock("@shopify/polaris-viz", () => ({ LineChart: () => null }));
   vi.doMock("@shopify/polaris-viz/build/esm/styles.css", () => ({}));
@@ -108,7 +109,7 @@ const full: Parameters<typeof fakeDb>[0] = {
       case "admin_tier_counts":
         return { data: { silver: 1869, gold: 34, diamond: 9, near_gold: 12, near_diamond: 1, near_gold_within_pkr: 5000, near_diamond_within_pkr: 10000 } };
       case "admin_attention":
-        return { data: { referrals_flagged: 3, review_claims_pending: 2, expiring_members: 41, expiring_points: 90000, gdpr_open: 1 } };
+        return { data: { referrals_flagged: 3, review_claims_pending: 2, expiring_members: 41, expiring_points: 90000, expiring_overdue_members: 2, gdpr_open: 1 } };
       case "admin_activity":
         return { data: [
           { id: "l1", at: "2026-11-16T05:00:00Z", kind: "points", action: "purchase", points: 4250, member_id: ID, member_name: "Sana Ahmed", order_id: "5", order_name: "#1042" },
@@ -131,7 +132,7 @@ const full: Parameters<typeof fakeDb>[0] = {
       case "admin_top_members":
         return { data: [{ member_id: ID, name: "Sana Ahmed", email: "sana@example.com", points: 12000 }] };
       case "admin_expiring_members":
-        return { data: [{ member_id: ID, name: "Sana Ahmed", email: "sana@example.com", phone: null, points: 1500, first_expiry: "2026-12-01T00:00:00Z", total_count: 1 }] };
+        return { data: [{ member_id: ID, name: "Sana Ahmed", email: "sana@example.com", phone: null, points: 1500, first_expiry: "2020-12-01T00:00:00Z", total_count: 1 }] };
       default:
         return { data: null };
     }
@@ -188,6 +189,12 @@ describe("pages render with data", () => {
     expect(html).toContain('href="/app/referrals?status=flagged"');
   });
 
+  it("Home shows overdue expiries as expiring now (A9)", async () => {
+    const html = await renderRoute("app._index.tsx", "/app?view=expiring");
+    expect(html).toContain("2 of them have points expiring now");
+    expect(html).toContain("Expiring now (due 1 Dec 2020)");
+  });
+
   it("Customers list", async () => {
     const html = await renderRoute("app.customers._index.tsx", "/app/customers?q=sana");
     expect(html).toContain("Sana Ahmed");
@@ -223,7 +230,10 @@ describe("pages render with data", () => {
 
   it("Influencers list and detail", async () => {
     const list = await renderRoute("app.influencers._index.tsx", "/app/influencers");
-    for (const text of ["Winter Glow", "12,000", "SANA10 (10% off)", "Rs.181,000", "270,000", "Add influencer"]) expect(list, text).toContain(text);
+    for (const text of ["Winter Glow", "12,000", "SANA10 (10% off)", "Rs.181,000", "270,000", "Add influencer", "All-time results.", "an order that completed a link referral counts for that link only"]) expect(list, text).toContain(text);
+    const period = await renderRoute("app.influencers._index.tsx", "/app/influencers?period=30d");
+    expect(period).toContain("each number counts what happened in the period");
+    expect(period).toContain("completed referrals by the day they completed");
     const detail = await renderRoute("app.influencers.$id.tsx", `/app/influencers/${ID}`, { id: ID });
     for (const text of ["Points per referral", "1.5× (9,000 points)", "3× (18,000 points)", "Custom", "Rate starts, optional", "Remove code", "Her referrals", "Held for review", "Pause"]) {
       expect(detail, text).toContain(text);
@@ -232,7 +242,7 @@ describe("pages render with data", () => {
 
   it("Campaigns", async () => {
     const html = await renderRoute("app.campaigns._index.tsx", "/app/campaigns");
-    for (const text of ["Eid Edit", "Live", "Rs.48,000", "90,000", "6,000 pending", "Create campaign"]) expect(html, text).toContain(text);
+    for (const text of ["Eid Edit", "Live", "Rs.48,000", "90,000", "6,000 pending", "Create campaign", "End now"]) expect(html, text).toContain(text);
     // a campaign with orders offers no Delete
     expect(html).not.toContain(">Delete<");
   });

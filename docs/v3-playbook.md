@@ -55,7 +55,13 @@ All are encoded as rules 1–19 in `docs/v3-contract.md` section 1. The ones mos
 - Smile import: match by email only; zero-point records import at zero; imported points expire one year from import. The Smile export has no phone column and writes points with thousands separators.
 - Emails are sent by the app (SMTP). WhatsApp is built behind a switch and stays off until the store has a WhatsApp Business API account.
 
-Still open with the owner: Gold birthday multiplier (answers doc says Gold gets 1.2×, build plan says Diamond only; contract follows Diamond only); keep or change the Rs.5,000 and Rs.10,000 rewards; cutover date; blank item 4 in `coding changes.txt`.
+Owner answers, 17 Nov 2026:
+- A paused influencer earns the standard referral reward (6,000). As built.
+- The Smile import runs **before** the storefront launcher is switched on.
+- Live will use the **same** Supabase project as dev (owner's choice; see go-live note in section 11 about clearing test data first).
+- Copying `shopify.app.example.toml` into the real `shopify.app.toml` and making the GitHub repo private: done together with the owner after the build is complete.
+
+Still open with the owner: Gold birthday multiplier (owner answered "yes" to an either/or question, so it is NOT settled: answers doc says Gold gets 1.2x, build plan says Diamond only; contract and code follow Diamond only); keep or change the Rs.5,000 (100,000 points) and Rs.10,000 (180,000 points) redemption rewards; cutover date; item 4 in `coding changes.txt` ("Icon changes in ways to earn:") is blank after the colon; which organization owns the app (Distribution card or Installs card on the app's Home in the Dev Dashboard).
 
 ## 4. Defects in the pre-v3 code that v3 must not reintroduce
 
@@ -228,3 +234,5 @@ Deploy the branch to the dev store (apply migrations 010–012 to `heygirl-rewar
 - 2026-11-17: **Admin and import fix rounds NOT done.** Both agents were stopped at the start by the account's monthly spend limit. Their fix lists (A1–A10; I2–I9) are still open. The import must not be used until I2–I5 are fixed.
 - Not done: admin and import fix rounds; a fresh verification review of all fixes; dev-store test (section 10).
 - Branch `v3-rebuild` is not ready to merge.
+- 2026-11-17: **New Shopify requirement found (read on shopify.dev, changelog dated 11 Nov 2026).** A custom app installed on a store **outside the organization that owns the app** needs an IP allowlist: for new installs from 20 Nov 2026 23:59 ET, for existing installs from 1 Jan 2027. Apps installed only on stores inside the owning organization, and apps created by the merchant, are not affected. Set in Dev Dashboard > app > Settings > IP allowlist (IPs/CIDR up to 250, or up to 10 ASNs, optionally limited by country; "Test against recent traffic" before enforcing). When enforced, Admin API calls from other addresses get 403. Both Railway services (web and worker) call the Admin API. Railway static outbound IPs need the Pro plan and are shared, not dedicated; the alternative is allowing Railway's network by ASN. NOT yet known: which organization owns this app, the Railway plan, Railway's ASN. Do not guess these.
+- 2026-11-17: Admin (A1-A10) and import (I2-I9) fix rounds restarted with the original agents.

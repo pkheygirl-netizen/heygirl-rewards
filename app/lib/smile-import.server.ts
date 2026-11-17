@@ -16,7 +16,8 @@ import { db } from "../db.server";
 import { generateSlug } from "./points.service";
 import { getAdminForShop } from "./worker-admin.server";
 import type { AdminGraphqlClient } from "./shopify-graphql.server";
-import { enqueueImportJob } from "./smile-import-queue.server";
+import { enqueueImportJob, importJobBusy } from "./smile-import-queue.server";
+import { getSettings } from "./settings.server";
 import { fetchAllPages, toCsv } from "./csv.server";
 import {
   FilePlanner, REPORT_COLUMNS, computeTotals, importReference, mapVipTier, parseCsvStream, toReportLine,
@@ -49,6 +50,9 @@ export type ImportRun = {
   started_at: string | null;
   finished_at: string | null;
   updated_at: string;
+  locked_by: string | null;
+  locked_until: string | null;
+  rows_purged_at: string | null;
 };
 
 export type ImportRow = PlannedRow & {
@@ -59,6 +63,7 @@ export type ImportRow = PlannedRow & {
   shopify_phone: string | null;
   member_id: string | null;
   member_existed: boolean | null;
+  member_has_welcome: boolean | null;
   points_awarded: number | null;
 };
 
@@ -72,6 +77,15 @@ export const LIMITS = {
   awardConcurrency: 5,
   idChunk: 100, // values per .in() filter (keeps the request URL short)
   maxLookupErrors: 50,
+  /** With no successful lookup at all, this many isolated failures mean the connection is broken. */
+  errorsBeforeGivingUp: 5,
+  transientRetries: 4,
+  /** A worker's claim on a run; renewed while it works, so a second worker stays out. */
+  leaseMs: 2 * 60 * 1000,
+  /** No progress for this long: the page offers Resume. Longer than the lease. */
+  stallMs: 3 * 60 * 1000,
+  /** Stored rows of a closed run are deleted after this many days. */
+  retentionDays: 30,
 };
 
 /** Replaceable in tests so pacing does not slow them down. */
@@ -119,6 +133,67 @@ async function patchRun(runId: string, patch: Partial<ImportRun>, onlyIfStatus?:
   return ((data as unknown[] | null) ?? []).length > 0;
 }
 
+// ── Lease: one worker per run ─────────────────────────────────────────────
+
+export class ImportLockedError extends Error {
+  constructor(message = "another worker is processing this import") {
+    super(message);
+    this.name = "ImportLockedError";
+  }
+}
+
+/** Identifies this process; replaceable in tests to play a second worker. */
+export const worker = { id: `${process.env.HOSTNAME ?? "worker"}:${process.pid}:${Math.random().toString(36).slice(2, 8)}` };
+
+/**
+ * Claim the run with conditional updates (each one atomic in the database):
+ * free, expired, or already ours. Two replicas cannot both succeed.
+ */
+async function takeLease(runId: string): Promise<boolean> {
+  const now = new Date();
+  const claim = { locked_by: worker.id, locked_until: new Date(now.getTime() + LIMITS.leaseMs).toISOString() };
+  const attempts = [
+    () => idb().from("import_runs").update(claim).eq("id", runId).is("locked_until", null).select("id"),
+    () => idb().from("import_runs").update(claim).eq("id", runId).lt("locked_until", now.toISOString()).select("id"),
+    () => idb().from("import_runs").update(claim).eq("id", runId).eq("locked_by", worker.id).select("id"),
+  ];
+  for (const attempt of attempts) {
+    const { data, error } = await attempt();
+    if (error) throw new Error(`could not lock the import run: ${error.message}`);
+    if (((data as unknown[] | null) ?? []).length > 0) return true;
+  }
+  return false;
+}
+
+let lastRenewal = 0;
+/** Extend our claim. Throws when it was lost (expired and taken by another worker). */
+async function renewLease(runId: string, force = true): Promise<void> {
+  if (!force && Date.now() - lastRenewal < LIMITS.leaseMs / 4) return;
+  const { data, error } = await idb()
+    .from("import_runs")
+    .update({ locked_until: new Date(Date.now() + LIMITS.leaseMs).toISOString(), updated_at: nowIso() })
+    .eq("id", runId).eq("locked_by", worker.id).select("id");
+  if (error) throw new Error(`could not renew the import lock: ${error.message}`);
+  if (((data as unknown[] | null) ?? []).length === 0) throw new ImportLockedError("the import lock was lost to another worker");
+  lastRenewal = Date.now();
+}
+
+async function releaseLease(runId: string): Promise<void> {
+  const { error } = await idb()
+    .from("import_runs").update({ locked_by: null, locked_until: null }).eq("id", runId).eq("locked_by", worker.id);
+  if (error) console.error("[smile-import] could not release the lock:", error.message);
+}
+
+async function withLease<T>(runId: string, fn: () => Promise<T>): Promise<T> {
+  if (!(await takeLease(runId))) throw new ImportLockedError();
+  lastRenewal = Date.now();
+  try {
+    return await fn();
+  } finally {
+    await releaseLease(runId);
+  }
+}
+
 async function allRows<T>(runId: string, columns: string, states?: RowState[]): Promise<T[]> {
   const { rows } = await fetchAllPages<T>((from, to) => {
     let q = idb().from("import_rows").select(columns).eq("run_id", runId);
@@ -140,7 +215,7 @@ async function saveRows(rows: ImportRow[]): Promise<void> {
 /** Recount everything from the rows and store it on the run. */
 export async function refreshTotals(runId: string): Promise<ImportTotals> {
   const rows = await allRows<TotalsRow>(
-    runId, "state, reason, file_points, points, smile_status, member_existed, points_awarded, vip_tier_name",
+    runId, "state, reason, file_points, points, smile_status, member_existed, member_has_welcome, points_awarded, vip_tier_name",
   );
   const totals = computeTotals(rows);
   await patchRun(runId, { totals });
@@ -204,7 +279,7 @@ export async function createRun(input: {
   try {
     await saveRows(planner.rows.map((r) => ({
       ...r, run_id: runId, shopify_customer_id: null, shopify_first_name: null, shopify_last_name: null,
-      shopify_phone: null, member_id: null, member_existed: null, points_awarded: null,
+      shopify_phone: null, member_id: null, member_existed: null, member_has_welcome: null, points_awarded: null,
     })));
     await refreshTotals(runId);
     await enqueueImportJob("plan", runId);
@@ -269,13 +344,78 @@ class LookupError extends Error {}
 /** Share of the rate-limit bucket left for the live store (orders, reward codes). */
 const BUCKET_RESERVE = 0.4;
 
-async function lookupOnce(admin: AdminGraphqlClient, emails: string[]): Promise<Array<ShopifyCustomer | null>> {
+type GraphqlErrorItem = { message?: string; extensions?: { code?: string } };
+export type LookupFailure =
+  | { kind: "throttled"; waitMs: number }
+  | { kind: "query"; message: string } // Shopify answered and rejected the query: bisect
+  | { kind: "transient"; message: string } // network or 5xx: try again
+  | { kind: "fatal"; message: string }; // 401/403/…: stop the run
+
+/**
+ * What a thrown Admin client error means. The real client (@shopify/shopify-api
+ * through shopify-app-remix) THROWS instead of returning `{ errors }`:
+ *   GraphqlQueryError    HTTP 200 with errors; list at .body.errors.graphQLErrors
+ *   HttpThrottlingError  HTTP 429; .response.code and .response.retryAfter (seconds)
+ *   HttpInternalError    HTTP 5xx; .response.code
+ *   HttpResponseError    any other status; .response.code
+ *   HttpRequestError / HttpMaxRetriesError: no usable response
+ * Shapes are matched by structure, not by class, so a bundled copy of the
+ * library is recognised too.
+ */
+export function classifyLookupError(err: unknown, emailCount = LIMITS.lookupBatch): LookupFailure {
+  const e = (err ?? {}) as {
+    name?: string; message?: string; graphQLErrors?: GraphqlErrorItem[];
+    body?: { errors?: { graphQLErrors?: GraphqlErrorItem[] } | GraphqlErrorItem[]; extensions?: LookupJson["extensions"] };
+    response?: { code?: number; status?: number; retryAfter?: number };
+  };
+  const message = String(e.message ?? err).slice(0, 300);
+  const bodyErrors = e.body?.errors;
+  const list: GraphqlErrorItem[] | undefined =
+    (Array.isArray(bodyErrors) ? bodyErrors : bodyErrors?.graphQLErrors) ?? e.graphQLErrors;
+  const code = e.response?.code ?? e.response?.status;
+  const restore = e.body?.extensions?.cost?.throttleStatus?.restoreRate ?? 50;
+  const wanted = e.body?.extensions?.cost?.requestedQueryCost ?? emailCount * 3;
+
+  if (Array.isArray(list) && list.length > 0) {
+    if (list.some((g) => g?.extensions?.code === "THROTTLED")) {
+      return { kind: "throttled", waitMs: Math.max(1000, Math.ceil((wanted / restore) * 1000)) };
+    }
+    return { kind: "query", message: list.map((g) => g?.message ?? "unknown").join("; ").slice(0, 300) };
+  }
+  if (code === 429 || e.name === "HttpThrottlingError") {
+    const after = Number(e.response?.retryAfter);
+    return { kind: "throttled", waitMs: Number.isFinite(after) && after > 0 ? Math.ceil(after * 1000) : 2000 };
+  }
+  if (typeof code === "number" && code >= 500) return { kind: "transient", message };
+  if (typeof code === "number" && code >= 400) return { kind: "fatal", message };
+  if (e.name === "GraphqlQueryError") return { kind: "query", message };
+  // HttpRequestError, HttpMaxRetriesError, fetch failures, timeouts.
+  return { kind: "transient", message };
+}
+
+async function lookupOnce(
+  admin: AdminGraphqlClient,
+  emails: string[],
+  onRequest?: () => Promise<void>,
+): Promise<Array<ShopifyCustomer | null>> {
   const variables: Record<string, unknown> = {};
   emails.forEach((e, i) => (variables[`e${i}`] = e));
   const query = buildLookupQuery(emails.length);
-  for (let attempt = 0; attempt < 8; attempt++) {
-    const res = await admin.graphql(query, { variables });
-    const json = (await res.json()) as LookupJson;
+  let transient = 0;
+  for (let attempt = 0; attempt < 12; attempt++) {
+    if (onRequest) await onRequest();
+    let json: LookupJson;
+    try {
+      const res = await admin.graphql(query, { variables });
+      json = (await res.json()) as LookupJson;
+    } catch (err) {
+      const failure = classifyLookupError(err, emails.length);
+      if (failure.kind === "throttled") { await pacing.sleep(failure.waitMs); continue; }
+      if (failure.kind === "query") throw new LookupError(failure.message);
+      if (failure.kind === "transient" && transient++ < LIMITS.transientRetries) { await pacing.sleep(1000 * 2 ** transient); continue; }
+      throw new Error(`Shopify customer lookup failed: ${failure.message}`);
+    }
+    // A client that returns `{ errors }` instead of throwing (tests, other clients).
     const throttle = json.extensions?.cost?.throttleStatus;
     if (json.errors?.some((e) => e.extensions?.code === "THROTTLED")) {
       const wanted = json.extensions?.cost?.requestedQueryCost ?? emails.length * 3;
@@ -314,21 +454,23 @@ export type LookupOutcome = ShopifyCustomer | "not_found" | "error";
 export type LookupStats = { found: number; errors: number; lastError: string | null };
 
 /**
- * Look up many e-mails. A request that fails as a whole is split in halves
- * until the one bad address is isolated; that address is reported as "error"
- * and the rest still resolve. If nothing has ever worked (wrong scope, no
- * access to customer data) the first isolated failure is thrown instead, so a
- * broken connection does not turn every row into "unmatched".
+ * Look up many e-mails. A request Shopify rejects as a whole is split in
+ * halves until the one bad address is isolated; that address is reported as
+ * "error" (its row becomes unmatched with a reason) and the rest still
+ * resolve. Only when nothing has ever worked AND several isolated addresses
+ * in a row fail (wrong scope, no access to customer data) is the run stopped,
+ * so one rejected address at the head of the list cannot block it for ever.
  */
 export async function lookupCustomersByEmail(
   admin: AdminGraphqlClient,
   emails: string[],
   stats: LookupStats = { found: 0, errors: 0, lastError: null },
+  onRequest?: () => Promise<void>,
 ): Promise<Map<string, LookupOutcome>> {
   const out = new Map<string, LookupOutcome>();
   const run = async (list: string[]): Promise<void> => {
     try {
-      const res = await lookupOnce(admin, list);
+      const res = await lookupOnce(admin, list, onRequest);
       list.forEach((email, i) => {
         const c = res[i];
         // Only an exact e-mail match counts (owner rule: e-mail only).
@@ -349,7 +491,8 @@ export async function lookupCustomersByEmail(
       }
       stats.errors++;
       stats.lastError = e.message;
-      if (stats.found === 0 || stats.errors > LIMITS.maxLookupErrors) {
+      const nothingWorks = stats.found === 0 && stats.errors >= LIMITS.errorsBeforeGivingUp;
+      if (nothingWorks || stats.errors > LIMITS.maxLookupErrors) {
         throw new Error(`Shopify customer lookup is failing: ${e.message}`);
       }
       out.set(list[0], "error");
@@ -361,12 +504,13 @@ export async function lookupCustomersByEmail(
 
 // ── Members and ledger helpers ────────────────────────────────────────────
 
-type MemberLite = { id: string; shopify_customer_id: string; tier: string };
+type MemberLite = { id: string; shopify_customer_id: string; tier: string; is_blocked: boolean; opted_out: boolean };
+const MEMBER_COLS = "id, shopify_customer_id, tier, is_blocked, opted_out";
 
 async function membersByCustomerId(ids: string[]): Promise<Map<string, MemberLite>> {
   const out = new Map<string, MemberLite>();
   for (const part of chunk([...new Set(ids)], LIMITS.idChunk)) {
-    const { data, error } = await db.from("members").select("id, shopify_customer_id, tier").in("shopify_customer_id", part);
+    const { data, error } = await db.from("members").select(MEMBER_COLS).in("shopify_customer_id", part);
     if (error) throw new Error(`member lookup failed: ${error.message}`);
     for (const m of data ?? []) out.set(m.shopify_customer_id, m);
   }
@@ -385,20 +529,49 @@ async function importLedgerByMember(memberIds: string[]): Promise<Map<string, { 
   return out;
 }
 
+/** Members that already received the welcome bonus (a `signup` ledger row). */
+async function membersWithWelcome(memberIds: string[]): Promise<Set<string>> {
+  const out = new Set<string>();
+  for (const part of chunk([...new Set(memberIds)], LIMITS.idChunk)) {
+    const { data, error } = await db.from("points_ledger").select("member_id").eq("action_type", "signup").in("member_id", part);
+    if (error) throw new Error(`ledger lookup failed: ${error.message}`);
+    for (const l of data ?? []) out.add(l.member_id);
+  }
+  return out;
+}
+
+/** Opted-out and blocked members never receive Smile points (contract rule 3). */
+function exclusion(member: MemberLite | undefined): RowReason | null {
+  if (!member) return null;
+  if (member.opted_out) return "member_opted_out";
+  if (member.is_blocked) return "member_blocked";
+  return null;
+}
+
 // ── Dry run (worker) ──────────────────────────────────────────────────────
 
 export async function planRun(runId: string, deps: { admin?: AdminGraphqlClient } = {}): Promise<{ status: RunStatus | "missing" }> {
   const run = await getRun(runId);
   if (!run) return { status: "missing" };
   if (run.status !== "planning") return { status: run.status };
+  return withLease(runId, () => planLocked(run, deps));
+}
+
+async function planLocked(run: ImportRun, deps: { admin?: AdminGraphqlClient }): Promise<{ status: RunStatus | "missing" }> {
+  const runId = run.id;
   const admin = deps.admin ?? (await getAdminForShop());
-  const stats: LookupStats = { found: 0, errors: 0, lastError: null };
+  // A resumed job starts from what earlier attempts already found, so one
+  // rejected address at the head of the remaining rows is not "nothing works".
+  const { count: foundBefore } = await idb()
+    .from("import_rows").select("row_number", { count: "exact", head: true }).eq("run_id", runId).in("state", ["matched", "skipped"]);
+  const stats: LookupStats = { found: Number(foundBefore ?? 0), errors: 0, lastError: null };
   const total = Number(run.progress?.total ?? 0);
-  let done = 0;
+  let done = Number(run.progress?.done ?? 0);
 
   for (;;) {
     const current = await getRun(runId);
     if (!current || current.status !== "planning") return { status: current?.status ?? "missing" }; // discarded meanwhile
+    await renewLease(runId);
     const { data, error } = await idb()
       .from("import_rows").select("*").eq("run_id", runId).eq("state", "pending")
       .order("row_number", { ascending: true }).limit(LIMITS.lookupPage);
@@ -406,10 +579,12 @@ export async function planRun(runId: string, deps: { admin?: AdminGraphqlClient 
     const rows = (data as ImportRow[] | null) ?? [];
     if (rows.length === 0) break;
 
-    const found = await lookupCustomersByEmail(admin, rows.map((r) => r.email ?? ""), stats);
+    const found = await lookupCustomersByEmail(admin, rows.map((r) => r.email ?? ""), stats, () => renewLease(runId, false));
     const customerIds = [...found.values()].flatMap((c) => (typeof c === "object" ? [c.id] : []));
     const members = await membersByCustomerId(customerIds);
-    const already = await importLedgerByMember([...members.values()].map((m) => m.id));
+    const memberIds = [...members.values()].map((m) => m.id);
+    const already = await importLedgerByMember(memberIds);
+    const welcomed = await membersWithWelcome(memberIds);
 
     for (const row of rows) {
       const c = found.get(row.email ?? "");
@@ -422,7 +597,13 @@ export async function planRun(runId: string, deps: { admin?: AdminGraphqlClient 
       row.shopify_phone = c.phone;
       row.member_id = member?.id ?? null;
       row.member_existed = Boolean(member);
-      if (member && already.has(member.id)) {
+      row.member_has_welcome = member ? welcomed.has(member.id) : false;
+      const excluded = exclusion(member);
+      if (excluded) {
+        row.state = "skipped";
+        row.reason = excluded;
+        clearContact(row);
+      } else if (member && already.has(member.id)) {
         // One Smile balance per customer, whatever file it came from.
         row.state = "skipped";
         row.reason = "already_imported";
@@ -488,21 +669,64 @@ export async function confirmRun(runId: string, options: ImportOptions): Promise
   return { ok: true, message: "Import started" };
 }
 
-/** Discard a dry run, or stop a run. Points already added stay (they are in the ledger). */
+/** Remove the Shopify name and phone held for rows that were never imported. */
+async function scrubContact(runId: string): Promise<void> {
+  const { error } = await idb()
+    .from("import_rows").update({ shopify_first_name: null, shopify_last_name: null, shopify_phone: null }).eq("run_id", runId);
+  if (error) throw new Error(`could not clear stored contact details: ${error.message}`);
+}
+
+async function deleteRows(runId: string): Promise<void> {
+  const { error } = await idb().from("import_rows").delete().eq("run_id", runId);
+  if (error) throw new Error(`could not delete the stored rows: ${error.message}`);
+  await patchRun(runId, { rows_purged_at: nowIso() });
+}
+
+/**
+ * Discard a dry run, or stop a run. Points already added stay (they are in
+ * the ledger). A discarded dry run imported nothing, so its rows are deleted
+ * at once; a stopped import keeps its rows for the report, without the
+ * Shopify name and phone, until the retention period ends.
+ */
 export async function discardRun(runId: string): Promise<ActionOutcome> {
+  const run = await getRun(runId);
   const moved = await patchRun(runId, { status: "cancelled", finished_at: nowIso() }, OPEN_STATUSES);
-  if (!moved) return { ok: false, error: "This import is already finished." };
+  if (!run || !moved) return { ok: false, error: "This import is already finished." };
+  try {
+    if (run.phase === "plan") await deleteRows(runId);
+    else await scrubContact(runId);
+  } catch (e) {
+    return { ok: false, error: `The import was closed, but ${msg(e)}. Press "Delete stored rows".` };
+  }
   return { ok: true, message: "Import closed" };
 }
 
-/** Continue a failed or stalled run, or retry the rows that failed in a finished one. */
-export async function resumeRun(runId: string): Promise<ActionOutcome> {
+/**
+ * Continue a failed or stalled run, or retry the rows that failed in a
+ * finished one. Refused while a job for the run is queued or running, and,
+ * for a run that still says planning/running, until it has shown no progress
+ * for the stall window: a second job must never work beside a live one.
+ */
+export async function resumeRun(runId: string, now: Date = new Date()): Promise<ActionOutcome> {
   const run = await getRun(runId);
   if (!run) return { ok: false, error: "Import not found." };
   if (run.status === "planned" || run.status === "cancelled") return { ok: false, error: "There is nothing to resume." };
+  if (run.status === "planning" || run.status === "running") {
+    const quietMs = now.getTime() - new Date(run.updated_at).getTime();
+    if (quietMs < LIMITS.stallMs) return { ok: false, error: "The import is still working. Resume is only for an import that has stopped." };
+  }
+  if (run.locked_until && new Date(run.locked_until).getTime() > now.getTime()) {
+    return { ok: false, error: "A worker is still holding this import. Try again in a couple of minutes." };
+  }
+  try {
+    if (await importJobBusy(runId)) return { ok: false, error: "This import is already queued or running." };
+  } catch (e) {
+    return { ok: false, error: `Could not check the queue: ${msg(e)}` };
+  }
   if (run.status === "completed") {
     const other = await getOpenRun();
     if (other) return { ok: false, error: "Another import is open." };
+    if (run.rows_purged_at) return { ok: false, error: "The stored rows of this import were deleted. Upload the file again; nobody gets points twice." };
   }
   if (run.phase === "execute") {
     // Give the rows that failed another chance.
@@ -514,7 +738,8 @@ export async function resumeRun(runId: string): Promise<ActionOutcome> {
   try {
     const moved = await patchRun(runId, { status, error: null, finished_at: null }, [run.status]);
     if (!moved) return { ok: false, error: "The import changed meanwhile. Reload the page." };
-    await enqueueImportJob(run.phase, runId);
+    const { queued } = await enqueueImportJob(run.phase, runId);
+    if (!queued) return { ok: false, error: "This import is already queued or running." };
   } catch (e) {
     return { ok: false, error: `Could not resume: ${msg(e)}` };
   }
@@ -533,10 +758,52 @@ export async function purgeRunRows(runId: string): Promise<ActionOutcome> {
   if (run.status !== "completed" && run.status !== "cancelled") {
     return { ok: false, error: "Only a finished or closed import can be cleared." };
   }
-  const { error } = await idb().from("import_rows").delete().eq("run_id", runId);
-  if (error) return { ok: false, error: `Could not clear the rows: ${error.message}` };
-  await patchRun(runId, { progress: { ...run.progress, rowsCleared: true } as ImportRun["progress"] });
+  try {
+    await deleteRows(runId);
+  } catch (e) {
+    return { ok: false, error: msg(e) };
+  }
   return { ok: true, message: "Stored rows deleted" };
+}
+
+/**
+ * Retention: delete the stored rows of every run that was closed more than
+ * LIMITS.retentionDays ago. Called when the Import page loads and before each
+ * worker job, so no separate cron is needed. Never throws.
+ */
+export async function purgeExpiredRows(now: Date = new Date()): Promise<number> {
+  try {
+    const cutoff = new Date(now.getTime() - LIMITS.retentionDays * 86_400_000).toISOString();
+    const { data, error } = await idb()
+      .from("import_runs").select("id").in("status", ["completed", "cancelled"])
+      .is("rows_purged_at", null).lt("finished_at", cutoff).limit(20);
+    if (error) throw new Error(error.message);
+    const runs = (data as Array<{ id: string }> | null) ?? [];
+    for (const r of runs) await deleteRows(r.id);
+    return runs.length;
+  } catch (e) {
+    console.error("[smile-import] retention purge failed:", msg(e));
+    return 0;
+  }
+}
+
+/**
+ * What the page needs to judge the welcome-bonus order (rule 4): the import
+ * should run BEFORE customers start signing in on the storefront. The app
+ * does not store whether the theme's app embed (the launcher) is switched on;
+ * that lives in the theme. These are the facts the database does hold.
+ */
+export async function getLaunchState(): Promise<{ programEnabled: boolean; welcomeBonusesGiven: number; signedInMembers: number }> {
+  const settings = await getSettings();
+  const welcome = await db.from("points_ledger").select("id", { count: "exact", head: true }).eq("action_type", "signup");
+  if (welcome.error) throw new Error(`ledger count failed: ${welcome.error.message}`);
+  const signedIn = await db.from("members").select("id", { count: "exact", head: true }).eq("consent_source", "signin");
+  if (signedIn.error) throw new Error(`member count failed: ${signedIn.error.message}`);
+  return {
+    programEnabled: settings.program_enabled !== false,
+    welcomeBonusesGiven: Number(welcome.count ?? 0),
+    signedInMembers: Number(signedIn.count ?? 0),
+  };
 }
 
 // ── Real run (worker) ─────────────────────────────────────────────────────
@@ -549,7 +816,7 @@ async function pool<T>(items: T[], size: number, fn: (item: T) => Promise<void>)
   await Promise.all(workers);
 }
 
-function memberInsert(row: ImportRow, tier: string, slug: string) {
+function memberInsert(row: ImportRow, slug: string) {
   const now = nowIso();
   return {
     shopify_customer_id: String(row.shopify_customer_id),
@@ -557,7 +824,11 @@ function memberInsert(row: ImportRow, tier: string, slug: string) {
     phone: row.shopify_phone?.trim() || null,
     first_name: row.shopify_first_name?.trim() || null,
     last_name: row.shopify_last_name?.trim() || null,
-    tier,
+    // Always Silver here. The "tier from Smile" option raises it afterwards
+    // through upgrade_member_tier, which writes the history row in the same
+    // transaction; a crash in between leaves a Silver member that the next
+    // attempt raises.
+    tier: "silver",
     points_balance: 0,
     lifetime_spend_pkr: 0,
     referral_slug: slug,
@@ -569,7 +840,7 @@ function memberInsert(row: ImportRow, tier: string, slug: string) {
 }
 
 /** Create the members a batch needs. Returns customer id → member for every one created or found. */
-async function createMembers(rows: ImportRow[], tierFor: (row: ImportRow) => string): Promise<Map<string, MemberLite>> {
+async function createMembers(rows: ImportRow[]): Promise<Map<string, MemberLite>> {
   const out = new Map<string, MemberLite>();
   if (rows.length === 0) return out;
   const used = new Set<string>();
@@ -582,7 +853,7 @@ async function createMembers(rows: ImportRow[], tierFor: (row: ImportRow) => str
 
   // Fast path: the whole batch in one insert.
   const bulk = await db
-    .from("members").insert(rows.map((r) => memberInsert(r, tierFor(r), slugFor(r)))).select("id, shopify_customer_id, tier");
+    .from("members").insert(rows.map((r) => memberInsert(r, slugFor(r)))).select(MEMBER_COLS);
   if (!bulk.error && bulk.data) {
     for (const m of bulk.data) out.set(m.shopify_customer_id, m);
     return out;
@@ -594,7 +865,7 @@ async function createMembers(rows: ImportRow[], tierFor: (row: ImportRow) => str
     const customerId = String(row.shopify_customer_id);
     for (let attempt = 0; attempt < 6 && !out.has(customerId); attempt++) {
       const { data, error } = await db
-        .from("members").insert(memberInsert(row, tierFor(row), slugFor(row))).select("id, shopify_customer_id, tier").single();
+        .from("members").insert(memberInsert(row, slugFor(row))).select(MEMBER_COLS).single();
       if (!error && data) { out.set(customerId, data); break; }
       const text = error?.message ?? "";
       if (error?.code === "23505" && text.includes("referral_slug")) continue; // new suffix
@@ -610,21 +881,16 @@ async function createMembers(rows: ImportRow[], tierFor: (row: ImportRow) => str
   return out;
 }
 
-/** Option "tier from Smile": raise (never lower) the tier. No tier reward codes are issued. */
-async function raiseTier(member: MemberLite, target: string, isNew: boolean): Promise<void> {
-  if (!isNew) {
-    if ((TIER_RANK[target] ?? 0) <= (TIER_RANK[member.tier] ?? 0)) return;
-    const { data, error } = await db
-      .from("members").update({ tier: target }).eq("id", member.id).eq("tier", member.tier).select("id");
-    if (error) throw new Error(`tier update failed: ${error.message}`);
-    if (!data || data.length === 0) return;
-    // Gold and Diamond points do not expire: stop the clock on what she holds.
-    await db.from("points_ledger").update({ expires_at: null }).eq("member_id", member.id).eq("expired", false).not("expires_at", "is", null);
-  }
-  const { error: histErr } = await db
-    .from("tier_history").insert({ member_id: member.id, from_tier: isNew ? "silver" : member.tier, to_tier: target, shopify_order_id: null });
-  if (histErr) console.error("[smile-import] tier_history insert failed:", histErr.message);
-  member.tier = target;
+/**
+ * Option "tier from Smile": raise (never lower) the tier. upgrade_member_tier
+ * (migration 010) changes the tier, writes tier_history and stops the expiry
+ * clock in one transaction. No tier reward code is queued for it.
+ */
+async function raiseTier(member: MemberLite, target: string): Promise<void> {
+  if ((TIER_RANK[target] ?? 0) <= (TIER_RANK[member.tier] ?? 0)) return;
+  const { data, error } = await db.rpc("upgrade_member_tier", { p_member_id: member.id, p_to_tier: target });
+  if (error) throw new Error(`tier update failed: ${error.message}`);
+  if (data === true) member.tier = target;
 }
 
 async function award(row: ImportRow, memberId: string, runId: string): Promise<number> {
@@ -656,12 +922,12 @@ async function executeBatch(runId: string, rows: ImportRow[], options: ImportOpt
   const customerIds = rows.map((r) => String(r.shopify_customer_id));
   const existing = await membersByCustomerId(customerIds);
   const toCreate = rows.filter((r) => !existing.has(String(r.shopify_customer_id)));
-  const created = await createMembers(toCreate, tierFor);
+  const created = await createMembers(toCreate);
   const createdIds = new Set(toCreate.filter((r) => created.has(String(r.shopify_customer_id))).map((r) => String(r.shopify_customer_id)));
   const members = new Map([...existing, ...created]);
 
   // Members that were already in the app keep every field; only the marker is set.
-  const marked = [...existing.values()].map((m) => m.id);
+  const marked = [...existing.values()].filter((m) => !exclusion(m)).map((m) => m.id);
   for (const part of chunk(marked, LIMITS.idChunk)) {
     const { error } = await db.from("members").update({ imported_from_smile: true }).in("id", part);
     if (error) throw new Error(`member update failed: ${error.message}`);
@@ -679,6 +945,12 @@ async function executeBatch(runId: string, rows: ImportRow[], options: ImportOpt
     if (row.member_existed == null) row.member_existed = !createdIds.has(customerId);
 
     try {
+      const excluded = exclusion(member);
+      if (excluded) {
+        // Opted out or blocked since the dry run: nothing is added.
+        row.state = "skipped"; row.reason = excluded; row.points_awarded = 0;
+        return;
+      }
       const reference = importReference(row.smile_customer_id);
       const prior = already.get(member.id);
       if (prior && prior.reference_id !== reference) {
@@ -686,7 +958,7 @@ async function executeBatch(runId: string, rows: ImportRow[], options: ImportOpt
         return;
       }
       const target = tierFor(row);
-      if (target !== "silver" && !prior) await raiseTier(member, target, createdIds.has(customerId));
+      if (target !== "silver" && !prior) await raiseTier(member, target);
       if (prior) {
         // This run added the points earlier and stopped before recording it.
         row.points_awarded = prior.points;
@@ -716,12 +988,18 @@ export async function executeRun(runId: string): Promise<{ status: RunStatus | "
   const first = await getRun(runId);
   if (!first) return { status: "missing" };
   if (first.status !== "running") return { status: first.status };
+  return withLease(runId, () => executeLocked(first));
+}
+
+async function executeLocked(first: ImportRun): Promise<{ status: RunStatus | "missing" }> {
+  const runId = first.id;
   const options: ImportOptions = { tierFromSmile: first.options?.tierFromSmile === true };
   const total = Number(first.totals?.matched ?? 0);
 
   for (;;) {
     const run = await getRun(runId);
     if (!run || run.status !== "running") return { status: run?.status ?? "missing" }; // stopped meanwhile
+    await renewLease(runId); // throws if another worker took the run over
     const { data, error } = await idb()
       .from("import_rows").select("*").eq("run_id", runId).eq("state", "matched")
       .order("row_number", { ascending: true }).limit(LIMITS.executeBatch);
@@ -736,6 +1014,8 @@ export async function executeRun(runId: string): Promise<{ status: RunStatus | "
     await patchRun(runId, { progress: { done: Math.max(0, total - left), total } }, ["running"]);
   }
 
+  // The run is over: the Shopify name and phone held for the dry run go now.
+  await scrubContact(runId);
   const totals = await refreshTotals(runId);
   const moved = await patchRun(
     runId,

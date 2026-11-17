@@ -25,6 +25,7 @@ import { UUID_RE } from "../lib/admin-db.server";
 import { setBirthday, setOptOut } from "../lib/points.service";
 import { cancelRewardCode } from "../lib/redemption.service";
 import { setInfluencer } from "../lib/influencer.service";
+import { NOT_AN_INFLUENCER, influencerState, removeInfluencerStatus } from "../lib/admin-influencers.server";
 
 const ACTIVITY_PAGE = 20;
 
@@ -73,7 +74,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       case "adjust": {
         const parsed = parseAdjustment(form);
         if (!parsed.ok) return json({ ...invalid(parsed.errors), intent }, { status: 400 });
-        const res = await adjustBalance(id, parsed.value);
+        const res = await adjustBalance(id, parsed.value, actor);
         if (!res.applied) return done("This adjustment was already applied. The balance was not changed again");
         return done(`Balance adjusted. New balance ${fmtInt(res.newBalance)} points`);
       }
@@ -92,21 +93,38 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         return done("Birthday saved");
       }
       case "block":
-      case "unblock":
-        await setBlocked(id, intent === "block");
+      case "unblock": {
+        const found = await setBlocked(id, intent === "block", actor);
+        if (!found) return fail("That customer no longer exists. Nothing was changed.", 404);
         return done(intent === "block" ? "Customer blocked" : "Customer unblocked");
+      }
       case "opt_out":
       case "opt_in":
         await setOptOut(id, intent === "opt_out");
         return done(intent === "opt_out" ? "Customer opted out of the program" : "Customer is taking part again");
-      case "influencer_on":
-      case "influencer_off": {
-        const res = await setInfluencer(id, { isInfluencer: intent === "influencer_on" });
+      case "influencer_on": {
+        const res = await setInfluencer(id, { isInfluencer: true });
         if (!res.ok) return fail(reasonText(res.reason, "The change was not saved."));
-        return done(intent === "influencer_on" ? "Marked as an influencer" : "No longer an influencer");
+        return done("Marked as an influencer");
+      }
+      case "influencer_off": {
+        // Her public discount code is deleted in Shopify first; if that fails she stays an influencer.
+        const res = await removeInfluencerStatus(id, session.shop);
+        if (!res.ok) {
+          return fail(
+            res.stage === "code"
+              ? `Her discount code could not be removed from Shopify, so she is still an influencer and the code still works. ${reasonText(res.reason, "")}`.trim()
+              : reasonText(res.reason, "The change was not saved."),
+            409,
+          );
+        }
+        return done(res.codeRemoved ? `No longer an influencer. Discount code ${res.codeRemoved} was removed from Shopify` : "No longer an influencer");
       }
       case "influencer_pause":
       case "influencer_resume": {
+        // A tab left open after she was removed must not make her an influencer again.
+        const state = await influencerState(id);
+        if (!state?.isInfluencer) return fail(NOT_AN_INFLUENCER, 409);
         const res = await setInfluencer(id, { isInfluencer: true, paused: intent === "influencer_pause" });
         if (!res.ok) return fail(reasonText(res.reason, "The change was not saved."));
         return done(intent === "influencer_pause" ? "Influencer rate paused" : "Influencer rate resumed");
@@ -267,7 +285,9 @@ export default function CustomerProfilePage() {
                 <Text as="p" tone="subdued">
                   {p.tier === "silver"
                     ? p.nextExpiry
-                      ? `Silver points expire ${d.expiryDays} days after they are earned. Next: ${fmtInt(p.nextExpiry.points)} points on ${fmtDate(p.nextExpiry.at)}.`
+                      ? p.nextExpiry.overdue
+                        ? `Silver points expire ${d.expiryDays} days after they are earned. ${fmtInt(p.nextExpiry.points)} points are expiring now (due ${fmtDate(p.nextExpiry.at)}); they are removed at the next nightly run.`
+                        : `Silver points expire ${d.expiryDays} days after they are earned. Next: ${fmtInt(p.nextExpiry.points)} points on ${fmtDate(p.nextExpiry.at)}.`
                       : `Silver points expire ${d.expiryDays} days after they are earned. Nothing is due to expire.`
                     : `${tierLabel(p.tier)} members' points do not expire.`}
                 </Text>
@@ -569,7 +589,7 @@ export default function CustomerProfilePage() {
               : confirm?.kind === "opt_out"
                 ? "She will stop earning and redeeming, and new orders will not enrol her again. Her balance is kept."
                 : confirm?.kind === "influencer_off"
-                  ? "Her referrals go back to the standard reward. Remove her discount code on the influencer page first if she has one."
+                  ? `Her referrals go back to the standard reward.${p.influencer.code ? ` Her discount code ${p.influencer.code} is deleted in Shopify first and stops working at checkout; if Shopify cannot delete it, nothing is changed.` : ""}`
                   : "The note is removed for everyone on your team."}
         </Text>
       </ConfirmModal>

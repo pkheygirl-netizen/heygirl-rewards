@@ -40,6 +40,7 @@ function setup(script: Parameters<typeof fakeDb>[0] = {}) {
   vi.doMock("./storefront-config.server", () => ({ syncStorefrontConfig: svc.syncStorefrontConfig }));
   vi.doMock("./heartbeat.server", () => ({ readHeartbeats: svc.readHeartbeats }));
   vi.doMock("./queue.server", () => ({}));
+  vi.doMock("./smile-import-queue.server", () => ({}));
   return fake;
 }
 
@@ -84,7 +85,7 @@ describe("customer profile action", () => {
     const calls = fake.rpcCalls("award_points");
     expect(calls).toHaveLength(2);
     expect(calls[0].args).toEqual(calls[1].args);
-    expect(calls[0].args).toMatchObject({ p_reference_id: `admin-adjust:${adjust.idempotency_key}`, p_points: 500, p_reason_note: "Goodwill", p_customer_note: "Sorry" });
+    expect(calls[0].args).toMatchObject({ p_reference_id: `admin-adjust:${adjust.idempotency_key}`, p_points: 500, p_reason_note: "[by Ayesha] Goodwill", p_customer_note: "Sorry" });
   });
 
   it("will not cancel a code that belongs to another customer", async () => {
@@ -127,6 +128,60 @@ describe("customer profile action", () => {
     expect(svc.setOptOut).toHaveBeenCalledWith(ID, true);
     await action(args(post(`/app/customers/${ID}`, { intent: "influencer_on" }), { id: ID }));
     expect(svc.setInfluencer).toHaveBeenCalledWith(ID, { isInfluencer: true });
+  });
+
+  it("blocking records the staff member and answers 404 for a customer who is gone (A6)", async () => {
+    const fake = setup({ from: (t) => (t === "members" ? { data: [{ id: ID }] } : {}) });
+    const { action } = await import("../routes/app.customers.$id");
+    const ok = await read(await action(args(post(`/app/customers/${ID}`, { intent: "block" }), { id: ID })));
+    expect(ok).toMatchObject({ ok: true, message: "Customer blocked" });
+    expect(fake.firstArg("staff_notes", "insert")).toEqual({ member_id: ID, note: "Blocked this customer", author: "Ayesha" });
+
+    setup({ from: () => ({ data: [] }) });
+    const again = await import("../routes/app.customers.$id");
+    const res = await again.action(args(post(`/app/customers/${ID}`, { intent: "unblock" }), { id: ID }));
+    expect(res.status).toBe(404);
+    expect((await read(res)).error).toContain("no longer exists");
+  });
+
+  it("removing influencer status from the profile deletes her Shopify code first and aborts if that fails (A1)", async () => {
+    setup({ from: () => ({ data: { id: ID, is_influencer: true, influencer_code: "SANA10" } }) });
+    svc.removeInfluencerCode.mockResolvedValueOnce({ ok: false, reason: "shopify_unavailable" });
+    const { action } = await import("../routes/app.customers.$id");
+    const res = await action(args(post(`/app/customers/${ID}`, { intent: "influencer_off" }), { id: ID }));
+    expect(res.status).toBe(409);
+    expect((await read(res)).error).toContain("could not be removed from Shopify, so she is still an influencer and the code still works");
+    expect(svc.setInfluencer).not.toHaveBeenCalled();
+
+    svc.removeInfluencerCode.mockResolvedValueOnce({ ok: true });
+    svc.setInfluencer.mockResolvedValueOnce({ ok: true });
+    const done = await read(await action(args(post(`/app/customers/${ID}`, { intent: "influencer_off" }), { id: ID })));
+    expect(done.message).toBe("No longer an influencer. Discount code SANA10 was removed from Shopify");
+    expect(svc.removeInfluencerCode).toHaveBeenLastCalledWith({ memberId: ID, shop: SHOP });
+    expect(svc.setInfluencer).toHaveBeenCalledWith(ID, { isInfluencer: false });
+  });
+
+  it("pause and resume from a stale profile tab do not make a removed member an influencer again (A5)", async () => {
+    setup({ from: () => ({ data: { id: ID, is_influencer: false, influencer_code: null } }) });
+    const { action } = await import("../routes/app.customers.$id");
+    for (const intent of ["influencer_pause", "influencer_resume"]) {
+      const res = await action(args(post(`/app/customers/${ID}`, { intent }), { id: ID }));
+      expect(res.status, intent).toBe(409);
+      expect((await read(res)).error).toContain("no longer an influencer");
+    }
+    expect(svc.setInfluencer).not.toHaveBeenCalled();
+  });
+
+  it("a database failure is shown as a generic message, with the detail only in the server log (A10)", async () => {
+    setup({ rpc: () => ({ error: { message: 'null value in column "balance_after" of relation "points_ledger" violates not-null constraint' } }) });
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { action } = await import("../routes/app.customers.$id");
+    const res = await action(args(post(`/app/customers/${ID}`, adjust), { id: ID }));
+    expect(res.status).toBe(500);
+    const body = await read(res);
+    expect(body.error).toContain("Something went wrong");
+    expect(JSON.stringify(body)).not.toMatch(/points_ledger|balance_after|constraint/);
+    expect(log.mock.calls.flat().join(" ")).toContain("points_ledger");
   });
 
   it("answers 404 for a malformed customer id and 400 for an unknown action", async () => {
@@ -181,23 +236,52 @@ describe("program action", () => {
 describe("campaigns action", () => {
   const save = { intent: "save", id: "", name: "Eid Edit", multiplier: "2", starts_at: "2026-12-02T00:00", ends_at: "2026-12-06T00:00", is_active: "true", replace_overlapping: "false" };
 
-  it("returns the overlapping campaigns and saves nothing until confirmed (R7)", async () => {
-    const fake = setup({ from: (_t, chain) => (chain.some(([m]) => m === "lt") ? { data: [{ id: CODE, name: "Winter Glow" }] } : { data: [{ id: ID }] }) });
+  it("returns the overlapping campaigns until confirmed, in one atomic database call (R7, A2)", async () => {
+    const fake = setup({ rpc: () => ({ data: { ok: false, conflicts: [{ id: CODE, name: "Winter Glow" }] } }) });
     const { action } = await import("../routes/app.campaigns._index");
     const res = await action(args(post("/app/campaigns", save)));
     expect(res.status).toBe(409);
     expect((await read(res)).conflicts).toEqual([{ id: CODE, name: "Winter Glow" }]);
+    expect(fake.rpcCalls("admin_save_campaign")).toHaveLength(1);
     expect(fake.calls.some((c) => c.chain.some(([m]) => m === "insert" || m === "update"))).toBe(false);
-    expect(svc.syncStorefrontConfig).not.toHaveBeenCalled();
   });
 
-  it("stores Pakistan times as UTC and publishes after saving (R6)", async () => {
-    const fake = setup({ from: (_t, chain) => (chain.some(([m]) => m === "lt") ? { data: [] } : { data: [{ id: ID }] }) });
+  it("stores Pakistan times as UTC and passes the confirmation through (R6, A2)", async () => {
+    const fake = setup({ rpc: () => ({ data: { ok: true, id: ID, switched_off: ["Winter Glow"] } }) });
     const { action } = await import("../routes/app.campaigns._index");
-    const body = await read(await action(args(post("/app/campaigns", save))));
-    expect(body.ok).toBe(true);
-    expect(fake.firstArg("bonus_campaigns", "insert")).toMatchObject({ starts_at: "2026-12-01T19:00:00.000Z", ends_at: "2026-12-05T19:00:00.000Z" });
-    expect(svc.syncStorefrontConfig).toHaveBeenCalledWith(admin);
+    const body = await read(await action(args(post("/app/campaigns", { ...save, replace_overlapping: "true" }))));
+    expect(body).toMatchObject({ ok: true, message: "Campaign saved. Winter Glow switched off." });
+    expect(fake.rpcCalls("admin_save_campaign")[0].args).toMatchObject({
+      p_starts_at: "2026-12-01T19:00:00.000Z", p_ends_at: "2026-12-05T19:00:00.000Z", p_replace_overlapping: true,
+    });
+  });
+
+  it("always publishes the storefront copy after a save attempt, whatever the outcome (A2)", async () => {
+    for (const answer of [
+      { ok: true, id: ID, switched_off: [] },
+      { ok: false, conflicts: [{ id: CODE, name: "Winter Glow" }] },
+      { ok: false, error: "overlap" },
+    ]) {
+      setup({ rpc: () => ({ data: answer }) });
+      const { action } = await import("../routes/app.campaigns._index");
+      await action(args(post("/app/campaigns", save)));
+      expect(svc.bustSettingsCache, JSON.stringify(answer)).toHaveBeenCalledTimes(1);
+      expect(svc.syncStorefrontConfig, JSON.stringify(answer)).toHaveBeenCalledWith(admin);
+    }
+    setup({ rpc: () => ({ data: { ok: true } }) });
+    const { action } = await import("../routes/app.campaigns._index");
+    await action(args(post("/app/campaigns", { intent: "set_active", id: ID, active: "false" })));
+    expect(svc.syncStorefrontConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it("switching off goes through the database rule and tells staff placed orders keep the multiplier (A3)", async () => {
+    const fake = setup({ rpc: () => ({ data: { ok: true } }) });
+    const { action } = await import("../routes/app.campaigns._index");
+    const body = await read(await action(args(post("/app/campaigns", { intent: "set_active", id: ID, active: "false" }))));
+    expect(body.message).toBe("Campaign switched off. Orders already placed during it keep its multiplier");
+    expect(fake.rpcCalls("admin_set_campaign_active")[0].args).toEqual({ p_id: ID, p_active: false });
+    // the action never writes is_active on the table itself
+    expect(fake.tableCalls("bonus_campaigns")).toHaveLength(0);
   });
 
   it("rejects an invalid campaign form", async () => {
@@ -222,7 +306,7 @@ describe("referrals, influencers and home actions", () => {
   });
 
   it("influencer rate, code and removal use the contract signatures", async () => {
-    setup();
+    setup({ from: () => ({ data: { id: ID, is_influencer: true, influencer_code: null } }) });
     svc.setInfluencer.mockResolvedValue({ ok: true });
     svc.createInfluencerCode.mockResolvedValue({ ok: true });
     svc.removeInfluencerCode.mockResolvedValue({ ok: true });
@@ -238,6 +322,44 @@ describe("referrals, influencers and home actions", () => {
     const bad = await action(args(post(`/app/influencers/${ID}`, { intent: "create_code", code: "a b", percent_off: "95" }), { id: ID }));
     expect(bad.status).toBe(400);
     expect(svc.createInfluencerCode).toHaveBeenCalledTimes(1);
+  });
+
+  it("a stale influencer tab cannot re-add a removed member: rate, pause, resume and code are refused (A5)", async () => {
+    setup({ from: () => ({ data: { id: ID, is_influencer: false, influencer_code: null } }) });
+    const { action } = await import("../routes/app.influencers.$id");
+    const attempts: Array<Record<string, string>> = [
+      { intent: "save_rate", multiplier_choice: "2", campaign: "", rate_starts: "", rate_ends: "" },
+      { intent: "pause" }, { intent: "resume" },
+      { intent: "create_code", code: "SANA10", percent_off: "10" },
+    ];
+    for (const fields of attempts) {
+      const res = await action(args(post(`/app/influencers/${ID}`, fields), { id: ID }));
+      expect(res.status, fields.intent).toBe(409);
+      expect((await read(res)).error, fields.intent).toContain("no longer an influencer");
+    }
+    expect(svc.setInfluencer).not.toHaveBeenCalled();
+    expect(svc.createInfluencerCode).not.toHaveBeenCalled();
+
+    setup({ from: () => ({ data: null }) });
+    const gone = await import("../routes/app.influencers.$id");
+    expect((await gone.action(args(post(`/app/influencers/${ID}`, { intent: "pause" }), { id: ID }))).status).toBe(404);
+  });
+
+  it("removing influencer status deletes her Shopify code first; a Shopify failure aborts and she stays (A1)", async () => {
+    setup({ from: () => ({ data: { id: ID, is_influencer: true, influencer_code: "SANA10" } }) });
+    const { action } = await import("../routes/app.influencers.$id");
+    svc.removeInfluencerCode.mockResolvedValueOnce({ ok: false, reason: "shopify_error" });
+    const failed = await action(args(post(`/app/influencers/${ID}`, { intent: "remove_influencer" }), { id: ID }));
+    expect(failed.status).toBe(409);
+    expect((await read(failed)).error).toContain("she is still an influencer and the code still works");
+    expect(svc.setInfluencer).not.toHaveBeenCalled();
+
+    const order: string[] = [];
+    svc.removeInfluencerCode.mockImplementationOnce(async () => { order.push("code"); return { ok: true }; });
+    svc.setInfluencer.mockImplementationOnce(async () => { order.push("status"); return { ok: true }; });
+    const ok = await read(await action(args(post(`/app/influencers/${ID}`, { intent: "remove_influencer" }), { id: ID })));
+    expect(order).toEqual(["code", "status"]);
+    expect(ok.message).toBe("She is no longer an influencer. Discount code SANA10 was removed from Shopify");
   });
 
   it("rejecting a review claim from Home calls the engine once, with a valid id only", async () => {
@@ -272,6 +394,52 @@ describe("settings", () => {
     vi.unstubAllEnvs();
     expect(text).toContain('"whatsappCredentialsPresent":true');
     expect(text).not.toMatch(/db-secret-key|smtp-secret-pass|wa-secret-token|1234567890123/);
+  });
+});
+
+describe("exports", () => {
+  it("an influencer's referrals CSV shows Pakistan time, not UTC (A10)", async () => {
+    let page = 0;
+    setup({
+      from: () => ({
+        data: page++ === 0
+          ? [{ id: "r1", referred_email: "friend@example.com", referred_shopify_customer_id: "C1", status: "completed", reward_points: 12000, shopify_order_id: "555", created_at: "2026-11-15T20:30:00Z", completed_at: "2026-11-16T07:05:00Z" }]
+          : [],
+      }),
+    });
+    const { loader } = await import("../routes/app.influencers.export[.]csv");
+    const res = await loader(args(new Request(`https://app.test/app/influencers/export.csv?id=${ID}`)));
+    const text = await res.text();
+    expect(text).toContain("Referred at (Asia/Karachi),Completed at (Asia/Karachi)");
+    // 20:30 UTC on the 15th is 1:30 am on the 16th in Karachi
+    expect(text).toContain('"16 Nov 2026, 1:30 am","16 Nov 2026, 12:05 pm"');
+    expect(text).not.toContain("2026-11-15T20:30:00Z");
+    expect(text).not.toMatch(/\(UTC\)/);
+  });
+
+  it("the customers export keeps going after a short page and stops on an empty one (A8)", async () => {
+    const row = (i: number) => ({ id: `m${i}`, name: `Member ${i}`, email: null, phone: "+923001234567", tier: "silver", points_balance: i, lifetime_spend_pkr: 0, enrolled_at: "2026-01-01T00:00:00Z", total_count: 1300 });
+    const offsets: number[] = [];
+    setup({
+      rpc: (_name, a) => {
+        const offset = Number(a.p_offset);
+        offsets.push(offset);
+        // the server hands back fewer rows than asked for on the first page, then the rest, then nothing
+        if (offset === 0) return { data: Array.from({ length: 700 }, (_, i) => row(i)) };
+        if (offset === 700) return { data: Array.from({ length: 300 }, (_, i) => row(700 + i)) };
+        return { data: [] };
+      },
+    });
+    const { loader } = await import("../routes/app.customers.export[.]csv");
+    const text = await (await loader(args(new Request("https://app.test/app/customers/export.csv")))).text();
+    // each request starts after the rows already received: nothing skipped, nothing twice
+    expect(offsets).toEqual([0, 700, 1000]);
+    expect(text).toContain("Member 699,");
+    expect(text).toContain("Member 700,");
+    expect(text.trim().split("\n")).toHaveLength(1 + 1000);
+    // a plain phone number is exported as typed, with no apostrophe (A7)
+    expect(text).toContain(",+923001234567,");
+    expect(text).not.toContain("'+92");
   });
 });
 

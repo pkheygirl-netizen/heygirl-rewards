@@ -107,6 +107,8 @@ export type Attention = {
   reviewClaimsPending: number;
   expiringMembers: number;
   expiringPoints: number;
+  /** Of expiringMembers: those whose date has passed but the nightly job has not run yet ("expiring now"). */
+  expiringOverdueMembers: number;
   gdprOpen: number;
 };
 
@@ -117,6 +119,7 @@ export async function getAttention(days = 30): Promise<Attention> {
     reviewClaimsPending: num(r.review_claims_pending),
     expiringMembers: num(r.expiring_members),
     expiringPoints: num(r.expiring_points),
+    expiringOverdueMembers: num(r.expiring_overdue_members),
     gdprOpen: num(r.gdpr_open),
   };
 }

@@ -106,7 +106,12 @@ export async function countFailedJobs(timeoutMs = 1500): Promise<number | null> 
   try {
     const work = (async () => {
       const q = await import("./queue.server");
-      const queues = [q.pointsQueue, q.socialQueue, q.notificationQueue, q.cronQueue].filter(Boolean);
+      const queues: Array<{ getFailedCount(): Promise<number> }> =
+        [q.pointsQueue, q.socialQueue, q.notificationQueue, q.cronQueue].filter(Boolean);
+      // The Smile import has its own queue ("smile-import"). It is counted when
+      // that module is present; the engine queues are still counted if it is not.
+      const imp = await import("./smile-import-queue.server").catch(() => null);
+      if (imp?.importQueue) queues.push(imp.importQueue);
       const counts = await Promise.all(queues.map((queue) => queue.getFailedCount()));
       return counts.reduce((a, b) => a + b, 0);
     })();

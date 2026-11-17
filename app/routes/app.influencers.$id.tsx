@@ -14,7 +14,8 @@ import { fmtDate, fmtInt, fmtPkr, utcIsoToKarachiDate } from "../components/kara
 import { downloadCsv } from "../lib/csv-download.client";
 import { UUID_RE } from "../lib/admin-db.server";
 import {
-  getInfluencerDetail, parseInfluencerCodeForm, parseInfluencerRateForm,
+  NOT_AN_INFLUENCER, getInfluencerDetail, influencerState, parseInfluencerCodeForm, parseInfluencerRateForm,
+  removeInfluencerStatus,
 } from "../lib/admin-influencers.server";
 import { referralLink } from "../lib/admin-members.server";
 import { getSettingsRow } from "../lib/admin-settings.server";
@@ -50,6 +51,14 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   if (!UUID_RE.test(id)) return fail("Influencer not found.", 404);
 
   try {
+    // Every action except removal needs her to be an influencer NOW. Without this
+    // a tab left open after she was removed would add her back (rate, pause and
+    // resume all save with isInfluencer=true).
+    if (intent !== "remove_influencer") {
+      const state = await influencerState(id);
+      if (!state) return fail("Influencer not found.", 404);
+      if (!state.isInfluencer) return fail(NOT_AN_INFLUENCER, 409);
+    }
     switch (intent) {
       case "save_rate": {
         const parsed = parseInfluencerRateForm(form);
@@ -77,9 +86,20 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         return done("Discount code removed from Shopify");
       }
       case "remove_influencer": {
-        const res = await setInfluencer(id, { isInfluencer: false });
-        if (!res.ok) return fail(reasonText(res.reason, "The change was not saved."));
-        return json({ ok: true as const, message: "She is no longer an influencer", intent, removed: true });
+        // Her public discount code is deleted in Shopify first; if that fails she stays an influencer.
+        const res = await removeInfluencerStatus(id, session.shop);
+        if (!res.ok) {
+          return fail(
+            res.stage === "code"
+              ? `Her discount code could not be removed from Shopify, so she is still an influencer and the code still works. ${reasonText(res.reason, "")}`.trim()
+              : reasonText(res.reason, "The change was not saved."),
+            res.stage === "lookup" ? 404 : 409,
+          );
+        }
+        return json({
+          ok: true as const, intent, removed: true,
+          message: res.codeRemoved ? `She is no longer an influencer. Discount code ${res.codeRemoved} was removed from Shopify` : "She is no longer an influencer",
+        });
       }
       default:
         return fail("Unknown action.");
@@ -157,7 +177,7 @@ export default function InfluencerDetailPage() {
             <InlineGrid columns={{ xs: 2, md: 4 }} gap="400">
               <Tile label="Friends referred" value={fmtInt(r.friends)} sub={`${fmtInt(r.completed)} completed`} />
               <Tile label="Orders attributed" value={fmtInt(r.orders)} sub={`${fmtInt(r.codeOrders)} with her code`} />
-              <Tile label="Sales attributed" value={fmtPkr(r.salesPkr)} sub="Link and code, all time" />
+              <Tile label="Sales attributed" value={fmtPkr(r.salesPkr)} sub="Link and code, all time. An order that completed someone's link referral counts for that link only" />
               <Tile label="Points paid" value={fmtInt(r.pointsPaid)} sub={`Now ${fmtInt(r.pointsPerReferral)} per referral`} />
             </InlineGrid>
 
@@ -318,7 +338,7 @@ export default function InfluencerDetailPage() {
             ? `${r.code ?? "The code"} is deleted in Shopify and stops working at checkout straight away. Orders already placed with it stay attributed to her.`
             : confirm === "pause"
               ? `Her referrals earn the standard ${fmtInt(d.standardPoints)} points until you resume. Her link and code keep working.`
-              : "Her referrals go back to the standard reward and she leaves this list. Remove her discount code first if she has one."}
+              : `Her referrals go back to the standard reward and she leaves this list.${r.code ? ` Her discount code ${r.code} is deleted in Shopify first and stops working at checkout; if Shopify cannot delete it, nothing is changed.` : ""}`}
         </Text>
       </ConfirmModal>
     </Page>

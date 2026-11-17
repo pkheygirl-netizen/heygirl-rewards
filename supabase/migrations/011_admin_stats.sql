@@ -1,13 +1,16 @@
 -- supabase/migrations/011_admin_stats.sql
--- Stream C (embedded admin). Read-only SQL functions so that no admin number is
--- computed by downloading whole tables (handbook R1). Requires 010_v3_core.sql.
+-- Stream C (embedded admin). SQL functions so that no admin number is computed
+-- by downloading whole tables (handbook R1). All are read-only except the three
+-- admin_*campaign* functions near the end. Requires 010_v3_core.sql.
 -- No table definitions change here. Two read indexes are added for the admin
 -- activity feed and period totals (CREATE INDEX IF NOT EXISTS, idempotent).
 --
 -- Definitions used everywhere in the admin:
 --   earned    = positive ledger rows, excluding 'import' (Smile balances carried
 --               over) and 'redemption_return' (points handed back, not earned)
---   redeemed  = 'redemption' rows minus 'redemption_return' rows (never below 0)
+--   redeemed  = 'redemption' rows minus 'redemption_return' rows, each counted on
+--               the day it happened. Not clamped, so the daily series always adds
+--               up to the period total (a day with only a cancelled code is negative)
 --   expired   = 'expiry' rows
 --   day       = calendar day in Asia/Karachi
 --   redemptions (count) = loyalty_codes with kind = 'reward' only (handbook R8)
@@ -85,7 +88,7 @@ LANGUAGE sql STABLE AS $$
     'members_total',   (SELECT total FROM mem),
     'members_new',     (SELECT new_members FROM mem),
     'points_earned',   (SELECT earned FROM led),
-    'points_redeemed', (SELECT GREATEST(redeemed_gross - returned, 0) FROM led),
+    'points_redeemed', (SELECT redeemed_gross - returned FROM led),
     'points_expired',  (SELECT expired FROM led),
     'points_reversed', (SELECT reversed FROM led),
     'points_pending',  (SELECT pending FROM pend),
@@ -112,9 +115,8 @@ LANGUAGE sql STABLE AS $$
     SELECT (earned_at AT TIME ZONE 'Asia/Karachi')::date AS day,
       COALESCE(SUM(points) FILTER (
         WHERE points > 0 AND action_type NOT IN ('import', 'redemption_return')), 0) AS earned,
-      GREATEST(
-        COALESCE(SUM(-points) FILTER (WHERE action_type = 'redemption'), 0)
-        - COALESCE(SUM(points) FILTER (WHERE action_type = 'redemption_return'), 0), 0) AS redeemed,
+      COALESCE(SUM(-points) FILTER (WHERE action_type = 'redemption'), 0)
+        - COALESCE(SUM(points) FILTER (WHERE action_type = 'redemption_return'), 0) AS redeemed,
       COALESCE(SUM(-points) FILTER (WHERE action_type = 'expiry'), 0) AS expired
     FROM public.points_ledger
     WHERE earned_at >= p_from AND earned_at < p_to
@@ -156,20 +158,24 @@ $$;
 CREATE OR REPLACE FUNCTION public.admin_attention(p_days integer DEFAULT 30)
 RETURNS jsonb
 LANGUAGE sql STABLE AS $$
+  -- Rows whose expiry date has passed but which the nightly job has not yet
+  -- processed are still the member's points: they are counted, as "expiring now".
   WITH ex AS (
     SELECT COUNT(DISTINCT member_id) AS members,
+           COUNT(DISTINCT member_id) FILTER (WHERE expires_at < now()) AS overdue_members,
            COALESCE(SUM(COALESCE(points_remaining, points)), 0) AS points
     FROM public.points_ledger
     WHERE points > 0 AND NOT expired
       AND COALESCE(points_remaining, points) > 0
       AND expires_at IS NOT NULL
-      AND expires_at >= now() AND expires_at < now() + make_interval(days => p_days)
+      AND expires_at < now() + make_interval(days => p_days)
   )
   SELECT jsonb_build_object(
     'referrals_flagged',     (SELECT COUNT(*) FROM public.referrals WHERE status = 'flagged'),
     'review_claims_pending', (SELECT COUNT(*) FROM public.review_claims WHERE status = 'pending'),
     'expiring_members',      (SELECT members FROM ex),
     'expiring_points',       (SELECT points FROM ex),
+    'expiring_overdue_members', (SELECT overdue_members FROM ex),
     'gdpr_open',             (SELECT COUNT(*) FROM public.gdpr_requests WHERE status = 'open')
   );
 $$;
@@ -187,7 +193,7 @@ LANGUAGE sql STABLE AS $$
     WHERE l.points > 0 AND NOT l.expired
       AND COALESCE(l.points_remaining, l.points) > 0
       AND l.expires_at IS NOT NULL
-      AND l.expires_at >= now() AND l.expires_at < now() + make_interval(days => p_days)
+      AND l.expires_at < now() + make_interval(days => p_days)   -- overdue rows included
     GROUP BY l.member_id
   )
   SELECT m.id, public.admin_member_name(m.first_name, m.last_name, m.email, m.phone),
@@ -216,7 +222,12 @@ CREATE OR REPLACE FUNCTION public.admin_search_members(
 LANGUAGE sql STABLE AS $$
   WITH q AS (
     SELECT NULLIF(btrim(p_query), '') AS term,
-           NULLIF(regexp_replace(COALESCE(p_query, ''), '\D', '', 'g'), '') AS digits
+           -- Phone search only for text that looks like a phone number: no letters,
+           -- no "@", and at least 4 digits left after the leading zeros are dropped
+           -- (so 0300... finds +92300...). "0000" or "sara2" never match by phone.
+           CASE WHEN COALESCE(p_query, '') !~ '[[:alpha:]@]'
+                 AND length(ltrim(regexp_replace(COALESCE(p_query, ''), '\D', '', 'g'), '0')) >= 4
+                THEN ltrim(regexp_replace(p_query, '\D', '', 'g'), '0') END AS phone_digits
   ),
   f AS (
     SELECT m.*, public.admin_member_name(m.first_name, m.last_name, m.email, m.phone) AS display_name
@@ -231,8 +242,8 @@ LANGUAGE sql STABLE AS $$
         -- position() is a plain substring test: the search text is never a pattern
         OR position(lower(q.term) IN lower(COALESCE(m.first_name, '') || ' ' || COALESCE(m.last_name, ''))) > 0
         OR position(lower(q.term) IN lower(COALESCE(m.email, ''))) > 0
-        OR (length(q.digits) >= 4
-            AND position(ltrim(q.digits, '0') IN regexp_replace(COALESCE(m.phone, ''), '\D', '', 'g')) > 0)
+        OR (q.phone_digits IS NOT NULL
+            AND position(q.phone_digits IN regexp_replace(COALESCE(m.phone, ''), '\D', '', 'g')) > 0)
       )
   )
   SELECT f.id, f.shopify_customer_id, f.display_name, f.email, f.phone, f.tier,
@@ -371,7 +382,16 @@ LANGUAGE sql STABLE AS $$
     'flagged',    COUNT(*) FILTER (WHERE r.status = 'flagged'),
     'blocked',    COUNT(*) FILTER (WHERE r.status = 'blocked'),
     'rejected',   COUNT(*) FILTER (WHERE r.status = 'rejected'),
-    'points_paid', COALESCE(SUM(r.reward_points) FILTER (WHERE r.status = 'completed'), 0)
+    -- Net of reversals, read from the ledger: what referrers were paid for these
+    -- referrals minus what was taken back when a qualifying order was refunded or
+    -- cancelled. (Both rows carry the referral id as their reference.)
+    'points_paid', GREATEST(COALESCE((
+        SELECT SUM(l.points) FROM public.points_ledger l
+         WHERE l.action_type IN ('referral_earned', 'referral_reversal')
+           AND l.reference_id IN (
+             SELECT r2.id::text FROM public.referrals r2
+              WHERE (p_from IS NULL OR r2.created_at >= p_from)
+                AND (p_to IS NULL OR r2.created_at < p_to))), 0), 0)
   )
   FROM public.referrals r
   WHERE (p_from IS NULL OR r.created_at >= p_from)
@@ -379,9 +399,16 @@ LANGUAGE sql STABLE AS $$
 $$;
 
 -- ── influencers: one row per influencer ──────────────────────────────────────
--- Orders and sales = distinct orders that came through her link (the referral's
--- qualifying order) or her discount code (order_webhook_state.influencer_member_id),
--- cancelled orders excluded. Points paid is net of reversals.
+-- Period basis: every number counts what HAPPENED inside the period, each by its
+-- own date: friends by the day the friend signed in, completed by the day the
+-- referral completed, orders and sales by the day the order was placed, points
+-- by the day they were paid or taken back. Pending and held are referrals
+-- recorded in the period that are in that state now.
+-- Orders and sales = distinct, non-cancelled orders that came through her link
+-- (a completed referral's qualifying order) or her discount code
+-- (order_webhook_state.influencer_member_id). An order that completed a link
+-- referral belongs to that referrer only, whoever's code was typed at checkout:
+-- link referral wins, as in the engine. Points paid is net of reversals.
 
 CREATE OR REPLACE FUNCTION public.admin_influencer_stats(
   p_from timestamptz DEFAULT NULL, p_to timestamptz DEFAULT NULL
@@ -391,19 +418,26 @@ LANGUAGE sql STABLE AS $$
   WITH inf AS (SELECT id FROM public.members WHERE is_influencer),
   refs AS (
     SELECT r.referrer_member_id AS member_id,
-           COUNT(*) AS friends,
-           COUNT(*) FILTER (WHERE r.status = 'completed') AS completed,
-           COUNT(*) FILTER (WHERE r.status = 'pending') AS pending,
-           COUNT(*) FILTER (WHERE r.status = 'flagged') AS held
+           COUNT(*) FILTER (
+             WHERE (p_from IS NULL OR r.created_at >= p_from) AND (p_to IS NULL OR r.created_at < p_to)) AS friends,
+           COUNT(*) FILTER (
+             WHERE r.status = 'completed'
+               AND (p_from IS NULL OR COALESCE(r.completed_at, r.created_at) >= p_from)
+               AND (p_to IS NULL OR COALESCE(r.completed_at, r.created_at) < p_to)) AS completed,
+           COUNT(*) FILTER (
+             WHERE r.status = 'pending'
+               AND (p_from IS NULL OR r.created_at >= p_from) AND (p_to IS NULL OR r.created_at < p_to)) AS pending,
+           COUNT(*) FILTER (
+             WHERE r.status = 'flagged'
+               AND (p_from IS NULL OR r.created_at >= p_from) AND (p_to IS NULL OR r.created_at < p_to)) AS held
     FROM public.referrals r
     WHERE r.referrer_member_id IN (SELECT id FROM inf)
-      AND (p_from IS NULL OR r.created_at >= p_from)
-      AND (p_to IS NULL OR r.created_at < p_to)
     GROUP BY 1
   ),
   ord AS (
     SELECT DISTINCT x.member_id, x.shopify_order_id, x.total, x.via_code
     FROM (
+      -- her link: the qualifying order of each of her completed referrals
       SELECT r.referrer_member_id AS member_id, o.shopify_order_id,
              COALESCE(o.order_total_pkr, 0) AS total, false AS via_code,
              COALESCE(o.placed_at, o.created_at) AS at, o.cancelled_at
@@ -411,13 +445,16 @@ LANGUAGE sql STABLE AS $$
       JOIN public.order_webhook_state o ON o.shopify_order_id = r.shopify_order_id
       WHERE r.referrer_member_id IN (SELECT id FROM inf)
         AND r.status = 'completed'
-        AND o.influencer_member_id IS DISTINCT FROM r.referrer_member_id
       UNION ALL
+      -- her code: only orders that did not complete anyone's link referral
       SELECT o.influencer_member_id, o.shopify_order_id,
              COALESCE(o.order_total_pkr, 0), true,
              COALESCE(o.placed_at, o.created_at), o.cancelled_at
       FROM public.order_webhook_state o
       WHERE o.influencer_member_id IN (SELECT id FROM inf)
+        AND NOT EXISTS (
+          SELECT 1 FROM public.referrals r2
+           WHERE r2.shopify_order_id = o.shopify_order_id AND r2.status = 'completed')
     ) x
     WHERE x.cancelled_at IS NULL
       AND (p_from IS NULL OR x.at >= p_from)
@@ -498,11 +535,132 @@ LANGUAGE sql STABLE AS $$
       FROM public.points_ledger l
       WHERE l.member_id = m.id AND l.points > 0 AND NOT l.expired
         AND COALESCE(l.points_remaining, l.points) > 0
-        AND l.expires_at IS NOT NULL AND l.expires_at >= now()
+        AND l.expires_at IS NOT NULL            -- an overdue row is "expiring now"
       ORDER BY l.expires_at LIMIT 1)
   )
   FROM public.members m
   WHERE m.id = p_member;
+$$;
+
+-- ── campaigns: save and switch on/off in one transaction ─────────────────────
+-- These two functions write. They live here because the admin is their only
+-- caller and each must be all-or-nothing: switching off the campaigns that
+-- overlap and saving the new one happen together or not at all.
+--
+-- Switching a campaign off (contract rule 2: an order keeps the multiplier of the
+-- campaign that was running when it was PLACED):
+--   * a campaign that has already started ends now: ends_at = least(ends_at, now()),
+--     is_active = false, deactivated_at = now(). Orders placed before this moment
+--     are still inside its dates and before deactivated_at, so they keep it.
+--   * a campaign that has not started is only switched off; its dates are kept
+--     so it can be switched on again.
+
+CREATE OR REPLACE FUNCTION public.admin_campaign_switch_off(p_ids uuid[])
+RETURNS void
+LANGUAGE sql VOLATILE AS $$
+  UPDATE public.bonus_campaigns
+     SET is_active = false,
+         ends_at = CASE WHEN starts_at < now() THEN LEAST(ends_at, now()) ELSE ends_at END,
+         deactivated_at = now()
+   WHERE id = ANY (p_ids) AND is_active;
+$$;
+
+-- Result: {"ok":true,"id":..,"switched_off":[names]}
+--      or {"ok":false,"conflicts":[{"id":..,"name":..}]}   nothing was changed
+--      or {"ok":false,"error":"not_found"|"overlap"}        nothing was changed
+CREATE OR REPLACE FUNCTION public.admin_save_campaign(
+  p_id         uuid,
+  p_name       text,
+  p_multiplier numeric,
+  p_starts_at  timestamptz,
+  p_ends_at    timestamptz,
+  p_is_active  boolean,
+  p_replace_overlapping boolean DEFAULT false
+) RETURNS jsonb
+LANGUAGE plpgsql VOLATILE AS $$
+DECLARE
+  v_old     public.bonus_campaigns%ROWTYPE;
+  v_row     record;
+  v_ids     uuid[] := '{}';
+  v_names   text[] := '{}';
+  v_conf    jsonb  := '[]'::jsonb;
+  v_ends    timestamptz := p_ends_at;
+  v_id      uuid;
+BEGIN
+  IF p_id IS NOT NULL THEN
+    SELECT * INTO v_old FROM public.bonus_campaigns WHERE id = p_id FOR UPDATE;
+    IF NOT FOUND THEN RETURN jsonb_build_object('ok', false, 'error', 'not_found'); END IF;
+  END IF;
+
+  IF p_is_active THEN
+    FOR v_row IN
+      SELECT c.id, c.name FROM public.bonus_campaigns c
+       WHERE c.is_active AND (p_id IS NULL OR c.id <> p_id)
+         AND tstzrange(c.starts_at, c.ends_at) && tstzrange(p_starts_at, p_ends_at)
+       ORDER BY c.starts_at
+       FOR UPDATE
+    LOOP
+      v_ids := v_ids || v_row.id;
+      v_names := v_names || v_row.name;
+      v_conf := v_conf || jsonb_build_object('id', v_row.id, 'name', v_row.name);
+    END LOOP;
+    IF cardinality(v_ids) > 0 THEN
+      IF NOT COALESCE(p_replace_overlapping, false) THEN
+        RETURN jsonb_build_object('ok', false, 'conflicts', v_conf);
+      END IF;
+      PERFORM public.admin_campaign_switch_off(v_ids);
+    END IF;
+  ELSIF p_id IS NOT NULL AND v_old.is_active AND v_old.starts_at < now() AND p_starts_at < now() THEN
+    -- a running campaign switched off through the edit form ends now
+    v_ends := LEAST(p_ends_at, now());
+  END IF;
+
+  IF p_id IS NULL THEN
+    INSERT INTO public.bonus_campaigns (name, multiplier, starts_at, ends_at, is_active)
+    VALUES (p_name, p_multiplier, p_starts_at, v_ends, p_is_active)
+    RETURNING id INTO v_id;
+  ELSE
+    UPDATE public.bonus_campaigns
+       SET name = p_name, multiplier = p_multiplier, starts_at = p_starts_at,
+           ends_at = v_ends, is_active = p_is_active
+     WHERE id = p_id;
+    v_id := p_id;
+  END IF;
+  RETURN jsonb_build_object('ok', true, 'id', v_id, 'switched_off', to_jsonb(v_names));
+EXCEPTION WHEN exclusion_violation THEN
+  -- another active campaign took these dates in the meantime; the whole call is undone
+  RETURN jsonb_build_object('ok', false, 'error', 'overlap');
+END;
+$$;
+
+-- Result: {"ok":true} | {"ok":false,"conflicts":[..]} | {"ok":false,"error":"not_found"|"ended"|"overlap"}
+CREATE OR REPLACE FUNCTION public.admin_set_campaign_active(p_id uuid, p_active boolean)
+RETURNS jsonb
+LANGUAGE plpgsql VOLATILE AS $$
+DECLARE
+  v_old  public.bonus_campaigns%ROWTYPE;
+  v_conf jsonb;
+BEGIN
+  SELECT * INTO v_old FROM public.bonus_campaigns WHERE id = p_id FOR UPDATE;
+  IF NOT FOUND THEN RETURN jsonb_build_object('ok', false, 'error', 'not_found'); END IF;
+
+  IF NOT p_active THEN
+    PERFORM public.admin_campaign_switch_off(ARRAY[p_id]);
+    RETURN jsonb_build_object('ok', true);
+  END IF;
+
+  IF v_old.ends_at <= now() THEN RETURN jsonb_build_object('ok', false, 'error', 'ended'); END IF;
+  SELECT jsonb_agg(jsonb_build_object('id', c.id, 'name', c.name) ORDER BY c.starts_at) INTO v_conf
+    FROM public.bonus_campaigns c
+   WHERE c.is_active AND c.id <> p_id
+     AND tstzrange(c.starts_at, c.ends_at) && tstzrange(v_old.starts_at, v_old.ends_at);
+  IF v_conf IS NOT NULL THEN RETURN jsonb_build_object('ok', false, 'conflicts', v_conf); END IF;
+
+  UPDATE public.bonus_campaigns SET is_active = true WHERE id = p_id;
+  RETURN jsonb_build_object('ok', true);
+EXCEPTION WHEN exclusion_violation THEN
+  RETURN jsonb_build_object('ok', false, 'error', 'overlap');
+END;
 $$;
 
 -- ── access: these are for the server (service key) only ──────────────────────

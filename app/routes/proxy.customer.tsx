@@ -6,7 +6,7 @@ import { enrolFromSignin } from "../lib/points.service";
 import { effectiveReferralPoints } from "../lib/influencer.service";
 import { getSettings } from "../lib/settings.server";
 
-export function referralRewardFor(member: MemberRow, standardPoints: number): number {
+function referralRewardFor(member: MemberRow, standardPoints: number): number {
   return effectiveReferralPoints(
     {
       is_influencer: !!member.is_influencer,

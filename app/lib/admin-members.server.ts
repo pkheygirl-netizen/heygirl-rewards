@@ -1,7 +1,7 @@
 // app/lib/admin-members.server.ts
 // Customers list and the full-page customer profile.
 import { adb, num, rpcObject, rpcRows, str, strOrNull, shopifyNumericId, memberName, UUID_RE, type Row } from "./admin-db.server";
-import { FormReader, type FieldErrors } from "./admin-validate.server";
+import { FormReader, UserError, type FieldErrors } from "./admin-validate.server";
 import { ADJUST_LIMITS, NOTE_MAX, previewBalance } from "../components/admin-constants";
 
 export type Tier = "silver" | "gold" | "diamond";
@@ -82,7 +82,7 @@ function toCustomerRow(r: Row): CustomerRow {
  * a name or email are safe (the old PostgREST `or()` filter broke on them).
  */
 export async function searchCustomers(
-  f: Partial<CustomerFilters>, pageSize = 25,
+  f: Partial<CustomerFilters>, pageSize = 25, offset?: number,
 ): Promise<{ customers: CustomerRow[]; total: number }> {
   const rows = await rpcRows("admin_search_members", {
     p_query: f.query ? f.query : null,
@@ -94,7 +94,8 @@ export async function searchCustomers(
     p_sort: f.sort ?? "joined",
     p_desc: f.desc ?? true,
     p_limit: pageSize,
-    p_offset: (f.page ?? 0) * pageSize,
+    // An explicit row offset (exports) wins over the page number (the list).
+    p_offset: offset ?? (f.page ?? 0) * pageSize,
   });
   return { customers: rows.map(toCustomerRow), total: rows.length ? num(rows[0].total_count) : 0 };
 }
@@ -169,7 +170,8 @@ export type CustomerProfile = {
   birthdaySetAt: string | null;
   referralSlug: string;
   referrals: { completed: number; pending: number; held: number };
-  nextExpiry: { points: number; at: string } | null;
+  /** overdue = the date has passed but the nightly job has not removed the points yet */
+  nextExpiry: { points: number; at: string; overdue: boolean } | null;
   influencer: {
     isInfluencer: boolean;
     paused: boolean;
@@ -231,7 +233,9 @@ export async function getCustomerProfile(memberId: string): Promise<CustomerProf
       pending: num(summary.referrals_pending),
       held: num(summary.referrals_held),
     },
-    nextExpiry: next && next.at ? { points: num(next.points), at: str(next.at) } : null,
+    nextExpiry: next && next.at
+      ? { points: num(next.points), at: str(next.at), overdue: new Date(str(next.at)).getTime() < Date.now() }
+      : null,
     influencer: {
       isInfluencer: m.is_influencer === true,
       paused: m.influencer_paused === true,
@@ -328,6 +332,16 @@ export function parseAdjustment(
 }
 
 /**
+ * Who did it, stored at the front of the internal reason: "[by Ayesha R] Goodwill".
+ * The ledger has no actor column; reason_note is admin-only and never reaches
+ * the storefront, so the record of who adjusted a balance lives with the entry.
+ */
+export function withActor(actor: string, reason: string): string {
+  const who = (actor ?? "").replace(/[\[\]\r\n]/g, " ").trim().slice(0, 80) || "Store staff";
+  return `[by ${who}] ${reason}`;
+}
+
+/**
  * Apply one adjustment. The form's key becomes the ledger reference, and the
  * ledger is unique on (member, action, reference), so a double submit or a
  * retried request applies once: the second call returns applied=false with the
@@ -335,14 +349,14 @@ export function parseAdjustment(
  * optional note goes to customer_note, the only text the storefront shows.
  */
 export async function adjustBalance(
-  memberId: string, a: Adjustment,
+  memberId: string, a: Adjustment, actor: string,
 ): Promise<{ applied: boolean; newBalance: number }> {
   const { data, error } = await adb().rpc("award_points", {
     p_member_id: memberId,
     p_action_type: "adjustment",
     p_reference_id: `admin-adjust:${a.idempotencyKey}`,
     p_points: a.direction === "add" ? a.points : -a.points,
-    p_reason_note: a.reason,
+    p_reason_note: withActor(actor, a.reason),
     p_customer_note: a.customerNote,
   });
   if (error) throw new Error(`could not adjust the balance: ${error.message}`);
@@ -352,9 +366,23 @@ export async function adjustBalance(
 
 // ── block, notes ─────────────────────────────────────────────────────────────
 
-export async function setBlocked(memberId: string, blocked: boolean): Promise<void> {
-  const { error } = await adb().from("members").update({ is_blocked: blocked }).eq("id", memberId);
+/**
+ * Block or unblock. Returns false when no such member exists (nothing changed).
+ * Each change is written to the member's staff notes with who made it, so the
+ * profile shows when she was blocked and by whom.
+ */
+export async function setBlocked(memberId: string, blocked: boolean, actor: string): Promise<boolean> {
+  const { data, error } = await adb().from("members").update({ is_blocked: blocked }).eq("id", memberId).select("id");
   if (error) throw new Error(`could not update the customer: ${error.message}`);
+  if (!data || (data as unknown[]).length === 0) return false;
+  const { error: noteErr } = await adb().from("staff_notes").insert({
+    member_id: memberId,
+    note: blocked ? "Blocked this customer" : "Unblocked this customer",
+    author: actor || "Store staff",
+  });
+  // The block itself is done; a missing audit line is logged, not hidden.
+  if (noteErr) console.error(`[admin] block audit note not written for ${memberId}: ${noteErr.message}`);
+  return true;
 }
 
 export async function listStaffNotes(memberId: string, limit = 50): Promise<StaffNote[]> {
@@ -372,8 +400,8 @@ export async function listStaffNotes(memberId: string, limit = 50): Promise<Staf
 
 export async function addStaffNote(memberId: string, note: string, author: string | null): Promise<void> {
   const text = (note ?? "").trim();
-  if (!text) throw new Error("Write a note before saving.");
-  if (text.length > NOTE_MAX) throw new Error(`A note must be ${NOTE_MAX} characters or fewer.`);
+  if (!text) throw new UserError("Write a note before saving.");
+  if (text.length > NOTE_MAX) throw new UserError(`A note must be ${NOTE_MAX} characters or fewer.`);
   const { error } = await adb().from("staff_notes").insert({ member_id: memberId, note: text, author });
   if (error) throw new Error(`could not save the note: ${error.message}`);
 }
