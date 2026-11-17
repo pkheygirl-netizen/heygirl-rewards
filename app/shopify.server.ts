@@ -6,13 +6,15 @@ import {
   shopifyApp,
 } from "@shopify/shopify-app-remix/server";
 import { SupabaseSessionStorage } from "./supabase-session-storage.server";
-import { registerScriptTagAndPage } from "./lib/scripttag.server";
+import { ensureRewardsPage } from "./lib/rewards-page.server";
 
 // Billing plan definitions — activate by passing `billing` to shopifyApp() and
 // adding a requiresBilling check in the app loader when monetisation goes live.
 export const PLANS = {
   FREE: "HeyGirl Rewards — Free",
 } as const;
+
+export const API_VERSION = "2026-10";
 
 const shopify = shopifyApp({
   apiKey: process.env.SHOPIFY_API_KEY!,
@@ -25,15 +27,18 @@ const shopify = shopifyApp({
     "read_orders",
     // Discounts — generate loyalty redemption codes
     "read_discounts", "write_discounts",
-    // Script tags — reward room widget + storefront event tracking
-    "read_script_tags", "write_script_tags",
     // Products — create/manage hidden reward room products
     "read_products", "write_products",
     // Online Store content — auto-create the /pages/rewards landing page
     // (pages query + pageCreate require content scope)
     "read_content", "write_content",
   ],
-  apiVersion: ApiVersion.April25,
+  // 2026-10 is the newest stable Admin API version (checked 16 Nov 2026). The
+  // installed @shopify/shopify-app-remix 3.8.5 only lists versions up to
+  // 2025-10 in its ApiVersion enum, which Shopify no longer serves, so the
+  // version is given as a string. The client builds the request URL from this
+  // value as-is. Keep it in step with [webhooks] api_version in shopify.app.toml.
+  apiVersion: API_VERSION as ApiVersion,
   distribution: AppDistribution.SingleMerchant,
   sessionStorage: new SupabaseSessionStorage(),
   // Use OAuth token exchange (managed install) instead of the auth-code flow.
@@ -57,7 +62,7 @@ const shopify = shopifyApp({
   hooks: {
     afterAuth: async ({ session, admin }) => {
       await shopify.registerWebhooks({ session });
-      await registerScriptTagAndPage(admin);
+      await ensureRewardsPage(admin);
     },
   },
 });

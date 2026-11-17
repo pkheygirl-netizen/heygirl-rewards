@@ -1,0 +1,54 @@
+{%- comment -%}
+  HeyGirl Rewards: product page line "Earn N points".
+  Points are computed in Liquid from the selected variant price and the
+  settings (rate x campaign multiplier within its dates); hg-core.js keeps the
+  number in step when the shopper picks another variant.
+{%- endcomment -%}
+{%- liquid
+  assign cfg = app.metafields.hg_loyalty.config.value
+  assign hg_product = block.settings.product | default: product
+-%}
+{%- if cfg and cfg.enabled and cfg.earnRules.purchase.enabled != false and hg_product -%}
+  {%- liquid
+    capture hg_mult
+      render 'hg-mult', cfg: cfg
+    endcapture
+    assign hg_mult = hg_mult | strip | times: 1.0
+    assign hg_variant = hg_product.selected_or_first_available_variant
+    assign hg_points = hg_variant.price | times: cfg.pointsRate | times: hg_mult | divided_by: 100.0 | floor
+  -%}
+  {%- render 'hg-line-css' -%}
+  <div
+    class="hg-earn"
+    data-hg-earn
+    data-price="{{ hg_variant.price }}"
+    {% if hg_product.variants.size > 1 and hg_product.variants.size <= 100 -%}
+      data-prices='{ {%- for v in hg_product.variants -%}"{{ v.id }}":{{ v.price }}{% unless forloop.last %},{% endunless %}{%- endfor -%} }'
+    {%- endif %}
+    {% if hg_points <= 0 %}hidden{% endif %}
+    {{ block.shopify_attributes }}
+  >
+    {%- render 'hg-gift' -%}
+    <span>
+      Earn <strong><span data-hg-earn-pts>{% render 'hg-num', n: hg_points %}</span> points</strong> with this purchase
+      {%- comment -%} Campaign wording is written by hg-core.js (Liquid's "now" can be stale). {%- endcomment -%}
+      <span data-hg-camp hidden></span>
+    </span>
+  </div>
+{%- endif -%}
+
+{% schema %}
+{
+  "name": "Points for this product",
+  "target": "section",
+  "enabled_on": { "templates": ["product"] },
+  "settings": [
+    {
+      "type": "product",
+      "id": "product",
+      "label": "Product",
+      "autofill": true
+    }
+  ]
+}
+{% endschema %}

@@ -1,0 +1,26 @@
+{%- comment -%}
+  Prints the campaign multiplier in force right now (1 when none), looking at
+  the current and the following campaign. This is only the first paint: Liquid
+  output can be cached, so hg-core.js recomputes numbers and writes all
+  campaign wording from the shopper's own clock.
+  Usage: {% capture m %}{% render 'hg-mult', cfg: cfg %}{% endcapture %}
+{%- endcomment -%}
+{%- liquid
+  assign hg_m = 1
+  assign hg_now = 'now' | date: '%s' | plus: 0
+  if cfg.campaign and cfg.campaign.multiplier
+    assign hg_st = cfg.campaign.startsAt | date: '%s' | plus: 0
+    assign hg_en = cfg.campaign.endsAt | date: '%s' | plus: 0
+    if hg_now >= hg_st and hg_now <= hg_en
+      assign hg_m = cfg.campaign.multiplier
+    endif
+  endif
+  if hg_m == 1 and cfg.nextCampaign and cfg.nextCampaign.multiplier
+    assign hg_st = cfg.nextCampaign.startsAt | date: '%s' | plus: 0
+    assign hg_en = cfg.nextCampaign.endsAt | date: '%s' | plus: 0
+    if hg_now >= hg_st and hg_now <= hg_en
+      assign hg_m = cfg.nextCampaign.multiplier
+    endif
+  endif
+  echo hg_m
+-%}

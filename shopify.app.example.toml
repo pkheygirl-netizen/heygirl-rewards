@@ -1,23 +1,48 @@
 # Example Shopify app config. Copy to `shopify.app.toml` and fill in real values.
 # `shopify.app.toml` is gitignored (kept local only). The client_secret is NEVER
-# stored here — it lives in the environment (see .env.example / Render env vars).
+# stored here: it lives in the environment (see .env.example / Railway variables).
+#
+# After changing anything in this file run `shopify app deploy`: that is what
+# registers the webhook subscriptions and scopes below, and releases the theme
+# app extension.
 name = "HeyGirl Rewards"
 client_id = "YOUR_SHOPIFY_CLIENT_ID"
 application_url = "https://app.heygirl.pk"
 embedded = true
 
 [access_scopes]
-scopes = "read_customers,write_customers,read_orders,read_discounts,write_discounts,read_script_tags,write_script_tags,read_products,write_products,read_content,write_content"
+# The script-tag scopes are gone (the storefront is a theme app extension).
+# Removing scopes changes the permission list: the store must accept it again.
+scopes = "read_customers,write_customers,read_orders,read_discounts,write_discounts,read_products,write_products,read_content,write_content"
 
 [auth]
 redirect_urls = ["https://app.heygirl.pk/auth/callback"]
 
 [webhooks]
-api_version = "2025-04"
+# Keep in step with API_VERSION in app/shopify.server.ts.
+api_version = "2026-10"
+
+  # Placing an order enrols the customer and stores the pending points.
+  [[webhooks.subscriptions]]
+  topics = ["orders/create"]
+  uri = "/webhooks/orders-create"
 
   [[webhooks.subscriptions]]
   topics = ["orders/updated"]
   uri = "/webhooks/orders-updated"
+
+  [[webhooks.subscriptions]]
+  topics = ["orders/fulfilled"]
+  uri = "/webhooks/orders-fulfilled"
+
+  # Reverses points and blocks any later award.
+  [[webhooks.subscriptions]]
+  topics = ["orders/cancelled"]
+  uri = "/webhooks/orders-cancelled"
+
+  [[webhooks.subscriptions]]
+  topics = ["refunds/create"]
+  uri = "/webhooks/refunds-create"
 
   [[webhooks.subscriptions]]
   topics = ["customers/create"]
@@ -27,28 +52,18 @@ api_version = "2025-04"
   topics = ["app/uninstalled"]
   uri = "/webhooks/app-uninstalled"
 
+  # Privacy webhooks go under compliance_topics (Shopify rejects them in `topics`).
   [[webhooks.subscriptions]]
-  topics = ["orders/fulfilled"]
-  uri = "/webhooks/orders-fulfilled"
-
-  [[webhooks.subscriptions]]
-  topics = ["refunds/create"]
-  uri = "/webhooks/refunds-create"
-
-  [[webhooks.subscriptions]]
-  topics = ["customers/enable"]
-  uri = "/webhooks/customers-enable"
-
-  [[webhooks.subscriptions]]
-  topics = ["customers/data_request"]
+  compliance_topics = ["customers/data_request"]
   uri = "/webhooks/customers-data-request"
 
   [[webhooks.subscriptions]]
-  topics = ["customers/redact"]
+  compliance_topics = ["customers/redact"]
   uri = "/webhooks/customers-redact"
 
+  # Records the request only. Nothing is deleted automatically (see README).
   [[webhooks.subscriptions]]
-  topics = ["shop/redact"]
+  compliance_topics = ["shop/redact"]
   uri = "/webhooks/shop-redact"
 
 [build]

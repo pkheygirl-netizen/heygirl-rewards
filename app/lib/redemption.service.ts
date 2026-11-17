@@ -1,28 +1,31 @@
+// app/lib/redemption.service.ts
+// Points -> reward code (rule 16), admin cancellation of an active code, and
+// the automatic return for an order cancelled before fulfilment (rule 7).
 import crypto from "node:crypto";
 import { db } from "../db.server";
-import { shopifyGraphqlWithRetry } from "./shopify-graphql.server";
 import { notificationQueue } from "./queue.server";
+import { getAdminForShop } from "./worker-admin.server";
+import {
+  createCustomerAmountOffCode,
+  deactivateDiscount,
+  findDiscountIdByCode,
+  finishPendingCode,
+} from "./discounts.server";
+import { getSettings, type RedemptionTier } from "./settings.server";
+import { expiresAtForTier } from "./points.service";
 
-export type RedemptionTier = { points: number; discount_pkr: number };
-
-const DEFAULT_TIERS: RedemptionTier[] = [
-  { points: 3000, discount_pkr: 100 },
-  { points: 6000, discount_pkr: 250 },
-  { points: 11500, discount_pkr: 500 },
-  { points: 22000, discount_pkr: 1000 },
-  { points: 100000, discount_pkr: 5000 },
-  { points: 180000, discount_pkr: 10000 },
-];
+export type { RedemptionTier };
 
 export async function getRedemptionTiers(): Promise<RedemptionTier[]> {
-  const { data } = await db.from("app_settings").select("redemption_tiers").eq("id", 1).maybeSingle();
-  const tiers = data?.redemption_tiers;
-  if (Array.isArray(tiers) && tiers.length > 0) return tiers as RedemptionTier[];
-  return DEFAULT_TIERS;
+  return (await getSettings()).redemption_tiers;
 }
 
+/**
+ * The reward a customer may redeem for exactly `points`. A reward the owner
+ * has hidden (`hidden: true`) is treated exactly like one that does not exist.
+ */
 export function findTier(tiers: RedemptionTier[], points: number): RedemptionTier | null {
-  return tiers.find((t) => t.points === points) ?? null;
+  return tiers.find((t) => t.points === points && t.hidden !== true) ?? null;
 }
 
 export function validateRedemption(
@@ -30,217 +33,408 @@ export function validateRedemption(
   requestedPoints: number,
   tiers: RedemptionTier[],
 ): { valid: boolean; reason?: string } {
-  if (requestedPoints < 3000) return { valid: false, reason: "below_minimum" };
-  if (balance < requestedPoints) return { valid: false, reason: "insufficient_balance" };
+  if (!Number.isInteger(requestedPoints) || requestedPoints <= 0) return { valid: false, reason: "invalid_tier" };
   if (!findTier(tiers, requestedPoints)) return { valid: false, reason: "invalid_tier" };
+  if (balance < requestedPoints) return { valid: false, reason: "insufficient_balance" };
   return { valid: true };
 }
 
+/** Unguessable, unambiguous (no 0/O/1/I) reward code. */
 export function generateCodeValue(): string {
-  return `REWARD-${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const bytes = crypto.randomBytes(10);
+  let out = "";
+  for (const b of bytes) out += alphabet[b % alphabet.length];
+  return `REWARD-${out}`;
 }
 
-const CREATE_PRICE_RULE = `
-  mutation CreatePriceRule($input: PriceRuleInput!) {
-    priceRuleCreate(input: $input) {
-      priceRule { id }
-      priceRuleUserErrors { field message }
-    }
-  }
-`;
-
-const CREATE_DISCOUNT_CODE = `
-  mutation CreateDiscountCode($priceRuleId: ID!, $code: String!) {
-    priceRuleDiscountCodeCreate(priceRuleId: $priceRuleId, code: $code) {
-      priceRuleDiscountCode { code }
-      userErrors { field message }
-    }
-  }
-`;
+/**
+ * Give points back for a reward code, at most once per code for any reason
+ * (creation failed, admin cancelled it, order cancelled before fulfilment):
+ * the ledger reference is always the code row's id.
+ */
+async function returnPointsForCode(input: {
+  memberId: string;
+  tier: string;
+  codeId: string;
+  points: number;
+  reasonNote: string;
+  customerNote: string;
+  shopifyOrderId?: string | null;
+}): Promise<{ returned: boolean }> {
+  if (input.points <= 0) return { returned: false };
+  const settings = await getSettings();
+  const { data, error } = await db.rpc("award_points", {
+    p_member_id: input.memberId,
+    p_action_type: "redemption_return",
+    p_reference_id: input.codeId,
+    p_points: input.points,
+    p_expires_at: expiresAtForTier(input.tier, settings),
+    p_shopify_order_id: input.shopifyOrderId ?? null,
+    p_reason_note: input.reasonNote,
+    p_customer_note: input.customerNote,
+  });
+  if (error) throw new Error(`award_points(redemption_return) failed: ${error.message}`);
+  return { returned: data?.[0]?.awarded ?? false };
+}
 
 export async function redeemPoints(input: {
-  shopifyCustomerId: string;
-  requestedPoints: number;
-  admin: Parameters<typeof shopifyGraphqlWithRetry>[0];
-}): Promise<{ redeemed: boolean; code?: string; discountPkr?: number; reason?: string }> {
-  const customerId = String(input.shopifyCustomerId);
+  memberId: string;
+  points: number;
+  shop: string;
+}): Promise<{ ok: true; code: string; discountPkr: number; expiresAt: string } | { ok: false; reason: string }> {
+  const requested = Number(input.points);
+  const settings = await getSettings();
+  if (!settings.program_enabled) return { ok: false, reason: "program_disabled" };
 
-  const { data: member } = await db
+  const { data: member, error: memberErr } = await db
     .from("members")
-    .select("id, points_balance")
-    .eq("shopify_customer_id", customerId)
+    .select("id, shopify_customer_id, tier, points_balance, is_blocked, opted_out")
+    .eq("id", input.memberId)
     .maybeSingle();
-  if (!member) return { redeemed: false, reason: "member_not_found" };
+  if (memberErr) throw new Error(`member lookup failed: ${memberErr.message}`);
+  if (!member) return { ok: false, reason: "member_not_found" };
+  if (member.is_blocked) return { ok: false, reason: "blocked" };
+  if (member.opted_out) return { ok: false, reason: "opted_out" };
 
-  const tiers = await getRedemptionTiers();
-  const validation = validateRedemption(member.points_balance, input.requestedPoints, tiers);
-  if (!validation.valid) return { redeemed: false, reason: validation.reason };
+  const validation = validateRedemption(member.points_balance, requested, settings.redemption_tiers);
+  if (!validation.valid) return { ok: false, reason: validation.reason ?? "invalid_tier" };
+  const tier = findTier(settings.redemption_tiers, requested)!;
 
-  const tier = findTier(tiers, input.requestedPoints)!;
+  // Shopify first needs an admin client; fail before touching the balance.
+  let admin;
+  try {
+    admin = await getAdminForShop(input.shop);
+  } catch (err) {
+    console.error("[redeemPoints] no admin client:", err instanceof Error ? err.message : err);
+    return { ok: false, reason: "shopify_unavailable" };
+  }
 
-  // Create a loyalty_codes row first to get a stable reference_id for the RPC
+  const code = generateCodeValue();
+  const expiresAt = new Date(Date.now() + settings.reward_code_expiry_days * 86_400_000).toISOString();
+
+  // 1. pending row: gives the deduction a stable reference
   const { data: codeRow, error: insertErr } = await db
     .from("loyalty_codes")
     .insert({
       member_id: member.id,
-      code: `PENDING-${crypto.randomUUID()}`, // unique placeholder until we have the real code
-      discount_amount: tier.discount_pkr, // required column from original schema
+      code,
+      kind: "reward",
+      discount_amount: tier.discount_pkr,
       discount_amount_pkr: tier.discount_pkr,
-      points_spent: input.requestedPoints,
-      status: "active",
-      expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+      points_spent: requested,
+      status: "pending",
+      expires_at: expiresAt,
     })
     .select("id")
     .single();
   if (insertErr || !codeRow) {
-    console.error("[redeemPoints] failed to create loyalty_codes row:", insertErr);
-    return { redeemed: false, reason: "db_error" };
+    console.error("[redeemPoints] could not create the code row:", insertErr?.message);
+    return { ok: false, reason: "db_error" };
   }
 
-  // Deduct points — idempotent on reference_id = codeRow.id
+  // 2. deduct: the database refuses when the balance is too low (no clamp)
   const { data: rpcData, error: rpcErr } = await db.rpc("award_points", {
     p_member_id: member.id,
     p_action_type: "redemption",
     p_reference_id: String(codeRow.id),
-    p_points: -input.requestedPoints,
-    p_reason_note: `redeemed ${input.requestedPoints} pts for Rs.${tier.discount_pkr} off`,
+    p_points: -requested,
+    p_reason_note: `redeemed ${requested} pts for Rs.${tier.discount_pkr} off`,
+    p_customer_note: `Reward: Rs. ${tier.discount_pkr} off`,
   });
   if (rpcErr) {
-    // Clean up the pending row; the RPC failed before deducting
-    await db.from("loyalty_codes").delete().eq("id", codeRow.id);
-    throw rpcErr;
+    // Ambiguous: the call may have failed before or AFTER the deduction was
+    // committed (a timeout, a dropped connection). The pending row is the only
+    // record that points may have been taken, so it stays; sweepPendingCodes
+    // looks for the ledger row and either cancels the code (nothing was taken)
+    // or gives the points back.
+    throw new Error(`award_points(redemption) failed: ${rpcErr.message}`);
   }
-  const deducted = rpcData?.[0]?.awarded ?? false;
-  if (!deducted) {
-    // Not awarded: either a duplicate reference (retry) or, post-migration-008,
-    // a concurrent redemption drained the balance first.
-    await db.from("loyalty_codes").delete().eq("id", codeRow.id);
-    const { data: existing } = await db
-      .from("loyalty_codes")
-      .select("code, discount_amount_pkr")
-      .eq("member_id", member.id)
-      .eq("points_spent", input.requestedPoints)
-      .eq("status", "active")
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (existing) {
-      return {
-        redeemed: false,
-        reason: "duplicate",
-        code: existing.code,
-        discountPkr: existing.discount_amount_pkr,
-      };
+  if (!(rpcData?.[0]?.awarded ?? false)) {
+    // A definite answer from the database: nothing was deducted.
+    await db.from("loyalty_codes").delete().eq("id", codeRow.id).eq("status", "pending");
+    return { ok: false, reason: "insufficient_balance" };
+  }
+
+  // 3. create the discount; on failure give the points straight back
+  let created = await createCustomerAmountOffCode(admin, {
+    code,
+    title: `HeyGirl Rewards: Rs. ${tier.discount_pkr} off`,
+    amountPkr: tier.discount_pkr,
+    shopifyCustomerId: member.shopify_customer_id,
+    endsAt: new Date(expiresAt),
+  });
+  if (!created.ok && created.reason === "code_taken") {
+    // The code is random and brand new, so "taken" means our own first attempt
+    // reached Shopify and its answer was lost (the create is repeated after a
+    // 5xx). Adopt that discount instead of returning the points for a code
+    // that exists.
+    try {
+      const existingId = await findDiscountIdByCode(admin, code);
+      if (existingId) created = { ok: true, discountId: existingId };
+    } catch (err) {
+      console.error("[redeemPoints] lookup of the existing code failed:", err instanceof Error ? err.message : err);
     }
-    return { redeemed: false, reason: "insufficient_balance" };
   }
-
-  // Compensating action: if Shopify discount creation fails AFTER the deduction
-  // succeeded, re-credit the points (idempotent reference) and remove the row so
-  // the customer keeps their balance and can simply retry.
-  const recredit = async (why: string) => {
-    const { error: recreditErr } = await db.rpc("award_points", {
-      p_member_id: member.id,
-      p_action_type: "adjustment", // 'redemption_reversal' not in ledger CHECK vocab
-      p_reference_id: `reversal-${codeRow.id}`,
-      p_points: input.requestedPoints,
-      p_reason_note: `auto re-credit: ${why}`,
-    });
-    if (recreditErr) {
-      // Re-credit itself failed — keep the row as evidence for manual review.
-      console.error("[redeemPoints] RE-CREDIT FAILED — manual adjustment needed:", recreditErr, "code row:", codeRow.id);
-      await db.from("loyalty_codes").update({ status: "expired" }).eq("id", codeRow.id);
-      return;
+  if (!created.ok) {
+    try {
+      await returnPointsForCode({
+        memberId: member.id,
+        tier: member.tier,
+        codeId: String(codeRow.id),
+        points: requested,
+        reasonNote: `auto return: Shopify discount not created (${created.reason})`,
+        customerNote: "Reward could not be created, points returned",
+      });
+      await db
+        .from("loyalty_codes")
+        .update({ status: "cancelled", cancelled_at: new Date().toISOString() })
+        .eq("id", codeRow.id);
+    } catch (err) {
+      // Keep the pending row as evidence; the admin sees it and can adjust.
+      console.error("[redeemPoints] RETURN FAILED, manual adjustment needed for code row", codeRow.id, err instanceof Error ? err.message : err);
     }
-    await db.from("loyalty_codes").delete().eq("id", codeRow.id);
-  };
-
-  // Create Shopify price rule
-  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-  let priceRuleResult: {
-    priceRuleCreate: { priceRule: { id: string } | null; priceRuleUserErrors: Array<{ message: string }> };
-  };
-  try {
-    priceRuleResult = await shopifyGraphqlWithRetry<{
-      priceRuleCreate: { priceRule: { id: string } | null; priceRuleUserErrors: Array<{ message: string }> };
-    }>(input.admin, CREATE_PRICE_RULE, {
-      input: {
-        title: `Loyalty Reward — Rs.${tier.discount_pkr} off`,
-        target: "LINE_ITEM",
-        valueType: "FIXED_AMOUNT",
-        value: String(-tier.discount_pkr),
-        // I5 (2026-07-03 review): pin the code to its owner — a leaked/shared
-        // single-use code would otherwise consume the member's reward.
-        customerSelection: { customerIdsToAdd: [`gid://shopify/Customer/${customerId}`] },
-        usageLimit: 1,
-        startsAt: new Date().toISOString(),
-        endsAt: expiresAt,
-      },
-    });
-  } catch (err) {
-    console.error("[redeemPoints] priceRuleCreate threw:", err);
-    await recredit("Shopify price rule request failed");
-    return { redeemed: false, reason: "shopify_price_rule_error" };
+    return { ok: false, reason: "shopify_error" };
   }
 
-  const priceRuleErrors = priceRuleResult.priceRuleCreate.priceRuleUserErrors;
-  if (priceRuleErrors.length > 0 || !priceRuleResult.priceRuleCreate.priceRule) {
-    console.error("[redeemPoints] priceRuleCreate errors:", priceRuleErrors);
-    await recredit("Shopify price rule creation rejected");
-    return { redeemed: false, reason: "shopify_price_rule_error" };
-  }
-
-  const priceRuleId = priceRuleResult.priceRuleCreate.priceRule.id;
-  const codeValue = generateCodeValue();
-
-  let discountResult: {
-    priceRuleDiscountCodeCreate: {
-      priceRuleDiscountCode: { code: string } | null;
-      userErrors: Array<{ message: string }>;
-    };
-  };
-  try {
-    discountResult = await shopifyGraphqlWithRetry<{
-      priceRuleDiscountCodeCreate: {
-        priceRuleDiscountCode: { code: string } | null;
-        userErrors: Array<{ message: string }>;
-      };
-    }>(input.admin, CREATE_DISCOUNT_CODE, { priceRuleId, code: codeValue });
-  } catch (err) {
-    console.error("[redeemPoints] discountCodeCreate threw:", err);
-    await recredit("Shopify discount code request failed");
-    return { redeemed: false, reason: "shopify_discount_code_error" };
-  }
-
-  const discountErrors = discountResult.priceRuleDiscountCodeCreate.userErrors;
-  if (discountErrors.length > 0 || !discountResult.priceRuleDiscountCodeCreate.priceRuleDiscountCode) {
-    console.error("[redeemPoints] discountCodeCreate errors:", discountErrors);
-    await recredit("Shopify discount code creation rejected");
-    return { redeemed: false, reason: "shopify_discount_code_error" };
-  }
-
-  const finalCode = discountResult.priceRuleDiscountCodeCreate.priceRuleDiscountCode.code;
-
-  // Update the loyalty_codes row with the real code
-  await db
+  // 4. activate
+  const { error: updErr } = await db
     .from("loyalty_codes")
-    .update({ code: finalCode, shopify_price_rule_id: priceRuleId })
+    .update({ status: "active", shopify_discount_id: created.discountId })
     .eq("id", codeRow.id);
+  if (updErr) console.error("[redeemPoints] code created but row not activated:", codeRow.id, updErr.message);
 
-  // Notify member of redemption (non-blocking)
-  notificationQueue
-    .add("redemption_confirmed", {
-      memberId: member.id,
-      code: finalCode,
-      discountPkr: tier.discount_pkr,
-    })
-    .catch((err) => console.error("[redeemPoints] redemption_confirmed enqueue failed:", err));
+  await notificationQueue
+    .add("reward_code_issued", { memberId: member.id, code, discountPkr: tier.discount_pkr, expiresAt, kind: "reward" })
+    .catch((err) => console.error("[redeemPoints] notification enqueue failed:", err));
 
-  return { redeemed: true, code: finalCode, discountPkr: tier.discount_pkr };
+  return { ok: true, code, discountPkr: tier.discount_pkr, expiresAt };
+}
+
+/**
+ * Admin cancels an ACTIVE reward code: deactivate it in Shopify first, and only
+ * then return the points. If Shopify reports the code was already used, it is
+ * marked used and nothing is returned.
+ */
+export async function cancelRewardCode(input: {
+  codeId: string;
+  shop: string;
+  actor: string;
+}): Promise<{ ok: boolean; pointsReturned: number; reason?: string }> {
+  const { data: row, error } = await db
+    .from("loyalty_codes")
+    .select("id, member_id, code, kind, status, points_spent, shopify_discount_id")
+    .eq("id", input.codeId)
+    .maybeSingle();
+  if (error) throw new Error(`code lookup failed: ${error.message}`);
+  if (!row) return { ok: false, pointsReturned: 0, reason: "not_found" };
+  if (row.kind !== "reward") return { ok: false, pointsReturned: 0, reason: "not_a_reward_code" };
+  if (row.status !== "active") return { ok: false, pointsReturned: 0, reason: "not_active" };
+
+  let admin;
+  try {
+    admin = await getAdminForShop(input.shop);
+  } catch (err) {
+    console.error("[cancelRewardCode] no admin client:", err instanceof Error ? err.message : err);
+    return { ok: false, pointsReturned: 0, reason: "shopify_unavailable" };
+  }
+
+  let discountId = row.shopify_discount_id;
+  // Rows from before v3 hold a price-rule id, which the new mutation does not accept.
+  if (!discountId || !discountId.includes("DiscountCodeNode")) {
+    try {
+      discountId = await findDiscountIdByCode(admin, row.code);
+    } catch (err) {
+      console.error("[cancelRewardCode] lookup failed:", err instanceof Error ? err.message : err);
+      return { ok: false, pointsReturned: 0, reason: "shopify_error" };
+    }
+  }
+  if (!discountId) return { ok: false, pointsReturned: 0, reason: "discount_not_found" };
+
+  const deactivated = await deactivateDiscount(admin, discountId);
+  if (!deactivated.ok) return { ok: false, pointsReturned: 0, reason: "shopify_error" };
+
+  if (deactivated.usageCount > 0) {
+    await db
+      .from("loyalty_codes")
+      .update({ status: "used", used_at: new Date().toISOString() })
+      .eq("id", row.id)
+      .eq("status", "active");
+    return { ok: false, pointsReturned: 0, reason: "already_used" };
+  }
+
+  // Conditional on still being active: a webhook may have marked it used meanwhile.
+  const { data: cancelled, error: updErr } = await db
+    .from("loyalty_codes")
+    .update({ status: "cancelled", cancelled_at: new Date().toISOString(), shopify_discount_id: discountId })
+    .eq("id", row.id)
+    .eq("status", "active")
+    .select("id");
+  if (updErr) throw new Error(`could not cancel the code: ${updErr.message}`);
+  if (!cancelled || cancelled.length === 0) return { ok: false, pointsReturned: 0, reason: "not_active" };
+
+  const { data: member } = await db.from("members").select("id, tier").eq("id", row.member_id).maybeSingle();
+  const { returned } = await returnPointsForCode({
+    memberId: row.member_id,
+    tier: member?.tier ?? "silver",
+    codeId: String(row.id),
+    points: row.points_spent,
+    reasonNote: `reward code ${row.code} cancelled by ${input.actor || "admin"}`,
+    customerNote: "Reward cancelled, points returned",
+  });
+  return { ok: true, pointsReturned: returned ? row.points_spent : 0 };
+}
+
+/**
+ * Rule 7: an order that used a reward code was cancelled BEFORE fulfilment.
+ * The redeemed points come back; the code stays used.
+ */
+export async function returnRedemptionsForCancelledOrder(
+  shopifyOrderId: string,
+): Promise<{ returned: number; codes: number }> {
+  const { data: codes, error } = await db
+    .from("loyalty_codes")
+    .select("id, member_id, code, points_spent")
+    .eq("shopify_order_id", String(shopifyOrderId))
+    .eq("kind", "reward")
+    .eq("status", "used");
+  if (error) throw new Error(`code lookup failed: ${error.message}`);
+
+  let total = 0;
+  let count = 0;
+  for (const c of codes ?? []) {
+    const { data: member } = await db.from("members").select("id, tier").eq("id", c.member_id).maybeSingle();
+    if (!member) continue;
+    const { returned } = await returnPointsForCode({
+      memberId: c.member_id,
+      tier: member.tier,
+      codeId: String(c.id),
+      points: c.points_spent,
+      reasonNote: `order ${shopifyOrderId} cancelled before fulfilment; code ${c.code} stays used`,
+      customerNote: "Order cancelled, reward points returned",
+      shopifyOrderId: String(shopifyOrderId),
+    });
+    if (returned) {
+      total += c.points_spent;
+      count++;
+    }
+  }
+  return { returned: total, codes: count };
+}
+
+export const PENDING_CODE_GRACE_MS = 10 * 60 * 1000;
+
+/**
+ * Cron sweep (every 10 minutes): nothing may stay `pending` for good.
+ *   automatic codes (birthday, friend, tier): the discount is created (or
+ *     adopted) and the member is told, as the original job would have done
+ *   reward codes: redeemPoints died between taking the points and creating
+ *     the discount. If Shopify has the code it is activated; if not, the
+ *     points go back and the row is cancelled. If the points were never
+ *     taken, the row is just cancelled.
+ * Rows younger than ten minutes are left alone: their own job may still be running.
+ */
+export async function sweepPendingCodes(
+  now: Date = new Date(),
+  shop?: string | null,
+): Promise<{ finished: number; returned: number; cancelled: number; failed: number }> {
+  const cutoff = new Date(now.getTime() - PENDING_CODE_GRACE_MS).toISOString();
+  const { data: rows, error } = await db
+    .from("loyalty_codes")
+    .select("id, member_id, code, kind, expires_at, discount_amount_pkr, points_spent, issue_key")
+    .eq("status", "pending")
+    .lt("created_at", cutoff)
+    .order("created_at", { ascending: true })
+    .limit(200);
+  if (error) throw new Error(`pending code query failed: ${error.message}`);
+  const out = { finished: 0, returned: 0, cancelled: 0, failed: 0 };
+  if (!rows || rows.length === 0) return out;
+
+  const admin = await getAdminForShop(shop ?? undefined); // throws: the cron run is marked failed and retried
+  for (const row of rows) {
+    try {
+      const { data: member, error: memberErr } = await db
+        .from("members")
+        .select("id, shopify_customer_id, tier, is_blocked, opted_out")
+        .eq("id", row.member_id)
+        .maybeSingle();
+      // A failed read is not "no member": the row stays pending for the next sweep.
+      if (memberErr) throw new Error(`member lookup failed: ${memberErr.message}`);
+      const cancel = async () =>
+        db.from("loyalty_codes").update({ status: "cancelled", cancelled_at: new Date().toISOString() }).eq("id", row.id).eq("status", "pending");
+
+      if (row.kind === "reward") {
+        const { data: deduction, error: ledgerErr } = await db
+          .from("points_ledger")
+          .select("id")
+          .eq("member_id", row.member_id)
+          .eq("action_type", "redemption")
+          .eq("reference_id", String(row.id))
+          .maybeSingle();
+        // A failed read must never be taken for "the points were never taken".
+        if (ledgerErr) throw new Error(`ledger lookup failed: ${ledgerErr.message}`);
+        if (!deduction || !member) {
+          await cancel(); // the points were never taken
+          out.cancelled++;
+          continue;
+        }
+        const existingId = await findDiscountIdByCode(admin, row.code);
+        if (existingId) {
+          // The discount was created; only the last step was missed.
+          await db.from("loyalty_codes").update({ status: "active", shopify_discount_id: existingId }).eq("id", row.id).eq("status", "pending");
+          await notificationQueue.add("reward_code_issued", {
+            memberId: row.member_id, code: row.code, discountPkr: row.discount_amount_pkr, expiresAt: row.expires_at, kind: "reward",
+          });
+          out.finished++;
+          continue;
+        }
+        await returnPointsForCode({
+          memberId: row.member_id,
+          tier: member.tier,
+          codeId: String(row.id),
+          points: row.points_spent,
+          reasonNote: "auto return: reward code was never created in Shopify (found by the pending-code sweep)",
+          customerNote: "Reward could not be created, points returned",
+        });
+        await cancel();
+        out.returned++;
+        continue;
+      }
+
+      // automatic kinds
+      if (!member || member.is_blocked || member.opted_out) {
+        await cancel();
+        out.cancelled++;
+        continue;
+      }
+      const done = await finishPendingCode(admin, row, member.shopify_customer_id);
+      if (!done.ok) {
+        if (done.reason === "expired") out.cancelled++;
+        else out.failed++; // stays pending; the next sweep tries again
+        continue;
+      }
+      await notificationQueue.add(row.kind === "birthday" ? "birthday" : "reward_code_issued", {
+        memberId: row.member_id,
+        code: row.code,
+        discountPkr: row.discount_amount_pkr,
+        expiresAt: row.expires_at,
+        kind: row.kind,
+        freeShipping: done.freeShipping,
+      });
+      if (row.kind === "referral_friend" && row.issue_key) {
+        await db.from("referrals").update({ friend_code_id: row.id }).eq("id", row.issue_key.replace(/^referral_friend:/, ""));
+      }
+      out.finished++;
+    } catch (err) {
+      console.error("[sweepPendingCodes] row", row.id, "failed:", err instanceof Error ? err.message : err);
+      out.failed++;
+    }
+  }
+  return out;
 }
 
 export async function getActiveLoyaltyCodes(shopifyCustomerId: string): Promise<
-  Array<{ id: string; code: string; discount_amount_pkr: number; expires_at: string | null; status: string }>
+  Array<{ id: string; code: string; kind: string; discount_amount_pkr: number; expires_at: string | null; status: string }>
 > {
   const { data: member } = await db
     .from("members")
@@ -251,9 +445,9 @@ export async function getActiveLoyaltyCodes(shopifyCustomerId: string): Promise<
 
   const { data } = await db
     .from("loyalty_codes")
-    .select("id, code, discount_amount_pkr, expires_at, status")
+    .select("id, code, kind, discount_amount_pkr, expires_at, status")
     .eq("member_id", member.id)
-    .in("status", ["active", "used"])
+    .eq("status", "active")
     .order("created_at", { ascending: false })
     .limit(50);
   return data ?? [];

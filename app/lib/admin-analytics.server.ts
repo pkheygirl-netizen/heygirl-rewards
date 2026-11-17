@@ -1,112 +1,83 @@
-import { db } from "../db.server";
+// app/lib/admin-analytics.server.ts
+// Analytics page. All totals are computed in the database (011_admin_stats.sql).
+import { num, rpcObject, rpcRows, str, strOrNull } from "./admin-db.server";
+import { getPeriodStats, getPointsSeries, type PeriodStats, type SeriesPoint } from "./admin-data.server";
+import { referralSummary, type ReferralSummary } from "./admin-referrals.server";
+import { listInfluencers, type InfluencerRow } from "./admin-influencers.server";
+import {
+  baseRedemptionRate, pointsValuePkr, readRedemptionTiers, type RedemptionTier,
+} from "./admin-program.server";
+import { getSettingsRow } from "./admin-settings.server";
+import type { Period } from "../components/karachi";
 
-export function bucketFlowByDay(
-  rows: Array<{ points: number; action_type: string; earned_at: string }>,
-): Array<{ date: string; issued: number; redeemed: number; expired: number }> {
-  const map = new Map<string, { issued: number; redeemed: number; expired: number }>();
-  for (const r of rows) {
-    const day = new Date(r.earned_at).toISOString().slice(0, 10);
-    const cur = map.get(day) ?? { issued: 0, redeemed: 0, expired: 0 };
-    if (r.action_type === "redemption") cur.redeemed += Math.abs(r.points);
-    else if (r.action_type === "expiry") cur.expired += Math.abs(r.points);
-    else if (r.points > 0) cur.issued += r.points;
-    map.set(day, cur);
-  }
-  return [...map.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([date, v]) => ({ date, ...v }));
+export type TopMember = { memberId: string; name: string; email: string | null; points: number };
+
+export async function getTopMembers(
+  from: string, to: string, kind: "earned" | "redeemed", limit = 10,
+): Promise<TopMember[]> {
+  const rows = await rpcRows("admin_top_members", { p_from: from, p_to: to, p_kind: kind, p_limit: limit });
+  return rows.map((r) => ({
+    memberId: str(r.member_id), name: str(r.name) || "Customer", email: strOrNull(r.email), points: num(r.points),
+  }));
 }
 
-export function parseRange(sp: URLSearchParams): { from: Date; to: Date } {
-  const to = new Date();
-  const fromParam = sp.get("from");
-  const toParam = sp.get("to");
-  if (fromParam && toParam) {
-    return { from: new Date(fromParam), to: new Date(toParam) };
-  }
-  const range = sp.get("range") ?? "30d";
-  const days = range === "7d" ? 7 : range === "90d" ? 90 : 30;
-  return { from: new Date(to.getTime() - days * 86400000), to };
+export type Outstanding = {
+  points: number;
+  members: number;
+  /** Lowest reward in the table; null when the table is empty. */
+  baseTier: RedemptionTier | null;
+  /** points × (base discount ÷ base points). An estimate: bigger rewards give more per point. */
+  valuePkr: number;
+};
+
+export function outstandingFrom(points: number, members: number, tiers: RedemptionTier[]): Outstanding {
+  const baseTier = baseRedemptionRate(tiers);
+  return { points, members, baseTier, valuePkr: pointsValuePkr(points, baseTier) };
 }
 
-export async function getPointsFlowSeries(from: Date, to: Date) {
-  const { data, error } = await db
-    .from("points_ledger")
-    .select("points, action_type, earned_at")
-    .gte("earned_at", from.toISOString())
-    .lte("earned_at", to.toISOString());
-  if (error) throw error;
-  return bucketFlowByDay((data ?? []) as any);
+export async function getOutstanding(): Promise<Outstanding> {
+  const [o, settings] = await Promise.all([rpcObject("admin_outstanding_points"), getSettingsRow()]);
+  return outstandingFrom(num(o.points), num(o.members), readRedemptionTiers(settings.redemption_tiers));
 }
 
-export async function getTopEarners(limit = 10) {
-  const { data, error } = await db
-    .from("points_ledger")
-    .select("points, members(first_name,last_name,email)")
-    .gt("points", 0);
-  if (error) throw error;
-  return aggregateByMember(data ?? [], (r) => r.points as number, limit);
-}
+export type Analytics = {
+  stats: PeriodStats;
+  previous: PeriodStats;
+  series: SeriesPoint[];
+  outstanding: Outstanding;
+  topEarners: TopMember[];
+  topRedeemers: TopMember[];
+  funnel: ReferralSummary;
+  influencers: InfluencerRow[];
+  standardReferralPoints: number;
+};
 
-export async function getTopRedeemers(limit = 10) {
-  const { data, error } = await db
-    .from("points_ledger")
-    .select("points, members(first_name,last_name,email)")
-    .eq("action_type", "redemption");
-  if (error) throw error;
-  return aggregateByMember(data ?? [], (r) => Math.abs(r.points as number), limit);
-}
-
-function aggregateByMember(
-  rows: any[],
-  value: (r: any) => number,
-  limit: number,
-): Array<{ name: string; email: string; points: number }> {
-  const map = new Map<string, { name: string; email: string; points: number }>();
-  for (const r of rows) {
-    const m = r.members;
-    if (!m) continue;
-    const email = m.email ?? "—";
-    const cur =
-      map.get(email) ?? {
-        name: [m.first_name, m.last_name].filter(Boolean).join(" ") || email,
-        email,
-        points: 0,
-      };
-    cur.points += value(r);
-    map.set(email, cur);
-  }
-  return [...map.values()].sort((a, b) => b.points - a.points).slice(0, limit);
-}
-
-export async function getPopularRedemptionTier(): Promise<{ pkr: number; count: number } | null> {
-  const { data, error } = await db.from("loyalty_codes").select("discount_amount_pkr");
-  if (error) throw error;
-  const counts = new Map<number, number>();
-  for (const r of data ?? []) {
-    const pkr = (r.discount_amount_pkr as number) ?? 0;
-    counts.set(pkr, (counts.get(pkr) ?? 0) + 1);
-  }
-  let best: { pkr: number; count: number } | null = null;
-  for (const [pkr, count] of counts) {
-    if (!best || count > best.count) best = { pkr, count };
-  }
-  return best;
-}
-
-export async function getReferralFunnel(): Promise<{
-  clicks: number;
-  withOrder: number;
-  completed: number;
-}> {
-  const [clicks, withOrder, completed] = await Promise.all([
-    db.from("referrals").select("*", { count: "exact", head: true }),
-    db.from("referrals").select("*", { count: "exact", head: true }).not("shopify_order_id", "is", null),
-    db.from("referrals").select("*", { count: "exact", head: true }).eq("status", "completed"),
+export async function getAnalytics(period: Period): Promise<Analytics> {
+  const settings = await getSettingsRow();
+  const standardReferralPoints = num(settings.referral_points, 6000);
+  const [stats, previous, series, o, topEarners, topRedeemers, funnel, inf] = await Promise.all([
+    getPeriodStats(period.from, period.to),
+    getPeriodStats(period.prevFrom, period.prevTo),
+    getPointsSeries(period.from, period.to),
+    rpcObject("admin_outstanding_points"),
+    getTopMembers(period.from, period.to, "earned"),
+    getTopMembers(period.from, period.to, "redeemed"),
+    referralSummary(period.from, period.to),
+    listInfluencers({ from: period.from, to: period.to, standardPoints: standardReferralPoints }),
   ]);
   return {
-    clicks: clicks.count ?? 0,
-    withOrder: withOrder.count ?? 0,
-    completed: completed.count ?? 0,
+    stats, previous, series,
+    outstanding: outstandingFrom(num(o.points), num(o.members), readRedemptionTiers(settings.redemption_tiers)),
+    topEarners, topRedeemers, funnel,
+    influencers: [...inf.rows].sort((a, b) => b.salesPkr - a.salesPkr || b.completed - a.completed).slice(0, 10),
+    standardReferralPoints,
   };
 }
+
+/** Rows for the analytics CSV: the daily series, one row per Karachi day. */
+export const SERIES_CSV_COLUMNS = [
+  { key: "day", header: "Date (Asia/Karachi)" },
+  { key: "earned", header: "Points earned" },
+  { key: "redeemed", header: "Points redeemed" },
+  { key: "expired", header: "Points expired" },
+] as const;

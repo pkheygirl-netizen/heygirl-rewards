@@ -1,97 +1,85 @@
-// app/routes/proxy.social.tsx
+// app/routes/proxy.social.tsx — POST /apps/loyalty/social {platform}
+// Honour system, once per platform (business rule 15). The widget opens the
+// profile URL in a new tab before it calls this.
 import type { ActionFunctionArgs } from "@remix-run/node";
-import { json } from "@remix-run/node";
-import { extractProxyCustomerId } from "../lib/proxy-auth.server";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { guardProxy, proxyJson, readJsonBody } from "../lib/proxy-auth.server";
+import { getMemberByCustomerId, SOCIAL_AWARD_DELAY_HOURS, SOCIAL_PLATFORMS, type SocialPlatform } from "../lib/widget-data.server";
+import { getSettings } from "../lib/settings.server";
 import { socialQueue } from "../lib/queue.server";
 import { db } from "../db.server";
-import { getProgramEnabled } from "../lib/widget-data.server";
 
-const CORS = { "Access-Control-Allow-Origin": "https://heygirl.pk" };
+const sdb = db as unknown as SupabaseClient;
+const DELAY_MS = SOCIAL_AWARD_DELAY_HOURS * 60 * 60 * 1000;
+
+function ruleOn(rules: unknown, key: string): boolean {
+  const r = rules && typeof rules === "object" ? (rules as Record<string, unknown>)[key] : null;
+  return !(r && typeof r === "object" && (r as Record<string, unknown>).enabled === false);
+}
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  if (request.method === "OPTIONS") {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        "Access-Control-Allow-Origin": "https://heygirl.pk",
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
-      },
-    });
-  }
-  if (request.method !== "POST") return json({ error: "method_not_allowed" }, { status: 405, headers: { ...CORS, "Cache-Control": "no-store" } });
+  // HMAC first: an unsigned request learns nothing, not even the allowed method.
+  const g = guardProxy(request, "social");
+  if (g.response) return g.response;
+  if (request.method !== "POST") return proxyJson({ ok: false, error: "method_not_allowed" }, 405);
+  const { customerId } = g.ctx;
 
-  const url = new URL(request.url);
-  let customerId: string | null;
+  const body = await readJsonBody(request);
+  const platform = body?.platform as SocialPlatform;
+  if (!body || !SOCIAL_PLATFORMS.includes(platform)) return proxyJson({ ok: false, error: "invalid_platform" }, 400);
+
   try {
-    customerId = extractProxyCustomerId(url, process.env.SHOPIFY_API_SECRET!);
-  } catch {
-    return json({ error: "unauthorized" }, { status: 401, headers: { ...CORS, "Cache-Control": "no-store" } });
-  }
-  if (!customerId) return json({ error: "not_logged_in" }, { status: 403, headers: { ...CORS, "Cache-Control": "no-store" } });
-
-  const programEnabled = await getProgramEnabled();
-  if (!programEnabled) return json({ error: "program_disabled" }, { status: 423, headers: { ...CORS, "Cache-Control": "no-store" } });
-
-  let body: { platform?: string };
-  try {
-    body = await request.json();
-  } catch {
-    return json({ error: "invalid_json" }, { status: 400, headers: { ...CORS, "Cache-Control": "no-store" } });
-  }
-
-  const platform = body.platform;
-  if (!["youtube", "facebook", "instagram"].includes(platform ?? "")) {
-    return json({ error: "invalid_platform" }, { status: 400, headers: { ...CORS, "Cache-Control": "no-store" } });
-  }
-
-  // Honor-basis social rewards (per build plan): we trust the customer performed
-  // the action; the 24h delay is the only friction. One claim per platform, ever.
-  const { data: member } = await db
-    .from("members")
-    .select("id")
-    .eq("shopify_customer_id", customerId)
-    .maybeSingle();
-  if (!member) return json({ error: "not_a_member" }, { status: 403, headers: { ...CORS, "Cache-Control": "no-store" } });
-
-  const { data: existing } = await db
-    .from("social_actions")
-    .select("id")
-    .eq("member_id", member.id)
-    .eq("action_type", platform!)
-    .maybeSingle();
-  if (existing) return json({ queued: false, reason: "already_claimed" }, { headers: { ...CORS, "Cache-Control": "no-store" } });
-
-  const { data: row, error: insertError } = await db
-    .from("social_actions")
-    .insert({
-      member_id: member.id,
-      action_type: platform!,
-      status: "pending",
-      pending_until: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-    })
-    .select("id")
-    .single();
-  if (insertError || !row) {
-    // Concurrent double-claim: UNIQUE(member_id, action_type) → treat as claimed.
-    if (insertError?.code === "23505") {
-      return json({ queued: false, reason: "already_claimed" }, { headers: { ...CORS, "Cache-Control": "no-store" } });
+    const settings = (await getSettings()) as unknown as Record<string, unknown>;
+    if (settings.program_enabled === false) return proxyJson({ ok: false, error: "program_disabled" });
+    if (!ruleOn(settings.earn_rules, platform)) return proxyJson({ ok: false, error: "disabled" });
+    // No profile link in settings means there is nothing to follow: never award.
+    const profileUrl = settings[`social_url_${platform}`];
+    if (typeof profileUrl !== "string" || !/^https?:\/\/[^\s"'<>]+$/i.test(profileUrl.trim())) {
+      return proxyJson({ ok: false, error: "disabled" });
     }
-    console.error("[proxy.social] insert failed:", insertError?.message);
-    return json({ error: "server_error" }, { status: 500, headers: { ...CORS, "Cache-Control": "no-store" } });
-  }
+    const points = Math.max(0, Math.round(Number(settings[`social_points_${platform}`] ?? settings.social_points ?? 0)));
 
-  try {
-    await socialQueue.add(
-      "award_social_points",
-      { socialActionId: row.id },
-      { delay: 24 * 60 * 60 * 1000, jobId: `social-${row.id}` },
-    );
+    const member = await getMemberByCustomerId(customerId);
+    if (!member) return proxyJson({ ok: false, error: "not_a_member" });
+    if (member.opted_out) return proxyJson({ ok: false, error: "opted_out" });
+    if (member.is_blocked) return proxyJson({ ok: false, error: "blocked" });
+
+    const { data: existing } = await sdb
+      .from("social_actions")
+      .select("id")
+      .eq("member_id", member.id)
+      .eq("action_type", platform)
+      .maybeSingle();
+    if (existing) return proxyJson({ ok: true, status: "already_claimed", points: 0 });
+
+    const { data: row, error: insertError } = await sdb
+      .from("social_actions")
+      .insert({
+        member_id: member.id,
+        action_type: platform,
+        status: "pending",
+        pending_until: new Date(Date.now() + DELAY_MS).toISOString(),
+      })
+      .select("id")
+      .single();
+    if (insertError || !row) {
+      // UNIQUE(member_id, action_type): a concurrent second tap is a repeat claim.
+      if (insertError?.code === "23505") return proxyJson({ ok: true, status: "already_claimed", points: 0 });
+      console.error("[proxy.social] insert failed:", insertError?.message);
+      return proxyJson({ ok: false, error: "server_error" }, 500);
+    }
+
+    try {
+      await socialQueue.add("award_social_points", { socialActionId: row.id }, { delay: DELAY_MS });
+    } catch (err) {
+      // Roll back so the customer can try again cleanly.
+      await sdb.from("social_actions").delete().eq("id", row.id);
+      console.error("[proxy.social] enqueue failed:", err instanceof Error ? err.message : err);
+      return proxyJson({ ok: false, error: "server_error" }, 503);
+    }
+    return proxyJson({ ok: true, status: "awarded", points });
   } catch (err) {
-    // Roll back the pending row so the customer can retry cleanly.
-    await db.from("social_actions").delete().eq("id", row.id);
-    console.error("[proxy.social] enqueue failed:", err);
-    return json({ error: "server_error" }, { status: 503, headers: { ...CORS, "Cache-Control": "no-store" } });
+    console.error("[proxy.social] error:", err instanceof Error ? err.message : err);
+    return proxyJson({ ok: false, error: "server_error" }, 500);
   }
-  return json({ queued: true }, { headers: { ...CORS, "Cache-Control": "no-store" } });
 };
