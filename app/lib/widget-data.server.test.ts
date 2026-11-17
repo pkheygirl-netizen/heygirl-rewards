@@ -30,9 +30,11 @@ import {
   getPointsHistory,
   getReferralSummary,
   historyLabel,
+  isValidBirthday,
   parseHistoryFilter,
   publicReferralOutcome,
   publicReferralStatus,
+  SOCIAL_AWARD_DELAY_HOURS,
   type MemberRow,
 } from "./widget-data.server";
 
@@ -65,6 +67,22 @@ beforeEach(() => {
 });
 
 describe("pure helpers", () => {
+  it("isValidBirthday accepts real day/month pairs only (29 Feb allowed)", () => {
+    expect(isValidBirthday(2, 29)).toBe(true);
+    expect(isValidBirthday(12, 31)).toBe(true);
+    expect(isValidBirthday(2, 30)).toBe(false);
+    expect(isValidBirthday(4, 31)).toBe(false);
+    expect(isValidBirthday(0, 1)).toBe(false);
+    expect(isValidBirthday(13, 1)).toBe(false);
+    expect(isValidBirthday(1, 0)).toBe(false);
+    expect(isValidBirthday(1.5, 1)).toBe(false);
+    expect(isValidBirthday(NaN, 1)).toBe(false);
+  });
+
+  it("the social award delay is one shared constant", () => {
+    expect(SOCIAL_AWARD_DELAY_HOURS).toBe(24);
+  });
+
   it("labels every ledger type in the contract, with a safe fallback", () => {
     const types = ["signup", "purchase", "social_youtube", "social_facebook", "social_instagram", "review", "referral_earned", "referral_bonus", "redemption", "expiry", "adjustment", "birthday", "campaign_bonus", "refund_deduction", "order_cancelled", "referral_reversal", "redemption_return", "tier_reward", "influencer_sale", "import"];
     for (const t of types) {

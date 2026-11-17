@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  baseRedemptionRate, earnRuleViews, isEarnRuleKey, parseBirthdayRewardsForm, parseEarnRuleForm, parseExpiryForm,
+  baseRedemptionRate, earnRuleViews, isEarnRuleKey, isHiddenFlag, visibleRedemptionTiers, parseBirthdayRewardsForm, parseEarnRuleForm, parseExpiryForm,
   parseRedemptionTiersForm, parseTiersForm, pointsValuePkr, readRedemptionTiers, ruleEnabled, toggleRulePatch,
 } from "./admin-program.server";
 import { formOf } from "./admin-test-helpers";
@@ -130,6 +130,82 @@ describe("ways to redeem", () => {
     expect(baseRedemptionRate([])).toBeNull();
     expect(pointsValuePkr(1000, null)).toBe(0);
     expect(readRedemptionTiers("nope")).toEqual([]);
+  });
+});
+
+describe("hidden rewards", () => {
+  const form = (rows: unknown) => formOf({ tiers: JSON.stringify(rows) });
+
+  it("reads the hidden flag from stored rows, treating anything but true as shown", () => {
+    const tiers = readRedemptionTiers([
+      { points: 3000, discount_pkr: 100, hidden: true },
+      { points: 6000, discount_pkr: 250, hidden: false },
+      { points: 11500, discount_pkr: 500 },
+      { points: 22000, discount_pkr: 1000, hidden: "true" },
+      { points: 50000, discount_pkr: 2500, hidden: "yes" },
+      { points: 90000, discount_pkr: 5000, hidden: 1 },
+      { points: 99000, discount_pkr: 6000, hidden: null },
+    ]);
+    expect(tiers.map((t) => t.hidden === true)).toEqual([true, false, false, true, false, false, false]);
+    // shown rows carry no flag at all: absent means visible
+    expect(tiers[1]).toEqual({ points: 6000, discount_pkr: 250 });
+    expect(isHiddenFlag(undefined)).toBe(false);
+  });
+
+  it("reads broken jsonb without throwing", () => {
+    for (const raw of [null, undefined, "x", 5, {}, [null, 7, "row", [], { points: "abc" }, { hidden: true }]]) {
+      expect(readRedemptionTiers(raw)).toEqual([]);
+    }
+    expect(readRedemptionTiers([{ points: "3000", discountPkr: "100", hidden: true }])).toEqual([{ points: 3000, discount_pkr: 100, hidden: true }]);
+  });
+
+  it("saves the flag: hidden rows carry hidden:true, shown rows carry nothing, still sorted by points", () => {
+    const res = parseRedemptionTiersForm(form([
+      { points: "6000", discount_pkr: "250", hidden: true },
+      { points: "3000", discount_pkr: "100", hidden: false },
+      { points: "11500", discount_pkr: "500" },
+    ]));
+    expect(res).toEqual({ ok: true, patch: { redemption_tiers: [
+      { points: 3000, discount_pkr: 100 },
+      { points: 6000, discount_pkr: 250, hidden: true },
+      { points: 11500, discount_pkr: 500 },
+    ] } });
+  });
+
+  it("applies every rule to hidden rows too, so a hidden reward can always be shown again", () => {
+    const dup = parseRedemptionTiersForm(form([{ points: 3000, discount_pkr: 100 }, { points: 3000, discount_pkr: 250, hidden: true }]));
+    expect(!dup.ok && dup.errors.points_1).toContain("Two rewards cost 3000 points");
+    const inverted = parseRedemptionTiersForm(form([{ points: 3000, discount_pkr: 500, hidden: true }, { points: 6000, discount_pkr: 250 }]));
+    expect(!inverted.ok && inverted.errors.discount_pkr_1).toContain("bigger discount must cost more points");
+    const blank = parseRedemptionTiersForm(form([{ points: "", discount_pkr: "100", hidden: true }]));
+    expect(!blank.ok && blank.errors.points_0).toBe("Reward 1: points needed is required.");
+    const many = Array.from({ length: 13 }, (_, i) => ({ points: 1000 * (i + 1), discount_pkr: 100 * (i + 1), hidden: i > 0 }));
+    expect(parseRedemptionTiersForm(form(many)).ok).toBe(false);
+  });
+
+  it("rejects a flag that is not true or false instead of guessing", () => {
+    for (const hidden of ["true", "false", 1, 0, "yes", {}, []]) {
+      const res = parseRedemptionTiersForm(form([{ points: 3000, discount_pkr: 100, hidden }]));
+      expect(res.ok, JSON.stringify(hidden)).toBe(false);
+      if (!res.ok) expect(res.errors.hidden_0).toContain("shown or hidden");
+    }
+    expect(parseRedemptionTiersForm(form([{ points: 3000, discount_pkr: 100, hidden: null }])).ok).toBe(true);
+  });
+
+  it("allows every reward to be hidden (reversible), but still refuses an empty table", () => {
+    const res = parseRedemptionTiersForm(form([{ points: 3000, discount_pkr: 100, hidden: true }, { points: 6000, discount_pkr: 250, hidden: true }]));
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(visibleRedemptionTiers(readRedemptionTiers(res.patch.redemption_tiers))).toEqual([]);
+    expect(parseRedemptionTiersForm(form([])).ok).toBe(false);
+  });
+
+  it("a hidden reward is never the base rate; with all hidden there is none", () => {
+    const tiers = readRedemptionTiers([{ points: 3000, discount_pkr: 100, hidden: true }, { points: 6000, discount_pkr: 250 }]);
+    expect(visibleRedemptionTiers(tiers)).toEqual([{ points: 6000, discount_pkr: 250 }]);
+    expect(baseRedemptionRate(tiers)).toEqual({ points: 6000, discount_pkr: 250 });
+    const allHidden = readRedemptionTiers([{ points: 3000, discount_pkr: 100, hidden: true }]);
+    expect(baseRedemptionRate(allHidden)).toBeNull();
+    expect(pointsValuePkr(9000, baseRedemptionRate(allHidden))).toBe(0);
   });
 });
 

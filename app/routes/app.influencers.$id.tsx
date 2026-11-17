@@ -19,7 +19,7 @@ import {
 } from "../lib/admin-influencers.server";
 import { referralLink } from "../lib/admin-members.server";
 import { getSettingsRow } from "../lib/admin-settings.server";
-import { errorMessage, invalid, reasonText } from "../lib/admin-validate.server";
+import { errorMessage, invalid, notFound, reasonText } from "../lib/admin-validate.server";
 import { createInfluencerCode, removeInfluencerCode, setInfluencer } from "../lib/influencer.service";
 
 const PAGE_SIZE = 25;
@@ -31,7 +31,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const pageRaw = Number(new URL(request.url).searchParams.get("page") ?? "0");
   const page = Number.isInteger(pageRaw) && pageRaw > 0 ? pageRaw : 0;
   const detail = await getInfluencerDetail(params.id ?? "", { standardPoints, page, pageSize: PAGE_SIZE });
-  if (!detail) throw new Response("Influencer not found", { status: 404 });
+  if (!detail) throw notFound("This influencer could not be found");
   return json({
     detail, standardPoints, page,
     referralUrl: referralLink(detail.row.slug, session.shop),
@@ -177,7 +177,7 @@ export default function InfluencerDetailPage() {
             <InlineGrid columns={{ xs: 2, md: 4 }} gap="400">
               <Tile label="Friends referred" value={fmtInt(r.friends)} sub={`${fmtInt(r.completed)} completed`} />
               <Tile label="Orders attributed" value={fmtInt(r.orders)} sub={`${fmtInt(r.codeOrders)} with her code`} />
-              <Tile label="Sales attributed" value={fmtPkr(r.salesPkr)} sub="Link and code, all time. An order that completed someone's link referral counts for that link only" />
+              <Tile label="Order value attributed" value={fmtPkr(r.salesPkr)} sub="Before refunds. Link and code, all time. An order that completed someone's link referral counts for that link only" />
               <Tile label="Points paid" value={fmtInt(r.pointsPaid)} sub={`Now ${fmtInt(r.pointsPerReferral)} per referral`} />
             </InlineGrid>
 

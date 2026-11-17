@@ -69,7 +69,8 @@
       "urls": {
         "login": {{ routes.account_login_url | json }},
         "hub": {{ 'hg-hub.js' | asset_url | json }},
-        "rewards": {{ hg_rewards_url | json }}
+        "rewards": {{ hg_rewards_url | json }},
+        "shop": {{ routes.all_products_collection_url | json }}
       },
       "cart": {
         "total": {{ cart.total_price | default: 0 | json }},

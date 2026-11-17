@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { vi } from "vitest";
-import { FormReader, GENERIC_ERROR, UserError, errorMessage, firstError, invalid, reasonText } from "./admin-validate.server";
+import { FormReader, GENERIC_ERROR, UserError, errorMessage, firstError, invalid, notFound, reasonText } from "./admin-validate.server";
+import { readAdminMessage } from "../components/admin-error";
 import { formOf } from "./admin-test-helpers";
 
 describe("FormReader.int", () => {
@@ -91,6 +92,28 @@ describe("FormReader other fields", () => {
     r.fail("x", "second");
     expect(firstError(r.errors)).toBe("first");
     expect(invalid(r.errors)).toEqual({ ok: false, error: "first", errors: { x: "first" } });
+  });
+});
+
+describe("notFound", () => {
+  it("is a 404 whose body the admin error boundary recognises", async () => {
+    const res = notFound("This customer could not be found");
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(readAdminMessage({ status: res.status, data })).toEqual({ status: 404, message: "This customer could not be found" });
+  });
+
+  it("nothing Shopify's auth flow throws is mistaken for it", () => {
+    // HTML bounce page, empty 401/410 bodies, JSON error bodies, plain text, real errors
+    for (const error of [
+      { status: 200, data: "<script>shopify.redirect()</script>" },
+      { status: 401, data: null }, { status: 410, data: undefined }, { status: 401, data: "" },
+      { status: 500, data: { errors: "Unauthorized" } }, { status: 404, data: "Customer not found" },
+      { status: 404, data: { adminMessage: "" } }, { status: 404, data: { adminMessage: 5 } },
+      new Error("adminMessage"), null, undefined, "text",
+    ]) {
+      expect(readAdminMessage(error), JSON.stringify(error)).toBeNull();
+    }
   });
 });
 

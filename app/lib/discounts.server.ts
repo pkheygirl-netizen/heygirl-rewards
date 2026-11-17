@@ -66,6 +66,13 @@ export const FIND_CODE = `#graphql
     codeDiscountNodeByCode(code: $code) { id }
   }`;
 
+// These mutations may be sent again after a 5xx or a dropped connection: a code
+// is unique in Shopify, so a create that did run the first time comes back as
+// TAKEN (reason "code_taken", which callers resolve by adopting the existing
+// discount), and deactivating twice changes nothing. discountCodeDelete is
+// left out: a repeat of a delete that worked would report "not found".
+const SAFE_TO_REPEAT = { retryTransient: true } as const;
+
 type CreatePayload = { codeDiscountNode: { id: string } | null; userErrors: DiscountUserError[] };
 
 export function customerGid(shopifyCustomerId: string): string {
@@ -110,7 +117,7 @@ export async function createCustomerAmountOffCode(
           value: { discountAmount: { amount: input.amountPkr.toFixed(2), appliesOnEachItem: false } },
         },
       },
-    });
+    }, 3, SAFE_TO_REPEAT);
     const payload = data.discountCodeBasicCreate;
     if (!payload || payload.userErrors.length > 0 || !payload.codeDiscountNode) return failed(payload, "discountCodeBasicCreate");
     return { ok: true, discountId: payload.codeDiscountNode.id };
@@ -141,6 +148,8 @@ export async function createCustomerFreeShippingCode(
           destination: { all: true },
         },
       },
+      3,
+      SAFE_TO_REPEAT,
     );
     const payload = data.discountCodeFreeShippingCreate;
     if (!payload || payload.userErrors.length > 0 || !payload.codeDiscountNode) {
@@ -175,7 +184,7 @@ export async function createPublicPercentageCode(
           value: { percentage: Math.round(input.percentOff) / 100 },
         },
       },
-    });
+    }, 3, SAFE_TO_REPEAT);
     const payload = data.discountCodeBasicCreate;
     if (!payload || payload.userErrors.length > 0 || !payload.codeDiscountNode) return failed(payload, "discountCodeBasicCreate");
     return { ok: true, discountId: payload.codeDiscountNode.id };
@@ -198,7 +207,7 @@ export async function deactivateDiscount(
         codeDiscountNode: { id: string; codeDiscount: { asyncUsageCount?: number } | null } | null;
         userErrors: DiscountUserError[];
       } | null;
-    }>(admin, DEACTIVATE_CODE, { id: discountId });
+    }>(admin, DEACTIVATE_CODE, { id: discountId }, 3, SAFE_TO_REPEAT);
     const payload = data.discountCodeDeactivate;
     if (!payload || payload.userErrors.length > 0 || !payload.codeDiscountNode) {
       const userErrors = payload?.userErrors ?? [];

@@ -40,7 +40,7 @@ import { earnTab, errorText, guestHome, guestSub, historyFilters, historyRows, r
   let summary: ReferralSummary | null = null;
   const hist: { filter: string; page: number; rows: HistoryRow[]; hasMore: boolean; loaded: boolean } = { filter: "all", page: 1, rows: [], hasMore: false, loaded: false };
 
-  const ctx = (): Ctx => ({ cfg, member, loginUrl: data.urls.login, path: window.location.pathname + window.location.search, origin: window.location.origin });
+  const ctx = (): Ctx => ({ cfg, member, loginUrl: data.urls.login, path: window.location.pathname + window.location.search, origin: window.location.origin, shopUrl: data.urls.shop });
 
   function build() {
     if (built) return;
@@ -364,9 +364,11 @@ import { earnTab, errorText, guestHome, guestSub, historyFilters, historyRows, r
       // Open the profile first (new tab), then let her confirm.
       const url = b.getAttribute("data-url") || "";
       if (/^https?:\/\//i.test(url)) window.open(url, "_blank", "noopener");
+      // The whole row is the button: only its state label changes.
       b.setAttribute("data-act", "social-claim");
-      b.textContent = "Claim points";
-      setMsg("Done it? Tap “Claim points” to confirm.");
+      const st = b.querySelector(".hg-st");
+      if (st) st.textContent = "Tap to claim";
+      setMsg("Done it? Tap the row again to claim your points.");
     } else if (a === "social-claim" && m) {
       const p = b.getAttribute("data-p") as "instagram" | "facebook" | "youtube";
       act(b, "/social", { platform: p }, (r) => {

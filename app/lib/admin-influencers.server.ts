@@ -348,7 +348,7 @@ export const INFLUENCER_CSV_COLUMNS = [
   { key: "completed", header: "Completed referrals" },
   { key: "orders", header: "Orders attributed" },
   { key: "codeOrders", header: "Orders with her code" },
-  { key: "salesPkr", header: "Sales attributed (Rs)" },
+  { key: "salesPkr", header: "Order value attributed, before refunds (Rs)" },
   { key: "pointsPaid", header: "Points paid" },
   { key: "link", header: "Referral link" },
 ] as const;

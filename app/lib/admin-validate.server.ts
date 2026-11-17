@@ -189,3 +189,16 @@ export function reasonText(reason: string | undefined | null, fallback = "The ch
   if (!reason) return fallback;
   return REASONS[reason] ?? `${fallback} (${reason.replace(/_/g, " ")})`;
 }
+
+/**
+ * Thrown by a loader when the record in the URL does not exist. The layout's
+ * error boundary recognises the body's shape and shows a plain "not found"
+ * state instead of a bare line of text. (The key matches ADMIN_MESSAGE_KEY in
+ * app/components/admin-error.tsx; `message` must be written for staff.)
+ */
+export function notFound(message: string): Response {
+  return new Response(JSON.stringify({ adminMessage: message }), {
+    status: 404,
+    headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
+  });
+}

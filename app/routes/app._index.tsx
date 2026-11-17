@@ -22,6 +22,7 @@ import {
   listExpiringMembers, listPendingReviewClaims, parseActivityFilter,
 } from "../lib/admin-data.server";
 import { getSystemHealth } from "../lib/admin-health.server";
+import { readRedemptionTiers, visibleRedemptionTiers } from "../lib/admin-program.server";
 import { actorFromSession } from "../lib/admin-members.server";
 import { getSettingsRow } from "../lib/admin-settings.server";
 import { errorMessage } from "../lib/admin-validate.server";
@@ -63,6 +64,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     period, stats, previous, series: groupSeries(series), tiers, attention, health,
     activity, filter, activityPage, view, listPage, claims, expiring,
     programEnabled: settings.program_enabled !== false,
+    // rewards customers can choose right now (hidden rewards are not available)
+    rewardsShown: visibleRedemptionTiers(readRedemptionTiers(settings.redemption_tiers)).length,
+    rewardsTotal: readRedemptionTiers(settings.redemption_tiers).length,
     reviewReleaseHours: Number(settings.review_release_hours ?? 72),
     now: new Date().toISOString(),
   });
@@ -112,8 +116,9 @@ export default function Home() {
   const totalMembers = d.tiers.silver + d.tiers.gold + d.tiers.diamond;
   const healthTone = d.health.status === "healthy" ? "success" : d.health.status === "attention" ? "critical" : "attention";
   const healthLabel = d.health.status === "healthy" ? "Healthy" : d.health.status === "attention" ? "Needs attention" : "Not reporting yet";
+  const nothingToRedeem = d.programEnabled && d.rewardsShown === 0;
   const nothingWaiting =
-    d.attention.referralsFlagged === 0 && d.attention.reviewClaimsPending === 0 &&
+    !nothingToRedeem && d.attention.referralsFlagged === 0 && d.attention.reviewClaimsPending === 0 &&
     d.attention.expiringMembers === 0 && d.attention.gdprOpen === 0;
 
   return (
@@ -156,6 +161,15 @@ export default function Home() {
               <Text as="h2" variant="headingMd">Needs your attention</Text>
               {nothingWaiting ? (
                 <Text as="p" tone="subdued">Nothing is waiting for you. Held referrals, review claims and expiring points appear here.</Text>
+              ) : null}
+              {nothingToRedeem ? (
+                <AttentionRow
+                  title="Customers currently have nothing to redeem"
+                  detail={d.rewardsTotal > 0
+                    ? `All ${fmtInt(d.rewardsTotal)} reward${d.rewardsTotal === 1 ? " is" : "s are"} hidden. Show at least one so customers can use their points.`
+                    : "There are no rewards. Add one so customers can use their points."}
+                  action={<Button url="/app/program">Open ways to redeem</Button>}
+                />
               ) : null}
               {d.attention.referralsFlagged > 0 ? (
                 <AttentionRow
@@ -293,8 +307,8 @@ export default function Home() {
               url={`/app/analytics${periodQuery}`} linkLabel="Open analytics"
             />
             <StatCard
-              title="Sales using a reward" value={fmtPkr(d.stats.rewardSalesPkr)}
-              sub={`Reward cost ${fmtPkr(d.stats.rewardCostPkr)} on ${fmtInt(d.stats.rewardOrders)} order${d.stats.rewardOrders === 1 ? "" : "s"}`}
+              title="Order value using a reward" value={fmtPkr(d.stats.rewardSalesPkr)}
+              sub={`Product value of ${fmtInt(d.stats.rewardOrders)} order${d.stats.rewardOrders === 1 ? "" : "s"} placed with a reward code: after discounts, without shipping and tax, before refunds. Cancelled orders left out. Reward cost ${fmtPkr(d.stats.rewardCostPkr)}`}
               change={fmtChange(d.stats.rewardSalesPkr, d.previous.rewardSalesPkr)}
               url={`/app/analytics${periodQuery}`} linkLabel="Open analytics"
             />

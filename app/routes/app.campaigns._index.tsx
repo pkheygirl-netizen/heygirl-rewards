@@ -125,7 +125,8 @@ export default function Campaigns() {
             <Banner tone="info">
               <p>
                 An order earns the multiplier of the campaign that was running when it was placed, even if it is paid after the campaign ends or is switched off.
-                Only one campaign can be on at any moment.
+                Only one campaign can be on at any moment. Order value is the product value of the orders placed under a campaign: after discounts,
+                without shipping and tax, before refunds; cancelled orders are left out.
               </p>
             </Banner>
             <Card padding="0">
@@ -139,7 +140,7 @@ export default function Campaigns() {
                   resourceName={{ singular: "campaign", plural: "campaigns" }}
                   headings={[
                     { title: "Campaign" }, { title: "Status" }, { title: "Multiplier" }, { title: "Starts" }, { title: "Ends" },
-                    { title: "Orders", alignment: "end" }, { title: "Sales", alignment: "end" },
+                    { title: "Orders", alignment: "end" }, { title: "Order value", alignment: "end" },
                     { title: "Points issued", alignment: "end" }, { title: "Actions" },
                   ]}
                 >

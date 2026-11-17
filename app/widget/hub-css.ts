@@ -55,8 +55,14 @@ export const HUB_CSS = `
 .hg-signin{text-align:center;font-size:14px;color:var(--mute);margin-top:10px!important}
 .hg-signin a{display:inline-flex;align-items:center;min-height:44px;min-width:44px;padding:0 6px;font-weight:700}
 .hg-foot{padding:0 4px 8px}
-.hg-done{display:inline-flex;align-items:center;gap:4px;color:#14611f;font-weight:700;font-size:14px;flex:none}
-.hg-done .hg-ic{width:18px;height:18px;stroke-width:2.6}
+.hg-hub a.hg-nav{color:inherit;text-decoration:none}
+.hg-nav--off{cursor:default}
+.hg-nav[disabled]{opacity:.55}
+.hg-earn-row .hg-row__t,.hg-earn-row .hg-row__s{display:block}
+.hg-st{display:inline-flex;align-items:center;gap:3px;padding:1px 8px;border-radius:999px;background:#fbf1cf;color:var(--gd);font-size:12px;font-weight:700;white-space:nowrap;vertical-align:middle}
+.hg-st--claimed,.hg-st--saved{background:#e7f4e8;color:#14491b}
+.hg-st--pending{background:#eee;color:#595959}
+.hg-st .hg-ic{width:13px;height:13px;stroke-width:3.2}
 .hg-need{color:var(--mute);font-size:13px;flex:none;text-align:right}
 .hg-chip{display:inline-block;padding:2px 8px;border-radius:999px;background:#fbf1cf;color:var(--gd);font-size:12px;font-weight:700}
 .hg-empty{color:var(--mute);font-size:14px;padding:8px 0}
@@ -111,11 +117,12 @@ export const HUB_ICONS =
   P("x", "M6 6l12 12M18 6L6 18") +
   P("check", "M5 12.5l4.5 4.5L19 7.5") +
   P("coin", "M12 3a9 9 0 100 18 9 9 0 000-18zM12 7v10M14.5 9.5H11a1.75 1.75 0 000 3.5h2a1.75 1.75 0 010 3.5H9.5") +
-  P("user", "M12 12a4 4 0 100-8 4 4 0 000 8zM4.5 20a7.5 7.5 0 0115 0") +
+  // Ways to earn: generic shapes only (camera, thumbs-up, play), never a platform's logo.
+  P("join", "M10 12a4 4 0 100-8 4 4 0 000 8zM3 20a7 7 0 0114 0M19 7.5v6M16 10.5h6") +
+  P("cam", "M4.5 8h3L9 5.5h6L16.5 8h3A1.5 1.5 0 0121 9.5v8a1.5 1.5 0 01-1.5 1.5h-15A1.5 1.5 0 013 17.5v-8A1.5 1.5 0 014.5 8zM12 10.25a3.25 3.25 0 100 6.5 3.25 3.25 0 000-6.5z") +
+  P("like", "M3.5 10.5h4V20h-4zM7.5 10.5L11 4c1.5 0 2.5 1.2 2.2 2.7l-.6 3.3h5.3a2 2 0 012 2.4l-1.2 6a2 2 0 01-2 1.6H7.5") +
+  P("play", "M12 3a9 9 0 100 18 9 9 0 000-18zM10 8.3l5.6 3.7-5.6 3.7V8.3z") +
   P("bag", "M5 8h14l-1 12H6L5 8zM9 8V7a3 3 0 016 0v1") +
-  P("instagram", "M7.5 3.5h9a4 4 0 014 4v9a4 4 0 01-4 4h-9a4 4 0 01-4-4v-9a4 4 0 014-4zM12 8.5a3.5 3.5 0 100 7 3.5 3.5 0 000-7zM17 7h.01") +
-  P("facebook", "M14 21v-7h2.5l.5-3h-3V9.2c0-.9.3-1.7 1.7-1.7H17V4.8c-.3 0-1.2-.1-2.2-.1-2.3 0-3.8 1.4-3.8 3.9V11H8.5v3H11v7") +
-  P("youtube", "M3.5 8.5a3 3 0 013-3h11a3 3 0 013 3v7a3 3 0 01-3 3h-11a3 3 0 01-3-3v-7zM10.5 9.5l4 2.5-4 2.5v-5z") +
   P("star", "M12 3.5l2.6 5.3 5.9.9-4.2 4.1 1 5.8L12 16.9l-5.3 2.7 1-5.8-4.2-4.1 5.9-.9L12 3.5z") +
   P("cake", "M4 20h16M5 20v-7h14v7M5 16c1.2 1 2.3 1 3.5 0s2.3-1 3.5 0 2.3 1 3.5 0 2.3-1 3.5 0M12 13V9.5M12 6.5v.01") +
   P("friends", "M9 11a3.5 3.5 0 100-7 3.5 3.5 0 000 7zM2.5 20a6.5 6.5 0 0113 0M16 4.3a3.5 3.5 0 010 6.4M18 14.5a6.5 6.5 0 013.5 5.5") +

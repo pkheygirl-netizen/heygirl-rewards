@@ -1,6 +1,6 @@
 import { Worker } from "bullmq";
 import { makeRedis, cronQueue, pointsQueue, notificationQueue, failedJobCounts } from "../lib/queue.server";
-import { expireSilverPoints } from "../lib/points.service";
+import { awardOverdueSocialActions, expireSilverPoints } from "../lib/points.service";
 import { listBirthdayMemberIds } from "../lib/birthday.service";
 import { releaseDueReviewClaims } from "../lib/review-claims.service";
 import { sweepPendingCodes } from "../lib/redemption.service";
@@ -17,6 +17,7 @@ const SCHEDULE: Array<{ name: string; pattern: string }> = [
   { name: "cron_heartbeat", pattern: "* * * * *" }, // every minute: "the worker is alive"
   { name: "cron_pending_codes", pattern: "*/10 * * * *" }, // finish or undo codes left half-made
   { name: "cron_review_release", pattern: "*/15 * * * *" },
+  { name: "cron_social_sweep", pattern: "7,37 * * * *" }, // award social claims whose delayed job was lost
   { name: "cron_storefront_config", pattern: "5 * * * *" }, // see runStorefrontConfig
   { name: "cron_expiry", pattern: "0 2 * * *" },
   { name: "cron_expiry_warning", pattern: "30 2 * * *" },
@@ -180,6 +181,8 @@ export async function runCronJob(name: string): Promise<unknown> {
       return releaseDueReviewClaims();
     case "cron_pending_codes":
       return sweepPendingCodes();
+    case "cron_social_sweep":
+      return awardOverdueSocialActions();
     case "cron_storefront_config":
       return runStorefrontConfig();
     default:

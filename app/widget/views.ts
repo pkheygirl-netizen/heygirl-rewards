@@ -10,6 +10,8 @@ export type Ctx = {
   loginUrl: string;
   path: string;
   origin: string;
+  /** The shop's "all products" route, for the "Place an order" row ("" = no link). */
+  shopUrl?: string;
   now?: number;
 };
 
@@ -26,7 +28,27 @@ function row(icon: string, title: string, sub: string, right = ""): string {
   return `<li class="hg-row"><span class="hg-row__ic">${icon}</span><div class="hg-row__main"><p class="hg-row__t">${title}</p>${sub ? `<p class="hg-row__s">${sub}</p>` : ""}</div>${right}</li>`;
 }
 
-const done = `<span class="hg-done">${ico("check")}Done</span>`;
+/** Earn-row state, always spelled out in words (colour is only a second cue). */
+export type EarnState = "" | "available" | "claimed" | "pending" | "saved";
+const STATE_TEXT: Record<Exclude<EarnState, "">, string> = { available: "Available", claimed: "Claimed", pending: "Pending", saved: "Saved" };
+
+/** One icon per way to earn: original line drawings, never a platform's logo. */
+export const EARN_ICON = { signup: "join", purchase: "bag", instagram: "cam", facebook: "like", youtube: "play", review: "star", birthday: "cake", referral: "friends" } as const;
+
+/**
+ * One "ways to earn" row: round icon badge, title, points and the state in
+ * words. With `tap` (button attributes, or `href="…"` for a link) the whole row
+ * is a single tap target ending in a chevron; without it the row is plain text.
+ */
+function earnRow(icon: string, title: string, sub: string, state: EarnState = "", tap = ""): string {
+  const tag = !tap ? "div" : tap.indexOf("href=") === 0 ? "a" : "button";
+  const st = state ? ` <span class="hg-st hg-st--${state}">${state === "claimed" || state === "saved" ? ico("check") : ""}${STATE_TEXT[state]}</span>` : "";
+  return (
+    `<li><${tag}${tag === "button" ? ' type="button"' : ""} class="hg-nav hg-earn-row${tap ? "" : " hg-nav--off"}"${tap ? " " + tap : ""}>` +
+    `<span class="hg-row__ic">${ico(icon)}</span><span class="hg-row__main"><span class="hg-row__t">${title}</span><span class="hg-row__s">${sub}${st}</span></span>` +
+    `${tap ? ico("chev") : ""}</${tag}></li>`
+  );
+}
 
 function on(cfg: Config, key: keyof Config["earnRules"]): boolean {
   const r = cfg.earnRules && cfg.earnRules[key];
@@ -43,13 +65,21 @@ function birthdayAmount(cfg: Config, tier: Tier): number {
   return cfg.birthday[tier] || 0;
 }
 
-const SOCIAL: Array<{ key: "instagram" | "facebook" | "youtube"; title: string; verb: string }> = [
-  { key: "instagram", title: "Follow on Instagram", verb: "Follow" },
-  { key: "facebook", title: "Like on Facebook", verb: "Like" },
-  { key: "youtube", title: "Subscribe on YouTube", verb: "Subscribe" },
+const SOCIAL: Array<{ key: "instagram" | "facebook" | "youtube"; title: string }> = [
+  { key: "instagram", title: "Follow on Instagram" },
+  { key: "facebook", title: "Like on Facebook" },
+  { key: "youtube", title: "Subscribe on YouTube" },
 ];
 
-/** Ways to earn. Rules switched off in the admin are not listed. */
+/** Same-site path only ("/collections/all"); anything else is not linked. */
+function localPath(u: string | undefined): string {
+  return u && u.charAt(0) === "/" && u.charAt(1) !== "/" ? u : "";
+}
+
+/**
+ * Ways to earn. Rules switched off in the admin are not listed. Guests see a
+ * plain preview; for members every row that can be acted on is one tap target.
+ */
 export function earnList(c: Ctx): string {
   const { cfg } = c;
   const m = c.member;
@@ -57,47 +87,64 @@ export function earnList(c: Ctx): string {
   const out: string[] = [];
 
   if (on(cfg, "signup") && cfg.signupPoints > 0) {
-    out.push(row(ico("user"), "Join " + esc(cfg.programName), pts(cfg.signupPoints), m ? done : ""));
+    out.push(earnRow(EARN_ICON.signup, "Join " + esc(cfg.programName), pts(cfg.signupPoints), m ? "claimed" : ""));
   }
   if (on(cfg, "purchase") && cfg.pointsRate > 0) {
     const note = campaignNote(cfg, c.now);
-    out.push(row(ico("bag"), "Place an order", esc(rateText(cfg.pointsRate)) + (note ? `<br><span class="hg-chip">${esc(note)}</span>` : "")));
+    const shop = m ? localPath(c.shopUrl) : "";
+    out.push(
+      earnRow(
+        EARN_ICON.purchase,
+        "Place an order",
+        esc(rateText(cfg.pointsRate)) + (note ? `<br><span class="hg-chip">${esc(note)}</span>` : ""),
+        m ? "available" : "",
+        shop ? `href="${esc(shop)}"` : "",
+      ),
+    );
   }
   for (const s of SOCIAL) {
     const sc = cfg.social[s.key];
     if (!on(cfg, s.key) || !sc || !sc.enabled || !sc.url || sc.points <= 0) continue;
-    let right = "";
-    if (m) {
-      right =
-        m.social[s.key] === "claimed"
-          ? done
-          : `<button type="button" class="hg-btn hg-btn--sm" data-act="social" data-p="${s.key}" data-url="${esc(sc.url)}">${s.verb}</button>`;
-    }
-    out.push(row(ico(s.key), s.title, pts(sc.points), right));
+    const claimed = !!m && m.social[s.key] === "claimed";
+    out.push(
+      earnRow(
+        EARN_ICON[s.key],
+        s.title,
+        pts(sc.points),
+        !m ? "" : claimed ? "claimed" : "available",
+        m && !claimed ? `data-act="social" data-p="${s.key}" data-url="${esc(sc.url)}"` : "",
+      ),
+    );
   }
   if (on(cfg, "review") && cfg.reviewPoints > 0) {
     const handle = instagramHandle(cfg);
     let sub = pts(cfg.reviewPoints) + (handle ? ` · tag ${esc(handle)} in your review` : "");
-    let right = "";
+    let state: EarnState = "";
+    let tap = "";
     if (m) {
-      if (m.review.eligible) right = `<button type="button" class="hg-btn hg-btn--sm" data-act="review">I posted a review</button>`;
-      else if (m.review.pending > 0) sub += `<br>Thanks! Your points are on the way.`;
-      else sub += `<br>Available after your next delivered order.`;
+      if (m.review.eligible) {
+        state = "available";
+        tap = `data-act="review"`;
+        sub += `<br>Posted it? Tap here to claim.`;
+      } else if (m.review.pending > 0) {
+        state = "pending";
+        sub += `<br>Thanks! Your points are on the way.`;
+      } else sub += `<br>Available after your next delivered order.`;
     }
-    out.push(row(ico("star"), "Post a review", sub, right));
+    out.push(earnRow(EARN_ICON.review, "Post a review", sub, state, tap));
   }
   if (on(cfg, "birthday")) {
     const amount = birthdayAmount(cfg, mm ? mm.tier : "silver");
     if (amount > 0) {
       let sub = `${rs(amount)} gift code in your birthday month`;
       if (mm && mm.birthday) sub += `<br>Your birthday: ${mm.birthday.day} ${MONTHS[mm.birthday.month - 1] || ""}`;
-      out.push(row(ico("cake"), "Celebrate your birthday", sub, mm && mm.birthday ? done : ""));
+      out.push(earnRow(EARN_ICON.birthday, "Celebrate your birthday", sub, mm && mm.birthday ? "saved" : mm && mm.canSetBirthday ? "available" : ""));
       if (mm && mm.canSetBirthday) out.push(birthdayForm());
     }
   }
   const youGet = referralReward(c);
   if (on(cfg, "referral") && youGet > 0) {
-    out.push(row(ico("friends"), "Refer a friend", pts(youGet), m ? `<button type="button" class="hg-btn hg-btn--sm" data-go="refer">Invite</button>` : ""));
+    out.push(earnRow(EARN_ICON.referral, "Refer a friend", pts(youGet), m ? "available" : "", m ? `data-go="refer"` : ""));
   }
   return `<ul class="hg-list">${out.join("")}</ul>`;
 }

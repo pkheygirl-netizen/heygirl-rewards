@@ -4,15 +4,12 @@
 import type { ActionFunctionArgs } from "@remix-run/node";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { guardProxy, proxyJson, readJsonBody } from "../lib/proxy-auth.server";
-import { getMemberByCustomerId, SOCIAL_PLATFORMS, type SocialPlatform } from "../lib/widget-data.server";
+import { getMemberByCustomerId, SOCIAL_AWARD_DELAY_HOURS, SOCIAL_PLATFORMS, type SocialPlatform } from "../lib/widget-data.server";
 import { getSettings } from "../lib/settings.server";
 import { socialQueue } from "../lib/queue.server";
 import { db } from "../db.server";
 
 const sdb = db as unknown as SupabaseClient;
-// The only place the honour-system delay is defined; the storefront never
-// quotes a duration.
-export const SOCIAL_AWARD_DELAY_HOURS = 24;
 const DELAY_MS = SOCIAL_AWARD_DELAY_HOURS * 60 * 60 * 1000;
 
 function ruleOn(rules: unknown, key: string): boolean {
@@ -73,7 +70,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
 
     try {
-      await socialQueue.add("award_social_points", { socialActionId: row.id }, { delay: DELAY_MS, jobId: `social-${row.id}` });
+      await socialQueue.add("award_social_points", { socialActionId: row.id }, { delay: DELAY_MS });
     } catch (err) {
       // Roll back so the customer can try again cleanly.
       await sdb.from("social_actions").delete().eq("id", row.id);

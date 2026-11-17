@@ -133,14 +133,35 @@ export function parseEarnRuleForm(current: Row, key: EarnRuleKey, form: Form): P
 
 // ── ways to redeem ───────────────────────────────────────────────────────────
 
-export type RedemptionTier = { points: number; discount_pkr: number };
+/**
+ * One reward in app_settings.redemption_tiers. `hidden: true` keeps the reward
+ * in the table but takes it away from customers (not offered on the storefront,
+ * refused by redeem); absent or false means it is shown. Stored as
+ * {"points", "discount_pkr"} plus "hidden": true only when hidden.
+ */
+export type RedemptionTier = { points: number; discount_pkr: number; hidden?: boolean };
 
+/**
+ * Only the literal boolean true (or the text "true", in case a row was edited
+ * by hand) hides a reward. Anything else, including a missing key, is "shown":
+ * an unreadable flag must never make a reward quietly disappear for customers.
+ */
+export function isHiddenFlag(v: unknown): boolean {
+  return v === true || v === "true";
+}
+
+/** Reads the raw jsonb defensively: rows that are not usable rewards are dropped. */
 export function readRedemptionTiers(v: unknown): RedemptionTier[] {
   if (!Array.isArray(v)) return [];
   return v
-    .map((t) => {
-      const o = (t ?? {}) as Row;
-      return { points: Math.round(num(o.points)), discount_pkr: Math.round(num(o.discount_pkr ?? o.discountPkr)) };
+    .map((t): RedemptionTier => {
+      const o = (t && typeof t === "object" ? t : {}) as Row;
+      const tier: RedemptionTier = {
+        points: Math.round(num(o.points)),
+        discount_pkr: Math.round(num(o.discount_pkr ?? o.discountPkr)),
+      };
+      if (isHiddenFlag(o.hidden)) tier.hidden = true;
+      return tier;
     })
     .filter((t) => t.points > 0 && t.discount_pkr > 0)
     .sort((a, b) => a.points - b.points);
@@ -148,9 +169,16 @@ export function readRedemptionTiers(v: unknown): RedemptionTier[] {
 
 /**
  * The whole table is saved at once (JSON in the `tiers` field: rows of
- * {points, discount_pkr} as typed). Rules: 1-12 rows, whole numbers in range,
- * no two rewards with the same points or the same discount, and a bigger
+ * {points, discount_pkr, hidden} as typed). Rules: 1-12 rows, whole numbers in
+ * range, no two rewards with the same points or the same discount, and a bigger
  * discount must always cost more points. Saved sorted by points.
+ *
+ * The rules apply to every row, hidden or not: a hidden reward can be shown
+ * again with one click, so the table must be valid with it shown.
+ *
+ * `hidden` must be a real true/false (or absent). Every reward may be hidden:
+ * that is a deliberate, reversible choice, unlike an empty table, which is
+ * still refused. The page warns that customers then have nothing to redeem.
  */
 export function parseRedemptionTiersForm(form: Form): Parsed {
   const r = new FormReader(form);
@@ -176,7 +204,11 @@ export function parseRedemptionTiersForm(form: Form): Parsed {
     const pkr = row.int("discount_pkr", `Reward ${i + 1}: discount`, L.minPkr, L.maxPkr);
     if (row.errors.points) r.fail(`points_${i}`, row.errors.points);
     if (row.errors.discount_pkr) r.fail(`discount_pkr_${i}`, row.errors.discount_pkr);
-    tiers.push({ points, discount_pkr: pkr });
+    const flag = o.hidden;
+    if (flag !== undefined && flag !== null && typeof flag !== "boolean") {
+      r.fail(`hidden_${i}`, `Reward ${i + 1}: could not tell whether it is shown or hidden. Reload the page and try again.`);
+    }
+    tiers.push(flag === true ? { points, discount_pkr: pkr, hidden: true } : { points, discount_pkr: pkr });
   });
 
   if (r.ok) {
@@ -200,9 +232,19 @@ export function parseRedemptionTiersForm(form: Form): Parsed {
   return { ok: true, patch: { redemption_tiers: [...tiers].sort((a, b) => a.points - b.points) } };
 }
 
-/** Lowest reward: the "base rate" used to put a rupee value on outstanding points. */
+/** The rewards customers can actually choose. */
+export function visibleRedemptionTiers(tiers: RedemptionTier[]): RedemptionTier[] {
+  return tiers.filter((t) => t.hidden !== true);
+}
+
+/**
+ * Lowest reward customers can choose: the "base rate" used to put a rupee value
+ * on outstanding points. A hidden reward is not available, so it is never the
+ * base rate; with every reward hidden there is none.
+ */
 export function baseRedemptionRate(tiers: RedemptionTier[]): RedemptionTier | null {
-  return tiers.length ? tiers.reduce((a, b) => (a.points <= b.points ? a : b)) : null;
+  const shown = visibleRedemptionTiers(tiers);
+  return shown.length ? shown.reduce((a, b) => (a.points <= b.points ? a : b)) : null;
 }
 
 export function pointsValuePkr(points: number, base: RedemptionTier | null): number {

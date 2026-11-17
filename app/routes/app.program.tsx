@@ -13,7 +13,7 @@ import { PROGRAM_LIMITS, type EarnRuleKey } from "../components/admin-constants"
 import { fmtInt, fmtPkr } from "../components/karachi";
 import {
   earnRuleViews, isEarnRuleKey, parseBirthdayRewardsForm, parseEarnRuleForm, parseExpiryForm,
-  parseRedemptionTiersForm, parseTiersForm, readRedemptionTiers, toggleRulePatch,
+  parseRedemptionTiersForm, parseTiersForm, readRedemptionTiers, toggleRulePatch, visibleRedemptionTiers,
 } from "../lib/admin-program.server";
 import { getSettingsRow, publishSettings, updateSettings } from "../lib/admin-settings.server";
 import { errorMessage, invalid } from "../lib/admin-validate.server";
@@ -84,6 +84,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     } else if (intent === "save_redemption") {
       parsed = parseRedemptionTiersForm(form);
       message = "Ways to redeem saved";
+      if (parsed.ok) {
+        const saved = readRedemptionTiers(parsed.patch.redemption_tiers);
+        const hidden = saved.length - visibleRedemptionTiers(saved).length;
+        if (hidden === saved.length) message = "Saved. Every reward is hidden, so customers have nothing to redeem";
+        else if (hidden > 0) message = `Ways to redeem saved. ${hidden} hidden from customers`;
+      }
     } else if (intent === "save_tiers") {
       parsed = parseTiersForm(form);
       message = "Tiers saved";
@@ -106,7 +112,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 type Values = ReturnType<typeof useLoaderData<typeof loader>>["values"];
-type TierRow = { points: string; discount_pkr: string };
+type TierRow = { points: string; discount_pkr: string; hidden: boolean };
+type SavedTier = { points: number; discount_pkr: number; hidden?: boolean };
+const toRow = (t: SavedTier): TierRow => ({ points: String(t.points), discount_pkr: String(t.discount_pkr), hidden: t.hidden === true });
 
 export default function Program() {
   const d = useLoaderData<typeof loader>();
@@ -319,37 +327,54 @@ function SettingsCard(props: {
 }
 
 function RedemptionEditor(props: {
-  initial: Array<{ points: number; discount_pkr: number }>; codeExpiryDays: string; busy: boolean;
+  initial: SavedTier[]; codeExpiryDays: string; busy: boolean;
   result: unknown; onSave: (rows: TierRow[]) => void;
 }) {
   const L = PROGRAM_LIMITS.redemption;
-  const [rows, setRows] = useState<TierRow[]>(
-    props.initial.map((t) => ({ points: String(t.points), discount_pkr: String(t.discount_pkr) })),
-  );
+  const [rows, setRows] = useState<TierRow[]>(props.initial.map(toRow));
   const [removing, setRemoving] = useState<number | null>(null);
-  const dirty = JSON.stringify(rows) !== JSON.stringify(props.initial.map((t) => ({ points: String(t.points), discount_pkr: String(t.discount_pkr) })));
+  const dirty = JSON.stringify(rows) !== JSON.stringify(props.initial.map(toRow));
+  // What customers have right now (saved), and what they will have after Save.
+  const savedAllHidden = props.initial.length > 0 && props.initial.every((t) => t.hidden === true);
+  const draftAllHidden = rows.length > 0 && rows.every((r) => r.hidden);
+  const hiddenCount = rows.filter((r) => r.hidden).length;
   const setRow = (i: number, patch: Partial<TierRow>) => setRows((r) => r.map((row, k) => (k === i ? { ...row, ...patch } : row)));
   return (
     <Card>
       <BlockStack gap="300">
         <InlineStack align="space-between" blockAlign="center">
           <Text as="h2" variant="headingMd">Ways to redeem</Text>
-          <Button disabled={rows.length >= L.maxRows} onClick={() => setRows((r) => [...r, { points: "", discount_pkr: "" }])}>Add reward</Button>
+          <Button disabled={rows.length >= L.maxRows} onClick={() => setRows((r) => [...r, { points: "", discount_pkr: "", hidden: false }])}>Add reward</Button>
         </InlineStack>
+        {savedAllHidden ? (
+          <Banner tone="warning" title="Customers currently have nothing to redeem">
+            <p>Every reward is hidden. Customers keep earning points but cannot turn them into a code until you show at least one reward again and save.</p>
+          </Banner>
+        ) : null}
+        {!savedAllHidden && draftAllHidden ? (
+          <Banner tone="warning" title="Every reward is set to hidden">
+            <p>If you save this, customers will have nothing to redeem until you show a reward again.</p>
+          </Banner>
+        ) : null}
         {fieldError(props.result, "tiers") ? <Banner tone="critical"><p>{fieldError(props.result, "tiers")}</p></Banner> : null}
         {rows.length === 0 ? (
           <Text as="p" tone="subdued">No rewards yet, so customers have nothing to redeem. Press Add reward to create the first one.</Text>
         ) : (
           rows.map((row, i) => (
-            <InlineStack key={i} gap="300" blockAlign="start" wrap={false}>
-              <Box width="40%">
+            <Box
+              key={i} padding="200" borderRadius="200"
+              background={row.hidden ? "bg-surface-secondary" : undefined}
+              borderWidth={row.hidden ? "025" : undefined} borderColor={row.hidden ? "border-secondary" : undefined}
+            >
+            <InlineStack gap="300" blockAlign="start" wrap={false}>
+              <Box width="32%">
                 <TextField
                   label="Reward" labelHidden={i > 0} type="number" inputMode="numeric" autoComplete="off" prefix="Rs." suffix="off"
                   value={row.discount_pkr} onChange={(v) => setRow(i, { discount_pkr: v })}
                   error={fieldError(props.result, `discount_pkr_${i}`)}
                 />
               </Box>
-              <Box width="40%">
+              <Box width="32%">
                 <TextField
                   label="Points needed" labelHidden={i > 0} type="number" inputMode="numeric" autoComplete="off" suffix="points"
                   value={row.points} onChange={(v) => setRow(i, { points: v })}
@@ -357,14 +382,30 @@ function RedemptionEditor(props: {
                 />
               </Box>
               <Box paddingBlockStart={i === 0 ? "600" : "100"}>
-                <Button variant="plain" tone="critical" onClick={() => setRemoving(i)}>Remove</Button>
+                <InlineStack gap="300" blockAlign="center" wrap={false}>
+                  <Checkbox
+                    label="Shown to customers" checked={!row.hidden}
+                    onChange={(shown) => setRow(i, { hidden: !shown })}
+                  />
+                  {row.hidden ? <Badge tone="attention">Hidden</Badge> : null}
+                  <Button variant="plain" tone="critical" onClick={() => setRemoving(i)}>Remove</Button>
+                </InlineStack>
               </Box>
             </InlineStack>
+            {row.hidden ? (
+              <Text as="p" tone="subdued" variant="bodySm">
+                Hidden: customers do not see this reward and cannot redeem it. Tick “Shown to customers” to bring it back.
+              </Text>
+            ) : null}
+            {fieldError(props.result, `hidden_${i}`) ? <Text as="p" tone="critical">{fieldError(props.result, `hidden_${i}`)}</Text> : null}
+            </Box>
           ))
         )}
         <Text as="p" tone="subdued">
           Discount Rs.{fmtInt(L.minPkr)} to {fmtPkr(L.maxPkr)}; points {fmtInt(L.minPoints)} to {fmtInt(L.maxPoints)}. A bigger discount must cost more points.
           Codes are single-use, tied to the customer, and expire after {props.codeExpiryDays} days. Codes already issued keep working.
+          Untick “Shown to customers” to hide a reward without deleting it; the rules above still apply to hidden rewards, so one can be shown again at any time.
+          {hiddenCount > 0 ? ` ${hiddenCount} of ${rows.length} hidden.` : ""} Nothing changes for customers until you press Save rewards.
         </Text>
         <InlineStack gap="200">
           <Button variant="primary" disabled={!dirty} loading={props.busy} onClick={() => props.onSave(rows)}>Save rewards</Button>
@@ -378,7 +419,7 @@ function RedemptionEditor(props: {
         onClose={() => setRemoving(null)}
         onConfirm={() => { setRows((r) => r.filter((_, k) => k !== removing)); setRemoving(null); }}
       >
-        <Text as="p">Customers will no longer be able to choose it once you press Save rewards. Codes already issued keep working.</Text>
+        <Text as="p">Customers will no longer be able to choose it once you press Save rewards. Codes already issued keep working. To take it away for a while and bring it back later, untick “Shown to customers” instead.</Text>
       </ConfirmModal>
     </Card>
   );

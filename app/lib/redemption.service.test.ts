@@ -133,6 +133,123 @@ describe("redeemPoints", () => {
   });
 });
 
+describe("redeemPoints: ambiguous deduction error (review item 4)", () => {
+  it("an RPC error keeps the pending row, so the sweep can still resolve it", async () => {
+    const m = rich();
+    h.db.failNext("rpc:award_points", "select", { code: "57014", message: "canceling statement due to statement timeout" });
+    await expect(redeemPoints({ memberId: String(m.id), points: 6000, shop: "s" })).rejects.toThrow(/award_points\(redemption\) failed/);
+    expect(codes()).toHaveLength(1);
+    expect(codes()[0]).toMatchObject({ status: "pending", points_spent: 6000 });
+    expect(h.graphqlCalls).toHaveLength(0); // no discount was attempted
+  });
+
+  it("outcome A, the deduction DID commit before the error: the sweep gives the points back and cancels the row", async () => {
+    const m = rich();
+    const realRpc = h.db.rpc.bind(h.db);
+    vi.spyOn(h.db, "rpc").mockImplementationOnce(async (fn, args) => {
+      await realRpc(fn, args); // committed in the database...
+      return { data: null, error: { code: "08006", message: "connection lost" } }; // ...but the answer never arrived
+    });
+    await expect(redeemPoints({ memberId: String(m.id), points: 6000, shop: "s" })).rejects.toThrow();
+    expect(m.points_balance).toBe(1000);
+    const row = codes()[0];
+    expect(row.status).toBe("pending");
+    row.created_at = "2026-11-16T09:00:00Z";
+    h.graphql = (q) => (opName(q) === "HgCodeDiscountNodeByCode" ? { codeDiscountNodeByCode: null } : created());
+    expect(await sweepPendingCodes(new Date("2026-11-16T10:00:00Z"))).toEqual({ finished: 0, returned: 1, cancelled: 0, failed: 0 });
+    expect(m.points_balance).toBe(7000);
+    expect(row.status).toBe("cancelled");
+  });
+
+  it("outcome B, the deduction never happened: the sweep cancels the row and credits nothing", async () => {
+    const m = rich();
+    h.db.failNext("rpc:award_points", "select", { code: "08006", message: "connection lost" });
+    await expect(redeemPoints({ memberId: String(m.id), points: 6000, shop: "s" })).rejects.toThrow();
+    const row = codes()[0];
+    row.created_at = "2026-11-16T09:00:00Z";
+    expect(await sweepPendingCodes(new Date("2026-11-16T10:00:00Z"))).toEqual({ finished: 0, returned: 0, cancelled: 1, failed: 0 });
+    expect(m.points_balance).toBe(7000);
+    expect(row.status).toBe("cancelled");
+    expect(h.db.table("points_ledger").filter((l) => l.action_type === "redemption_return")).toHaveLength(0);
+  });
+
+  it("the sweep never mistakes a failed ledger or member read for 'points never taken'", async () => {
+    const m = rich();
+    const row = h.db.seed("loyalty_codes", {
+      member_id: m.id, code: "REWARD-STUCK", kind: "reward", status: "pending", discount_amount: 250, discount_amount_pkr: 250,
+      points_spent: 6000, expires_at: "2026-12-16T09:00:00Z", created_at: "2026-11-16T09:00:00Z",
+    });
+    await h.db.rpc("award_points", { p_member_id: m.id, p_action_type: "redemption", p_reference_id: String(row.id), p_points: -6000 });
+    const NOW = new Date("2026-11-16T10:00:00Z");
+    h.graphql = (q) => (opName(q) === "HgCodeDiscountNodeByCode" ? { codeDiscountNodeByCode: null } : created());
+
+    h.db.failNext("points_ledger", "select", { code: "57014", message: "timeout" });
+    expect(await sweepPendingCodes(NOW)).toEqual({ finished: 0, returned: 0, cancelled: 0, failed: 1 });
+    expect(row.status).toBe("pending");
+
+    h.db.failNext("members", "select", { code: "57014", message: "timeout" });
+    expect(await sweepPendingCodes(NOW)).toEqual({ finished: 0, returned: 0, cancelled: 0, failed: 1 });
+    expect(row.status).toBe("pending");
+    expect(m.points_balance).toBe(1000);
+
+    // the next healthy sweep returns the points
+    expect(await sweepPendingCodes(NOW)).toMatchObject({ returned: 1 });
+    expect(m.points_balance).toBe(7000);
+  });
+});
+
+describe("redeemPoints: create repeated after a lost answer", () => {
+  it("TAKEN on our own brand-new code means the first attempt worked: the discount is adopted, points stay spent", async () => {
+    const m = rich();
+    h.graphql = (q) =>
+      opName(q) === "HgCodeDiscountNodeByCode"
+        ? { codeDiscountNodeByCode: { id: NODE } }
+        : { discountCodeBasicCreate: { codeDiscountNode: null, userErrors: [{ message: "taken", code: "TAKEN" }] } };
+    const r = await redeemPoints({ memberId: String(m.id), points: 6000, shop: "s" });
+    expect(r.ok).toBe(true);
+    expect(m.points_balance).toBe(1000);
+    expect(codes()[0]).toMatchObject({ status: "active", shopify_discount_id: NODE });
+    expect(h.db.table("points_ledger").filter((l) => l.action_type === "redemption_return")).toHaveLength(0);
+  });
+});
+
+describe("hidden rewards", () => {
+  const TIERS = [{ points: 3000, discount_pkr: 100 }, { points: 6000, discount_pkr: 250, hidden: true }];
+
+  it("findTier / validateRedemption treat a hidden reward exactly like one that does not exist", () => {
+    expect(findTier(TIERS, 6000)).toBeNull();
+    expect(validateRedemption(10000, 6000, TIERS)).toEqual(validateRedemption(10000, 6001, TIERS));
+    expect(validateRedemption(10000, 6000, TIERS)).toEqual({ valid: false, reason: "invalid_tier" });
+    expect(validateRedemption(10000, 3000, TIERS)).toEqual({ valid: true });
+    // only the boolean true hides
+    expect(findTier([{ points: 6000, discount_pkr: 250, hidden: false }], 6000)).not.toBeNull();
+  });
+
+  it("redeemPoints refuses a hidden reward with the same answer as an unknown one, and touches nothing", async () => {
+    h.db.table("app_settings")[0].redemption_tiers = TIERS;
+    const m = rich();
+    const hidden = await redeemPoints({ memberId: String(m.id), points: 6000, shop: "s" });
+    const unknown = await redeemPoints({ memberId: String(m.id), points: 6001, shop: "s" });
+    expect(hidden).toEqual({ ok: false, reason: "invalid_tier" });
+    expect(hidden).toEqual(unknown);
+    expect(m.points_balance).toBe(7000);
+    expect(codes()).toHaveLength(0);
+    expect(h.graphqlCalls).toHaveLength(0);
+    expect(h.db.rpcCalls).toHaveLength(0);
+    // the visible reward next to it still works
+    expect(await redeemPoints({ memberId: String(m.id), points: 3000, shop: "s" })).toMatchObject({ ok: true, discountPkr: 100 });
+  });
+
+  it("un-hiding makes it redeemable again", async () => {
+    h.db.table("app_settings")[0].redemption_tiers = [{ points: 6000, discount_pkr: 250, hidden: true }];
+    const m = rich();
+    expect(await redeemPoints({ memberId: String(m.id), points: 6000, shop: "s" })).toEqual({ ok: false, reason: "invalid_tier" });
+    h.db.table("app_settings")[0].redemption_tiers = [{ points: 6000, discount_pkr: 250 }];
+    bustSettingsCache();
+    expect(await redeemPoints({ memberId: String(m.id), points: 6000, shop: "s" })).toMatchObject({ ok: true, discountPkr: 250 });
+  });
+});
+
 describe("cancelRewardCode (admin)", () => {
   const issue = async () => {
     const m = rich();

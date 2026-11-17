@@ -321,6 +321,14 @@ describe("awardSocial", () => {
     expect(await awardSocial(String(a2.id))).toMatchObject({ awarded: false, reason: "rule_off" });
     expect(ok.points_balance).toBe(0);
   });
+  it("a failed member read is not 'no member': the claim stays pending instead of being voided", async () => {
+    const m = seedMember(h.db);
+    const a = action(m.id);
+    h.db.failNext("members", "select", { code: "57014", message: "timeout" });
+    await expect(awardSocial(String(a.id))).rejects.toThrow(/member lookup failed/);
+    expect(a.status).toBe("pending");
+    expect(await awardSocial(String(a.id))).toEqual({ awarded: true });
+  });
 });
 
 describe("expireSilverPoints", () => {

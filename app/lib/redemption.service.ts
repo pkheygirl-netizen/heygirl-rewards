@@ -20,8 +20,12 @@ export async function getRedemptionTiers(): Promise<RedemptionTier[]> {
   return (await getSettings()).redemption_tiers;
 }
 
+/**
+ * The reward a customer may redeem for exactly `points`. A reward the owner
+ * has hidden (`hidden: true`) is treated exactly like one that does not exist.
+ */
 export function findTier(tiers: RedemptionTier[], points: number): RedemptionTier | null {
-  return tiers.find((t) => t.points === points) ?? null;
+  return tiers.find((t) => t.points === points && t.hidden !== true) ?? null;
 }
 
 export function validateRedemption(
@@ -138,20 +142,40 @@ export async function redeemPoints(input: {
     p_reason_note: `redeemed ${requested} pts for Rs.${tier.discount_pkr} off`,
     p_customer_note: `Reward: Rs. ${tier.discount_pkr} off`,
   });
-  if (rpcErr || !(rpcData?.[0]?.awarded ?? false)) {
+  if (rpcErr) {
+    // Ambiguous: the call may have failed before or AFTER the deduction was
+    // committed (a timeout, a dropped connection). The pending row is the only
+    // record that points may have been taken, so it stays; sweepPendingCodes
+    // looks for the ledger row and either cancels the code (nothing was taken)
+    // or gives the points back.
+    throw new Error(`award_points(redemption) failed: ${rpcErr.message}`);
+  }
+  if (!(rpcData?.[0]?.awarded ?? false)) {
+    // A definite answer from the database: nothing was deducted.
     await db.from("loyalty_codes").delete().eq("id", codeRow.id).eq("status", "pending");
-    if (rpcErr) throw new Error(`award_points(redemption) failed: ${rpcErr.message}`);
     return { ok: false, reason: "insufficient_balance" };
   }
 
   // 3. create the discount; on failure give the points straight back
-  const created = await createCustomerAmountOffCode(admin, {
+  let created = await createCustomerAmountOffCode(admin, {
     code,
     title: `HeyGirl Rewards: Rs. ${tier.discount_pkr} off`,
     amountPkr: tier.discount_pkr,
     shopifyCustomerId: member.shopify_customer_id,
     endsAt: new Date(expiresAt),
   });
+  if (!created.ok && created.reason === "code_taken") {
+    // The code is random and brand new, so "taken" means our own first attempt
+    // reached Shopify and its answer was lost (the create is repeated after a
+    // 5xx). Adopt that discount instead of returning the points for a code
+    // that exists.
+    try {
+      const existingId = await findDiscountIdByCode(admin, code);
+      if (existingId) created = { ok: true, discountId: existingId };
+    } catch (err) {
+      console.error("[redeemPoints] lookup of the existing code failed:", err instanceof Error ? err.message : err);
+    }
+  }
   if (!created.ok) {
     try {
       await returnPointsForCode({
@@ -329,22 +353,26 @@ export async function sweepPendingCodes(
   const admin = await getAdminForShop(shop ?? undefined); // throws: the cron run is marked failed and retried
   for (const row of rows) {
     try {
-      const { data: member } = await db
+      const { data: member, error: memberErr } = await db
         .from("members")
         .select("id, shopify_customer_id, tier, is_blocked, opted_out")
         .eq("id", row.member_id)
         .maybeSingle();
+      // A failed read is not "no member": the row stays pending for the next sweep.
+      if (memberErr) throw new Error(`member lookup failed: ${memberErr.message}`);
       const cancel = async () =>
         db.from("loyalty_codes").update({ status: "cancelled", cancelled_at: new Date().toISOString() }).eq("id", row.id).eq("status", "pending");
 
       if (row.kind === "reward") {
-        const { data: deduction } = await db
+        const { data: deduction, error: ledgerErr } = await db
           .from("points_ledger")
           .select("id")
           .eq("member_id", row.member_id)
           .eq("action_type", "redemption")
           .eq("reference_id", String(row.id))
           .maybeSingle();
+        // A failed read must never be taken for "the points were never taken".
+        if (ledgerErr) throw new Error(`ledger lookup failed: ${ledgerErr.message}`);
         if (!deduction || !member) {
           await cancel(); // the points were never taken
           out.cancelled++;

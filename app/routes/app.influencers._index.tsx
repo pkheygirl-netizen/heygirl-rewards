@@ -134,7 +134,7 @@ function InfluencerList({ d }: { d: ListData }) {
             {d.periodKey === "all"
               ? "All-time results."
               : `${d.periodLabel}: each number counts what happened in the period. Friends by the day they signed in, completed referrals by the day they completed, orders and sales by the day the order was placed, points by the day they were paid or taken back.`}{" "}
-            Sales count her link and her code; an order that completed a link referral counts for that link only, whichever code was used. Cancelled orders are left out and points are net of reversals.
+            Order value is the product value of the orders as placed (after discounts, without shipping and tax, before refunds) and counts her link and her code; an order that completed a link referral counts for that link only, whichever code was used. Cancelled orders are left out and points are net of reversals.
           </Text>
         </Layout.Section>
         <Layout.Section><ResultBanner data={fetcher.data} /></Layout.Section>
@@ -147,7 +147,7 @@ function InfluencerList({ d }: { d: ListData }) {
           <InlineGrid columns={{ xs: 2, md: 4 }} gap="400">
             <Tile label="Active influencers" value={fmtInt(t.active)} sub={`${fmtInt(t.paused)} paused`} />
             <Tile label="Friends referred" value={fmtInt(t.friends)} sub={`${fmtInt(t.completed)} with a delivered, paid order`} />
-            <Tile label="Sales attributed" value={fmtPkr(t.salesPkr)} sub={`${fmtInt(t.orders)} orders by link or code · ${d.periodLabel}`} />
+            <Tile label="Order value attributed" value={fmtPkr(t.salesPkr)} sub={`${fmtInt(t.orders)} orders by link or code · ${d.periodLabel}`} />
             <Tile label="Points paid to influencers" value={fmtInt(t.pointsPaid)} sub={t.completed > 0 ? `Average ${fmtInt(t.averagePerCompleted)} per completed referral` : "No completed referrals yet"} />
           </InlineGrid>
         </Layout.Section>
@@ -172,7 +172,7 @@ function InfluencerList({ d }: { d: ListData }) {
                   { title: "Influencer" }, { title: "Campaign" }, { title: "Multiplier" },
                   { title: "Points per referral", alignment: "end" }, { title: "Discount code" },
                   { title: "Friends", alignment: "end" }, { title: "Completed", alignment: "end" },
-                  { title: "Orders", alignment: "end" }, { title: "Sales", alignment: "end" },
+                  { title: "Orders", alignment: "end" }, { title: "Order value", alignment: "end" },
                   { title: "Points paid", alignment: "end" }, { title: "Status" },
                 ]}
               >

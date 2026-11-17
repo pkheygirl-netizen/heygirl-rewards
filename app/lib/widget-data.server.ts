@@ -12,6 +12,17 @@ export type Tier = "silver" | "gold" | "diamond";
 export type SocialPlatform = "instagram" | "facebook" | "youtube";
 export const SOCIAL_PLATFORMS: SocialPlatform[] = ["instagram", "facebook", "youtube"];
 
+// The only place the honour-system delay for social follows is defined; the
+// storefront never quotes a duration.
+export const SOCIAL_AWARD_DELAY_HOURS = 24;
+
+const DAYS_IN_MONTH = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+/** Day + month only (no year), so 29 February is accepted. */
+export function isValidBirthday(month: number, day: number): boolean {
+  return Number.isInteger(month) && Number.isInteger(day) && month >= 1 && month <= 12 && day >= 1 && day <= DAYS_IN_MONTH[month - 1];
+}
+
 export type MemberRow = {
   id: string;
   shopify_customer_id: string;

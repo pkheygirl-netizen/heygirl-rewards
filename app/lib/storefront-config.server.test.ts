@@ -1,16 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const h = vi.hoisted(() => ({ getSettings: vi.fn(), campaigns: vi.fn() }));
+const h = vi.hoisted(() => ({ getSettings: vi.fn(), campaigns: vi.fn(), rawRow: vi.fn() }));
 
 vi.mock("./settings.server", () => ({ getSettings: h.getSettings }));
 vi.mock("../db.server", () => {
   const c: Record<string, unknown> = {};
   for (const m of ["select", "eq", "gte", "order"]) c[m] = vi.fn(() => c);
   c.limit = vi.fn(() => h.campaigns());
+  c.maybeSingle = vi.fn(() => h.rawRow()); // the raw app_settings read
   return { db: { from: vi.fn(() => c) } };
 });
 
-import { APP_INSTALLATION_QUERY, buildStorefrontConfig, CONFIG_METAFIELD_MUTATION, syncStorefrontConfig } from "./storefront-config.server";
+import { APP_INSTALLATION_QUERY, buildStorefrontConfig, CONFIG_METAFIELD_MUTATION, isHiddenRedemptionTier, syncStorefrontConfig, visibleRedemptionTiers } from "./storefront-config.server";
 
 const SETTINGS = {
   program_enabled: true,
@@ -87,6 +88,35 @@ describe("buildStorefrontConfig", () => {
     ]);
   });
 
+  it("hidden rewards are left out of the public config (absent flag = visible)", () => {
+    const tiers = [
+      { points: 3000, discount_pkr: 100 },
+      { points: 6000, discount_pkr: 250, hidden: true },
+      { points: 9000, discount_pkr: 400, hidden: false },
+      { points: 12000, discount_pkr: 600, hidden: "true" },
+      null,
+      "junk",
+    ];
+    const c = buildStorefrontConfig({ ...SETTINGS, redemption_tiers: tiers }, null);
+    expect(c.redemptionTiers).toEqual([
+      { points: 3000, discountPkr: 100 },
+      { points: 9000, discountPkr: 400 },
+    ]);
+    expect(JSON.stringify(c)).not.toContain("hidden");
+    expect(visibleRedemptionTiers(tiers)).toEqual(c.redemptionTiers);
+    expect(visibleRedemptionTiers(null)).toEqual([]);
+    expect(buildStorefrontConfig({ ...SETTINGS, redemption_tiers: [{ points: 3000, discount_pkr: 100, hidden: true }] }, null).redemptionTiers).toEqual([]);
+  });
+
+  it("isHiddenRedemptionTier: only an existing, hidden-only reward counts", () => {
+    const tiers = [{ points: 3000, discount_pkr: 100, hidden: true }, { points: 6000, discount_pkr: 250 }, { points: 9000, discountPkr: 1, hidden: true }, { points: 9000, discountPkr: 400 }];
+    expect(isHiddenRedemptionTier(tiers, 3000)).toBe(true);
+    expect(isHiddenRedemptionTier(tiers, 6000)).toBe(false);
+    expect(isHiddenRedemptionTier(tiers, 9000)).toBe(false); // a visible one with the same points exists
+    expect(isHiddenRedemptionTier(tiers, 1234)).toBe(false); // unknown: the service answers
+    expect(isHiddenRedemptionTier(undefined, 3000)).toBe(false);
+  });
+
   it("fills every earn rule, defaulting missing ones to enabled", () => {
     const c = buildStorefrontConfig(SETTINGS, null);
     expect(c.earnRules.review).toEqual({ enabled: false });
@@ -121,6 +151,30 @@ describe("syncStorefrontConfig", () => {
     vi.clearAllMocks();
     h.getSettings.mockResolvedValue(SETTINGS);
     h.campaigns.mockResolvedValue({ data: [CAMPAIGN], error: null });
+    h.rawRow.mockResolvedValue({ data: { redemption_tiers: SETTINGS.redemption_tiers }, error: null });
+  });
+
+  const published = async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(reply({ currentAppInstallation: { id: "gid://shopify/AppInstallation/1" } }))
+      .mockResolvedValueOnce(reply({ metafieldsSet: { metafields: [{ id: "x" }], userErrors: [] } }));
+    expect(await syncStorefrontConfig({ graphql })).toEqual({ ok: true });
+    return JSON.parse(graphql.mock.calls[1][1].variables.metafields[0].value) as { redemptionTiers: unknown[] };
+  };
+
+  it("a reward hidden in the stored jsonb is not published, even when the typed settings do not carry the flag", async () => {
+    // getSettings() answers without `hidden` (as the typed reader does today); the stored row has it.
+    h.rawRow.mockResolvedValue({ data: { redemption_tiers: [{ points: 3000, discount_pkr: 100 }, { points: 6000, discount_pkr: 250, hidden: true }] }, error: null });
+    expect((await published()).redemptionTiers).toEqual([{ points: 3000, discountPkr: 100 }]);
+  });
+
+  it("a hidden flag carried by the typed settings is honoured too, and a failed raw read changes nothing", async () => {
+    h.getSettings.mockResolvedValue({ ...SETTINGS, redemption_tiers: [{ points: 3000, discount_pkr: 100, hidden: true }, { points: 6000, discount_pkr: 250 }] });
+    h.rawRow.mockResolvedValue({ data: null, error: { message: "down" } });
+    expect((await published()).redemptionTiers).toEqual([{ points: 6000, discountPkr: 250 }]);
+    h.rawRow.mockRejectedValue(new Error("boom"));
+    expect((await published()).redemptionTiers).toEqual([{ points: 6000, discountPkr: 250 }]);
   });
 
   it("writes one json app-data metafield owned by the app installation", async () => {

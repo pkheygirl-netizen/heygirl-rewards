@@ -58,10 +58,14 @@ All are encoded as rules 1–19 in `docs/v3-contract.md` section 1. The ones mos
 Owner answers, 17 Nov 2026:
 - A paused influencer earns the standard referral reward (6,000). As built.
 - The Smile import runs **before** the storefront launcher is switched on.
-- Live will use the **same** Supabase project as dev (owner's choice; see go-live note in section 11 about clearing test data first).
+- Live uses a **new, separate** Supabase project (owner changed this answer the same day). `heygirl-rewards-dev` stays for testing.
+- Birthday-month 1.2x purchase multiplier is **Diamond only** (as built).
+- Keep the Rs.5,000 and Rs.10,000 redemption rewards; the owner will deactivate them in admin if needed.
+- "Ways to earn" icons (item 4 of `coding changes.txt`): no specific list; owner wants them clear and easy to tap, in the style of Smile's panel.
+- Owner states the app will be owned by heygirl.pk's own organization and installed only on that store (so exempt from the IP allowlist rule). NOT verified: the Dev Dashboard screenshot has not been seen.
 - Copying `shopify.app.example.toml` into the real `shopify.app.toml` and making the GitHub repo private: done together with the owner after the build is complete.
 
-Still open with the owner: Gold birthday multiplier (owner answered "yes" to an either/or question, so it is NOT settled: answers doc says Gold gets 1.2x, build plan says Diamond only; contract and code follow Diamond only); keep or change the Rs.5,000 (100,000 points) and Rs.10,000 (180,000 points) redemption rewards; cutover date; item 4 in `coding changes.txt` ("Icon changes in ways to earn:") is blank after the colon; which organization owns the app (Distribution card or Installs card on the app's Home in the Dev Dashboard).
+Still open with the owner: cutover date (to be set together after the build); Dev Dashboard screenshot showing which organization owns the app and whether it has a Distribution or an Installs card.
 
 ## 4. Defects in the pre-v3 code that v3 must not reintroduce
 
@@ -231,8 +235,11 @@ Deploy the branch to the dev store (apply migrations 010–012 to `heygirl-rewar
   - Unverified: refund webhook field names for the amount-only path; harness ran on Postgres 18, Supabase is older.
 - 2026-11-17: **Storefront fix round done.** All 14 items fixed. Bundles 5.42 KB and 11.87 KB gzip. Config gains `nextCampaign`; `GET /proxy/customer` gains `influencer` and `state`; `POST /proxy/referral` status is only `recorded | not_eligible | try_again`. Still no DOM test of `core.ts`/`hub.ts`. Left over: `proxy.social.tsx` still passes a fixed job id `social-<id>` (drop it).
 - 2026-11-17: **Lead verification after both fix rounds:** `tsc` clean; 47 test files, 705 tests pass.
-- 2026-11-17: **Admin and import fix rounds NOT done.** Both agents were stopped at the start by the account's monthly spend limit. Their fix lists (A1–A10; I2–I9) are still open. The import must not be used until I2–I5 are fixed.
-- Not done: admin and import fix rounds; a fresh verification review of all fixes; dev-store test (section 10).
-- Branch `v3-rebuild` is not ready to merge.
 - 2026-11-17: **New Shopify requirement found (read on shopify.dev, changelog dated 11 Nov 2026).** A custom app installed on a store **outside the organization that owns the app** needs an IP allowlist: for new installs from 20 Nov 2026 23:59 ET, for existing installs from 1 Jan 2027. Apps installed only on stores inside the owning organization, and apps created by the merchant, are not affected. Set in Dev Dashboard > app > Settings > IP allowlist (IPs/CIDR up to 250, or up to 10 ASNs, optionally limited by country; "Test against recent traffic" before enforcing). When enforced, Admin API calls from other addresses get 403. Both Railway services (web and worker) call the Admin API. Railway static outbound IPs need the Pro plan and are shared, not dedicated; the alternative is allowing Railway's network by ASN. NOT yet known: which organization owns this app, the Railway plan, Railway's ASN. Do not guess these.
-- 2026-11-17: Admin (A1-A10) and import (I2-I9) fix rounds restarted with the original agents.
+- 2026-11-17: **Admin (A1-A10) and import (I2-I9) fix rounds done**, commit `5800eb7`. Build blocker found: a route file exported a helper, which breaks `remix vite:build` though tsc and vitest pass. `npm run build` is now part of lead verification.
+- 2026-11-17: **Independent verification of 5800eb7** (fresh agent). No way found to double-award, under- or over-reverse, or go negative (own randomized test, 1,000 orders, 0 violations; 010/011/012 pass on Postgres 18.6 and 15.19). No High defect. Its scores: engine 78, storefront 68, admin 76, import 66, overall 68. New defects V1-V11: V1 throttle retry was dead code; V2 shipping basis with free-shipping codes; V3 social award lost with Redis; V4 ambiguous deduction error; V5 code used while pending; V6 RLS missing on eleven older tables; V7 non-route exports; V9 pre-v3 refunded orders; V11 fixed social job id.
+- 2026-11-17: **V1-V11 fix round done** plus two owner requests: a Hide switch per redemption reward (`hidden: true` on a `redemption_tiers` entry; engine refuses it as `invalid_tier`, storefront config omits it, Program page switch) and new "ways to earn" rows (own line icon per row, whole row is the tap target, state in words). New migration `013_rls.sql` (RLS on every app table, no policies; the app must be using the service-role key - CHECK the Railway `SUPABASE_SERVICE_KEY` before applying). First test of `core.ts` wiring against a simulated page (`app/widget/core.dom.test.ts`).
+- 2026-11-17: **Lead verification after that round:** tsc clean; 49 files, 880 tests pass; `npm run build` succeeds (core 5.42 KB, hub 12.25 KB gzip); 010+013 harness 123/123 on Postgres 18.6.
+- Known and not fixed: `classifyLookupError` in the import has name checks that can never match (status checks still catch the cases); `rewards-page.server.ts` mutation has no 5xx retry; hub.ts click handling has no automated DOM test.
+- Not done: re-verification of the V-round by the independent agent; dev-store test (section 10). Nothing has run on a store.
+- Branch `v3-rebuild` is not ready to merge to `main` until the dev-store test passes.

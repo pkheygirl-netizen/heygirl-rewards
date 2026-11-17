@@ -4,6 +4,7 @@ import { guardProxy, proxyJson, readJsonBody } from "../lib/proxy-auth.server";
 import { getMemberByCustomerId } from "../lib/widget-data.server";
 import { redeemPoints } from "../lib/redemption.service";
 import { getSettings } from "../lib/settings.server";
+import { isHiddenRedemptionTier } from "../lib/storefront-config.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   // HMAC first: an unsigned request learns nothing, not even the allowed method.
@@ -17,8 +18,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (!body || !Number.isInteger(points) || points <= 0) return proxyJson({ ok: false, error: "invalid_points" }, 400);
 
   try {
-    const settings = (await getSettings()) as unknown as { program_enabled?: boolean };
+    const settings = (await getSettings()) as unknown as { program_enabled?: boolean; redemption_tiers?: unknown };
     if (settings.program_enabled === false) return proxyJson({ ok: false, error: "program_disabled" });
+    // A hidden reward does not exist for the storefront (same answer as an unknown one).
+    if (isHiddenRedemptionTier(settings.redemption_tiers, points)) return proxyJson({ ok: false, error: "invalid_tier" });
 
     const member = await getMemberByCustomerId(customerId);
     if (!member) return proxyJson({ ok: false, error: "not_a_member" });

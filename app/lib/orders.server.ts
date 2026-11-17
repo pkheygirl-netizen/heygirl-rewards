@@ -61,6 +61,33 @@ const shopMoney = (set: unknown): number | null => {
   return amount === undefined || amount === null ? null : num(amount);
 };
 
+/**
+ * Sum of the order's shipping lines after discounts, or null when the payload
+ * cannot answer (no lines, or a line without a discounted price) so the caller
+ * falls back to the order-level field.
+ *   "original": discounted_price_set / discounted_price (as the order was placed)
+ *   "current":  current_discounted_price_set (also after shipping refunds and
+ *               removed lines); null when any line lacks it
+ */
+export function shippingLinesTotal(lines: unknown, which: "original" | "current"): number | null {
+  if (!Array.isArray(lines) || lines.length === 0) return null;
+  let sum = 0;
+  for (const raw of lines) {
+    const line = obj(raw);
+    if (!line) return null;
+    let amount: number | null;
+    if (which === "current") {
+      amount = shopMoney(line.current_discounted_price_set);
+    } else {
+      amount = shopMoney(line.discounted_price_set);
+      if (amount === null && line.discounted_price != null && line.discounted_price !== "") amount = num(line.discounted_price);
+    }
+    if (amount === null) return null;
+    sum += Math.max(0, amount);
+  }
+  return money2(sum);
+}
+
 /** Reduce an orders/* webhook payload to what the engine needs. Null when it is not an order. */
 export function parseOrderPayload(payload: unknown): OrderEvent | null {
   const o = obj(payload);
@@ -81,9 +108,19 @@ export function parseOrderPayload(payload: unknown): OrderEvent | null {
 
   // Current figures follow order edits and pre-delivery refunds.
   const total = o.current_total_price != null ? num(o.current_total_price) : num(o.total_price);
-  const shipping = shopMoney(o.current_shipping_price_set) ?? shopMoney(o.total_shipping_price_set) ?? 0;
+  // Shipping the customer was actually charged, i.e. AFTER a free-shipping
+  // code or any other shipping discount: the order total only contains that
+  // much shipping, so taking off the undiscounted price would under-award.
+  // The per-line discounted prices say so explicitly; the order-level fields
+  // are the fallback for a payload without shipping lines.
+  const shipping =
+    shippingLinesTotal(o.shipping_lines, "current") ??
+    shopMoney(o.current_shipping_price_set) ??
+    shippingLinesTotal(o.shipping_lines, "original") ??
+    shopMoney(o.total_shipping_price_set) ??
+    0;
   const tax = o.current_total_tax != null ? num(o.current_total_tax) : num(o.total_tax);
-  const grossShipping = shopMoney(o.total_shipping_price_set) ?? shipping;
+  const grossShipping = shippingLinesTotal(o.shipping_lines, "original") ?? shopMoney(o.total_shipping_price_set) ?? shipping;
   const gross = o.total_price != null ? num(o.total_price) - grossShipping - num(o.total_tax) : total - shipping - tax;
 
   const codes = Array.isArray(o.discount_codes)
@@ -276,11 +313,19 @@ export async function multiplierAtPlacement(
   return { multiplier, campaignId: campaign?.id ?? null };
 }
 
-/** Mark the member's own loyalty codes used by this order (codes are matched without regard to case). */
+/**
+ * Mark the member's own loyalty codes used by this order (codes are matched
+ * without regard to case). A row still `pending` counts too: the discount
+ * exists in Shopify (it was just used) and only the app's last step, flipping
+ * the row to active, was missed. Left pending, the sweep would later activate
+ * it and show a spent code as available.
+ */
+const USABLE_CODE_STATUSES = ["active", "pending"];
+
 async function markCodesUsed(memberId: string, ev: OrderEvent): Promise<void> {
   if (ev.discountCodes.length === 0) return;
   const wanted = new Set(ev.discountCodes.map((c) => c.toUpperCase()));
-  const { data, error } = await db.from("loyalty_codes").select("id, code").eq("member_id", memberId).eq("status", "active");
+  const { data, error } = await db.from("loyalty_codes").select("id, code").eq("member_id", memberId).in("status", USABLE_CODE_STATUSES);
   if (error) throw new Error(`loyalty code lookup failed: ${error.message}`);
   const ids = (data ?? []).filter((c) => wanted.has(String(c.code).toUpperCase())).map((c) => c.id);
   if (ids.length === 0) return;
@@ -288,7 +333,7 @@ async function markCodesUsed(memberId: string, ev: OrderEvent): Promise<void> {
     .from("loyalty_codes")
     .update({ status: "used", used_at: new Date().toISOString(), shopify_order_id: ev.id })
     .in("id", ids)
-    .eq("status", "active");
+    .in("status", USABLE_CODE_STATUSES);
   if (updErr) throw new Error(`could not mark codes used: ${updErr.message}`);
 }
 

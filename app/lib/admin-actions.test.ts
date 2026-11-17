@@ -223,6 +223,39 @@ describe("program action", () => {
     expect(body.warning).toContain("metafield_write_failed");
   });
 
+  it("saves the hidden flag of each reward and publishes the storefront config", async () => {
+    const fake = setup({ from: () => ({ data: {} }) });
+    const { action } = await import("../routes/app.program");
+    const tiers = [{ points: "3000", discount_pkr: "100", hidden: false }, { points: "6000", discount_pkr: "250", hidden: true }];
+    const body = await read(await action(args(post("/app/program", { intent: "save_redemption", tiers: JSON.stringify(tiers) }))));
+    expect(body).toMatchObject({ ok: true, message: "Ways to redeem saved. 1 hidden from customers" });
+    expect(fake.firstArg("app_settings", "update")).toEqual({
+      redemption_tiers: [{ points: 3000, discount_pkr: 100 }, { points: 6000, discount_pkr: 250, hidden: true }],
+    });
+    expect(svc.bustSettingsCache).toHaveBeenCalledTimes(1);
+    expect(svc.syncStorefrontConfig).toHaveBeenCalledWith(admin);
+  });
+
+  it("allows every reward to be hidden and says customers have nothing to redeem", async () => {
+    const fake = setup({ from: () => ({ data: {} }) });
+    const { action } = await import("../routes/app.program");
+    const tiers = [{ points: 3000, discount_pkr: 100, hidden: true }, { points: 6000, discount_pkr: 250, hidden: true }];
+    const body = await read(await action(args(post("/app/program", { intent: "save_redemption", tiers: JSON.stringify(tiers) }))));
+    expect(body).toMatchObject({ ok: true, message: "Saved. Every reward is hidden, so customers have nothing to redeem" });
+    expect((fake.firstArg("app_settings", "update") as { redemption_tiers: unknown[] }).redemption_tiers).toHaveLength(2);
+    expect(svc.syncStorefrontConfig).toHaveBeenCalledWith(admin);
+  });
+
+  it("rejects a hidden flag that is not true or false, and a hidden row that breaks the rules", async () => {
+    setup({ from: () => ({ data: {} }) });
+    const { action } = await import("../routes/app.program");
+    const badFlag = await action(args(post("/app/program", { intent: "save_redemption", tiers: JSON.stringify([{ points: 3000, discount_pkr: 100, hidden: "yes" }]) })));
+    expect(badFlag.status).toBe(400);
+    const dup = await action(args(post("/app/program", { intent: "save_redemption", tiers: JSON.stringify([{ points: 3000, discount_pkr: 100 }, { points: 3000, discount_pkr: 250, hidden: true }]) })));
+    expect(dup.status).toBe(400);
+    expect(svc.syncStorefrontConfig).not.toHaveBeenCalled();
+  });
+
   it("refuses an unknown rule and an invalid reward table", async () => {
     setup({ from: () => ({ data: {} }) });
     const { action } = await import("../routes/app.program");
@@ -478,6 +511,31 @@ describe("every admin route checks the admin session", () => {
       const first = body.slice(0, body.indexOf(";") + 1);
       expect(first).toContain("await authenticate.admin(request)");
     }
+  });
+
+  it.each(files)("%s exports only Remix route exports", (file) => {
+    // Any other export from a route file stays in the browser bundle and can pull
+    // server-only code into it, which breaks the production build.
+    const allowed = new Set(["loader", "action", "default", "ErrorBoundary", "headers", "links", "meta", "handle", "shouldRevalidate", "HydrateFallback"]);
+    const src = fs.readFileSync(path.join(dir, file), "utf8");
+    const names = [...src.matchAll(/^export\s+(?:async\s+)?(?:const|let|var|function|class)\s+([A-Za-z0-9_$]+)/gm)].map((m) => m[1]);
+    if (/^export\s+default\b/m.test(src)) names.push("default");
+    expect(names.filter((n) => !allowed.has(n))).toEqual([]);
+    expect(src).not.toMatch(/^export\s*\{/m);
+    expect(src).not.toMatch(/^export\s+type\s/m);
+  });
+
+  it("the navigation lives in a component file and lists every section once", async () => {
+    const { NAV_ITEMS, HOME_PATH } = await import("../components/admin-nav");
+    expect(HOME_PATH).toBe("/app");
+    expect(NAV_ITEMS.map((n) => n.label)).toEqual(["Customers", "Program", "Referrals", "Influencers", "Campaigns", "Analytics", "On-site", "Settings", "Import"]);
+    expect(new Set(NAV_ITEMS.map((n) => n.path)).size).toBe(NAV_ITEMS.length);
+    for (const item of NAV_ITEMS) {
+      // each link has a route file behind it (app.import.tsx is the import stream's)
+      const base = `app.${item.path.replace("/app/", "")}`;
+      expect(fs.existsSync(path.join(dir, `${base}.tsx`)) || fs.existsSync(path.join(dir, `${base}._index.tsx`)), item.path).toBe(true);
+    }
+    expect(fs.readFileSync(path.join(dir, "app.tsx"), "utf8")).not.toContain("export const NAV_ITEMS");
   });
 
   it("no page offers the removed settings", () => {

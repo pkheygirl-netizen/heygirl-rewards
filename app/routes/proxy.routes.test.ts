@@ -38,7 +38,10 @@ vi.mock("../lib/review-claims.service", () => ({ claimReview: h.claimReview }));
 vi.mock("../lib/referrals.service", () => ({ recordReferralVisit: h.recordReferralVisit }));
 vi.mock("../lib/influencer.service", () => ({ effectiveReferralPoints: h.effectiveReferralPoints }));
 vi.mock("../lib/queue.server", () => ({ socialQueue: { add: h.queueAdd } }));
-vi.mock("../lib/widget-data.server", () => ({
+vi.mock("../lib/widget-data.server", async (importOriginal) => ({
+  // Pure helpers and constants come from the real module.
+  SOCIAL_AWARD_DELAY_HOURS: (await importOriginal<typeof import("../lib/widget-data.server")>()).SOCIAL_AWARD_DELAY_HOURS,
+  isValidBirthday: (await importOriginal<typeof import("../lib/widget-data.server")>()).isValidBirthday,
   SOCIAL_PLATFORMS: ["instagram", "facebook", "youtube"],
   getMemberByCustomerId: h.getMemberByCustomerId,
   getCustomerPayload: h.getCustomerPayload,
@@ -54,7 +57,8 @@ import { loader as historyLoader } from "./proxy.history";
 import { action as redeemAction } from "./proxy.redeem";
 import { action as socialAction } from "./proxy.social";
 import { action as reviewAction } from "./proxy.review";
-import { action as birthdayAction, isValidBirthday } from "./proxy.birthday";
+import { action as birthdayAction } from "./proxy.birthday";
+import { isValidBirthday, SOCIAL_AWARD_DELAY_HOURS } from "../lib/widget-data.server";
 import { action as referralAction, loader as referralLoader } from "./proxy.referral";
 
 const MEMBER = {
@@ -203,6 +207,17 @@ describe("POST /proxy/redeem", () => {
     expect(h.redeemPoints).not.toHaveBeenCalled();
   });
 
+  it("a hidden reward does not exist: refused before the service is called", async () => {
+    h.getSettings.mockResolvedValue({ ...SETTINGS, redemption_tiers: [{ points: 3000, discount_pkr: 100, hidden: true }, { points: 6000, discount_pkr: 250 }] });
+    const res = await redeemAction(args(signedRequest("redeem", { customerId: "42", body: { points: 3000 } })));
+    expect(await json(res)).toEqual({ ok: false, error: "invalid_tier" });
+    expect(h.redeemPoints).not.toHaveBeenCalled();
+    // A visible reward in the same table still goes through.
+    h.redeemPoints.mockResolvedValue({ ok: true, code: "REWARD-CD34", discountPkr: 250, expiresAt: "2026-12-16T00:00:00Z" });
+    expect(await json(await redeemAction(args(signedRequest("redeem", { customerId: "42", body: { points: 6000 } }))))).toMatchObject({ ok: true, code: "REWARD-CD34" });
+    expect(h.redeemPoints).toHaveBeenCalledTimes(1);
+  });
+
   it("opted-out and blocked members get a clear state and nothing is redeemed", async () => {
     h.getMemberByCustomerId.mockResolvedValueOnce({ ...MEMBER, opted_out: true });
     const a = await redeemAction(args(signedRequest("redeem", { customerId: "42", body: { points: 3000 } })));
@@ -219,7 +234,10 @@ describe("POST /proxy/social", () => {
     const res = await socialAction(args(signedRequest("social", { customerId: "42", body: { platform: "instagram" } })));
     expect(await json(res)).toEqual({ ok: true, status: "awarded", points: 1000 });
     expect(h.social.insert).toHaveBeenCalledWith(expect.objectContaining({ member_id: "m1", action_type: "instagram", status: "pending" }));
-    expect(h.queueAdd).toHaveBeenCalledWith("award_social_points", { socialActionId: "sa1" }, expect.objectContaining({ jobId: "social-sa1" }));
+    // Delayed by the one shared constant, and with no fixed job id (the unique
+    // social_actions row is the idempotency guard).
+    expect(h.queueAdd).toHaveBeenCalledWith("award_social_points", { socialActionId: "sa1" }, { delay: SOCIAL_AWARD_DELAY_HOURS * 60 * 60 * 1000 });
+    expect(h.queueAdd.mock.calls[0][2]).not.toHaveProperty("jobId");
   });
 
   it("a repeat claim is `already_claimed`, not an error", async () => {
@@ -363,5 +381,18 @@ describe("review fixes: routes", () => {
     expect(await json(await socialAction(args(signedRequest("social", { customerId: "42", body: { platform: "instagram" } }))))).toEqual({ ok: false, error: "disabled" });
     expect(h.social.insert).not.toHaveBeenCalled();
     expect(h.queueAdd).not.toHaveBeenCalled();
+  });
+});
+
+describe("route modules export only Remix route exports", () => {
+  it("no helper or constant is exported from a proxy route file", async () => {
+    const { readdirSync } = await import("node:fs");
+    const allowed = ["loader", "action", "headers", "default", "meta", "links", "handle", "shouldRevalidate", "ErrorBoundary"];
+    const files = readdirSync("app/routes").filter((f) => /^proxy\.[a-z]+\.tsx$/.test(f));
+    expect(files.length).toBeGreaterThanOrEqual(7);
+    for (const f of files) {
+      const mod = (await import(/* @vite-ignore */ `./${f.replace(/\.tsx$/, "")}`)) as Record<string, unknown>;
+      for (const name of Object.keys(mod)) expect(allowed, `${f} exports ${name}`).toContain(name);
+    }
   });
 });

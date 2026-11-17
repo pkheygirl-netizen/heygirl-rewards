@@ -68,6 +68,24 @@ describe("getSettings", () => {
 });
 
 describe("parsers", () => {
+  it("parseRedemptionTiers keeps `hidden: true` and nothing else as hidden", () => {
+    expect(
+      parseRedemptionTiers([
+        { points: 6000, discount_pkr: 250, hidden: true },
+        { points: 3000, discount_pkr: 100, hidden: false },
+        { points: 9000, discount_pkr: 400, hidden: "true" },
+        { points: 12000, discount_pkr: 500 },
+      ]),
+    ).toEqual([
+      { points: 3000, discount_pkr: 100 },
+      { points: 6000, discount_pkr: 250, hidden: true },
+      { points: 9000, discount_pkr: 400 },
+      { points: 12000, discount_pkr: 500 },
+    ]);
+    // every reward hidden is a legal state: it must not fall back to the defaults
+    expect(parseRedemptionTiers([{ points: 6000, discount_pkr: 250, hidden: true }])).toEqual([{ points: 6000, discount_pkr: 250, hidden: true }]);
+  });
+
   it("parseRedemptionTiers drops bad rows, duplicates and falls back to defaults", () => {
     expect(parseRedemptionTiers(null)).toEqual(DEFAULT_REDEMPTION_TIERS);
     expect(parseRedemptionTiers([{ points: -1, discount_pkr: 5 }, "x"])).toEqual(DEFAULT_REDEMPTION_TIERS);

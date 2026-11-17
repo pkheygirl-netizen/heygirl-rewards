@@ -16,6 +16,7 @@ import {
   processOrderCancelled,
   processOrderEvent,
   processRefundEvent,
+  shippingLinesTotal,
   type OrderEvent,
 } from "./orders.server";
 
@@ -77,6 +78,83 @@ describe("payload parsing", () => {
     expect(ev.hasGiftCard).toBe(true);
     expect(ev.customer).toMatchObject({ id: "42", email: null, phone: "+923001234567", first_name: "Hina" });
     expect(ev.placedAt).toBe("2026-11-10T10:00:00+05:00");
+  });
+
+  describe("shipping taken off the basis is the shipping actually charged (review item 2)", () => {
+    const sm = (amount: string) => ({ shop_money: { amount, currency_code: "PKR" } });
+    // Rs. 3,000 of goods, Rs. 250 shipping made free by a code: the customer paid 3,000.
+    const freeShippingOrder = (over: Record<string, unknown> = {}) => ({
+      id: 5002,
+      total_price: "3000.00",
+      current_total_price: "3000.00",
+      total_tax: "0.00",
+      current_total_tax: "0.00",
+      total_shipping_price_set: sm("250.00"), // undiscounted
+      discount_codes: [{ code: "WELCOME-AAAA", amount: "250.00", type: "shipping" }],
+      shipping_lines: [
+        { price: "250.00", price_set: sm("250.00"), discounted_price: "0.00", discounted_price_set: sm("0.00"), current_discounted_price_set: sm("0.00"), is_removed: false },
+      ],
+      customer: { id: 42 },
+      ...over,
+    });
+
+    it("free-shipping code: the full Rs. 3,000 earns, whatever the order-level shipping field says", () => {
+      // order-level current field absent (older payloads) or itself undiscounted
+      expect(parseOrderPayload(freeShippingOrder())!.merchandisePkr).toBe(3000);
+      expect(parseOrderPayload(freeShippingOrder({ current_shipping_price_set: sm("250.00") }))!.merchandisePkr).toBe(3000);
+      expect(parseOrderPayload(freeShippingOrder())!.grossMerchandisePkr).toBe(3000);
+    });
+
+    it("a line with only the plain discounted_price string is read too", () => {
+      const ev = parseOrderPayload(freeShippingOrder({ shipping_lines: [{ price: "250.00", discounted_price: "0.00" }] }))!;
+      expect(ev.merchandisePkr).toBe(3000);
+    });
+
+    it("paid shipping is still taken off, summed over several lines", () => {
+      const ev = parseOrderPayload(
+        freeShippingOrder({
+          total_price: "3400.00",
+          current_total_price: "3400.00",
+          total_shipping_price_set: sm("400.00"),
+          shipping_lines: [
+            { price: "250.00", discounted_price_set: sm("250.00"), current_discounted_price_set: sm("250.00") },
+            { price: "150.00", discounted_price_set: sm("150.00"), current_discounted_price_set: sm("150.00") },
+          ],
+        }),
+      )!;
+      expect(ev.merchandisePkr).toBe(3000);
+      expect(ev.grossMerchandisePkr).toBe(3000);
+    });
+
+    it("shipping refunded later: the current line price follows the current total", () => {
+      const ev = parseOrderPayload(
+        freeShippingOrder({
+          total_price: "3250.00",
+          current_total_price: "3000.00", // the Rs. 250 shipping was refunded
+          total_shipping_price_set: sm("250.00"),
+          shipping_lines: [{ price: "250.00", discounted_price_set: sm("250.00"), current_discounted_price_set: sm("0.00") }],
+        }),
+      )!;
+      expect(ev.merchandisePkr).toBe(3000);
+      expect(ev.grossMerchandisePkr).toBe(3000);
+    });
+
+    it("no shipping lines, or a line without a discounted price: falls back to the order-level fields as before", () => {
+      expect(parseOrderPayload(freeShippingOrder({ shipping_lines: [], total_price: "3250.00", current_total_price: "3250.00" }))!.merchandisePkr).toBe(3000);
+      expect(parseOrderPayload(freeShippingOrder({ shipping_lines: undefined, total_price: "3250.00", current_total_price: "3250.00" }))!.merchandisePkr).toBe(3000);
+      expect(
+        parseOrderPayload(freeShippingOrder({ shipping_lines: [{ price: "250.00" }], total_price: "3250.00", current_total_price: "3250.00", current_shipping_price_set: sm("250.00") }))!
+          .merchandisePkr,
+      ).toBe(3000);
+    });
+
+    it("shippingLinesTotal", () => {
+      expect(shippingLinesTotal(undefined, "original")).toBeNull();
+      expect(shippingLinesTotal([], "current")).toBeNull();
+      expect(shippingLinesTotal([{ discounted_price_set: sm("100.00") }, { discounted_price: "50.50" }], "original")).toBe(150.5);
+      expect(shippingLinesTotal([{ discounted_price_set: sm("100.00") }], "current")).toBeNull();
+      expect(shippingLinesTotal([{ current_discounted_price_set: sm("0.00") }], "current")).toBe(0);
+    });
   });
 
   it("order without a customer or id", () => {
@@ -257,6 +335,15 @@ describe("award: fulfilled AND paid AND not cancelled", () => {
     await processOrderEvent(order({ discountCodes: ["reward-abc"] }), "s");
     expect(code).toMatchObject({ status: "used", shopify_order_id: "O1" });
     expect(other.status).toBe("active");
+  });
+
+  it("a code used while its row is still pending is marked used, so the sweep cannot show it as unused later (review item 5)", async () => {
+    const m = seedMember(h.db, { shopify_customer_id: "C1" });
+    const stuck = h.db.seed("loyalty_codes", { member_id: m.id, code: "REWARD-PEND", status: "pending", discount_amount: 100, points_spent: 3000, expires_at: "2027-01-01" });
+    const cancelled = h.db.seed("loyalty_codes", { member_id: m.id, code: "REWARD-GONE", status: "cancelled", discount_amount: 100, points_spent: 3000, expires_at: "2027-01-01" });
+    await processOrderEvent(order({ discountCodes: ["REWARD-PEND", "REWARD-GONE"] }), "s");
+    expect(stuck).toMatchObject({ status: "used", shopify_order_id: "O1" });
+    expect(cancelled.status).toBe("cancelled"); // other states are never touched
   });
 });
 

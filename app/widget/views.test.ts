@@ -1,7 +1,31 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { earnList, earnTab, errorText, guestHome, historyRows, influencerBox, instagramHandle, redeemList, referralReward, referTab, rewardsTab, stateMessage, tiersView, type Ctx } from "./views";
+import { EARN_ICON, earnList, earnTab, errorText, guestHome, historyRows, influencerBox, instagramHandle, redeemList, referralReward, referTab, rewardsTab, stateMessage, tiersView, type Ctx } from "./views";
 import { makeConfig, makeMember } from "./test-fixtures";
+import { HUB_CSS, HUB_ICONS } from "./hub-css";
+
+/** WCAG contrast ratio of two #rgb / #rrggbb colours. */
+function contrast(a: string, b: string): number {
+  const lum = (h: string) => {
+    const hex = h.length === 4 ? "#" + h[1] + h[1] + h[2] + h[2] + h[3] + h[3] : h;
+    const [r, g, bl] = [1, 3, 5].map((i) => {
+      const c = parseInt(hex.slice(i, i + 2), 16) / 255;
+      return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+  };
+  const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+/** The <li> rows of an earn list, keyed by their title text. */
+function rows(html: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const li of html.split("<li").slice(1)) {
+    const t = /class="hg-row__t">([^<]+)</.exec(li);
+    if (t) out[t[1]] = "<li" + li;
+  }
+  return out;
+}
 
 const ctx = (over: Partial<Ctx> = {}): Ctx => ({ cfg: makeConfig(), member: null, loginUrl: "/customer_authentication/login", path: "/", origin: "https://shop.example", ...over });
 
@@ -162,5 +186,156 @@ describe("review fixes: views", () => {
     const cfg = makeConfig({ campaign });
     expect(earnList(ctx({ cfg, now: Date.parse("2026-11-16T00:00:00Z") }))).toContain("11.11: 2x points until 20 Nov 2026");
     expect(earnList(ctx({ cfg, now: Date.parse("2026-11-21T00:00:00Z") }))).not.toContain("11.11");
+  });
+});
+
+describe("ways to earn: icons, tap targets and states (owner request)", () => {
+  const TITLES = ["Join HeyGirl Rewards", "Place an order", "Follow on Instagram", "Like on Facebook", "Subscribe on YouTube", "Post a review", "Celebrate your birthday", "Refer a friend"];
+
+  it("every way to earn has its own icon, all defined once in the sprite in one style", () => {
+    const names = Object.values(EARN_ICON);
+    expect(Object.keys(EARN_ICON).sort()).toEqual(["birthday", "facebook", "instagram", "purchase", "referral", "review", "signup", "youtube"]);
+    expect(new Set(names).size).toBe(8);
+    const paths = names.map((n) => {
+      const m = new RegExp(`<symbol id="hg-i-${n}" viewBox="0 0 24 24"><path d="([^"]+)"/></symbol>`).exec(HUB_ICONS);
+      expect(m, `symbol ${n}`).not.toBeNull();
+      return m![1];
+    });
+    expect(new Set(paths).size).toBe(8); // eight different drawings
+    // Stroke-only line icons that take the badge colour; no fills, no brand colours.
+    expect(HUB_ICONS).not.toMatch(/fill=|#[0-9a-f]{3,6}/i);
+    expect(HUB_CSS).toMatch(/\.hg-ic\{fill:none;stroke:currentColor;stroke-width:1\.8/);
+    // Platform logos are not shipped under any name.
+    for (const id of ["instagram", "facebook", "youtube"]) expect(HUB_ICONS).not.toContain(`hg-i-${id}"`);
+  });
+
+  it("each row shows its own icon inside the round tinted badge, with the platform named in words", () => {
+    const m = makeMember({}, { review: { eligible: true, pending: 0 } });
+    for (const c of [ctx(), ctx({ member: m })]) {
+      const r = rows(earnList(c));
+      expect(Object.keys(r).filter((t) => t !== "Add your birthday")).toEqual(TITLES);
+      const icon = (t: string) => /<span class="hg-row__ic"><svg class="hg-ic" aria-hidden="true" focusable="false"><use href="#hg-i-([a-z]+)"\/><\/svg><\/span>/.exec(r[t])![1];
+      expect(TITLES.map(icon)).toEqual(["join", "bag", "cam", "like", "play", "star", "cake", "friends"]);
+    }
+    expect(HUB_CSS).toMatch(/\.hg-row__ic\{width:40px;height:40px;flex:none;border-radius:50%;background:#fbf1cf;color:var\(--gd\)/);
+    expect(contrast("#7a5c00", "#fbf1cf")).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it("an actionable row is one tap target (a single button or link) ending in a chevron", () => {
+    const m = makeMember({}, { review: { eligible: true, pending: 0 } });
+    const r = rows(earnList(ctx({ member: m, shopUrl: "/collections/all" })));
+    const tappable = ["Place an order", "Follow on Instagram", "Like on Facebook", "Subscribe on YouTube", "Post a review", "Refer a friend"];
+    for (const t of tappable) {
+      // The control wraps the whole row: it opens right after <li> and closes right before </li>.
+      expect(r[t], t).toMatch(/^<li><(button type="button"|a) class="hg-nav hg-earn-row" [^>]+>.*<use href="#hg-i-chev"\/><\/svg><\/(button|a)><\/li>/);
+      expect((r[t].match(/<button|<a /g) || []).length, t).toBe(1);
+      // Only phrasing content inside a button.
+      expect(r[t]).not.toMatch(/<(p|div)[ >]/);
+    }
+    expect(r["Place an order"]).toContain('<a class="hg-nav hg-earn-row" href="/collections/all">');
+    expect(r["Refer a friend"]).toContain('data-go="refer"');
+    expect(r["Post a review"]).toContain('data-act="review"');
+    // Rows with nothing to do are plain text: no control and no chevron.
+    for (const t of ["Join HeyGirl Rewards", "Celebrate your birthday"]) {
+      expect(r[t]).toContain('<div class="hg-nav hg-earn-row hg-nav--off">');
+      expect(r[t]).not.toContain("hg-i-chev");
+    }
+    // 44px rule: the row control is at least 56px tall and full width; the chevron is enlarged.
+    expect(HUB_CSS).toMatch(/\.hg-nav\{width:100%;min-height:56px;/);
+    expect(HUB_CSS).toMatch(/\.hg-nav>\.hg-ic\{width:28px;height:28px;stroke-width:2\.6/);
+  });
+
+  it("the order row is linked only to a same-site path", () => {
+    const m = makeMember();
+    for (const bad of [undefined, "", "//evil.example", "https://evil.example", "javascript:alert(1)"]) {
+      expect(rows(earnList(ctx({ member: m, shopUrl: bad })))["Place an order"]).not.toContain("<a ");
+    }
+    expect(rows(earnList(ctx({ shopUrl: "/collections/all" })))["Place an order"]).not.toContain("<a "); // guest preview
+  });
+
+  it("state is written in words: Claimed, Available, Pending, Saved", () => {
+    const m = makeMember({ canSetBirthday: false, birthday: { month: 3, day: 12 } }, { social: { instagram: "available", facebook: "claimed", youtube: "available" }, review: { eligible: false, pending: 1 } });
+    const r = rows(earnList(ctx({ member: m })));
+    const state = (t: string) => (/<span class="hg-st hg-st--[a-z]+">(?:<svg[^>]*><use[^>]*\/><\/svg>)?([A-Za-z ]+)<\/span>/.exec(r[t]) || [])[1];
+    expect(state("Join HeyGirl Rewards")).toBe("Claimed");
+    expect(state("Place an order")).toBe("Available");
+    expect(state("Follow on Instagram")).toBe("Available");
+    expect(state("Like on Facebook")).toBe("Claimed");
+    expect(state("Post a review")).toBe("Pending");
+    expect(state("Celebrate your birthday")).toBe("Saved");
+    expect(state("Refer a friend")).toBe("Available");
+    // A claimed or pending row can no longer be tapped.
+    expect(r["Like on Facebook"]).not.toMatch(/<button|data-act/);
+    expect(r["Post a review"]).not.toMatch(/<button|data-act/);
+    // Review not yet possible: explained in words, no state label and no control.
+    const none = rows(earnList(ctx({ member: makeMember() })))["Post a review"];
+    expect(none).toContain("Available after your next delivered order.");
+    expect(none).not.toMatch(/hg-st|<button/);
+    // Guests see a preview with no states.
+    expect(earnList(ctx())).not.toContain("hg-st");
+  });
+
+  it("the social row keeps its two taps: the first opens the profile and relabels the row, never replacing its content", () => {
+    const hub = readFileSync("app/widget/hub.ts", "utf8");
+    const branch = hub.slice(hub.indexOf('a === "social" && m'), hub.indexOf('a === "social-claim" && m'));
+    expect(branch).toContain('window.open(url, "_blank", "noopener")');
+    expect(branch).toContain('b.setAttribute("data-act", "social-claim")');
+    expect(branch).toContain('b.querySelector(".hg-st")');
+    expect(branch).not.toContain("b.textContent"); // would wipe the icon, title and chevron
+    expect(HUB_CSS).toContain(".hg-nav[disabled]{opacity:.55}");
+  });
+
+  it("state label colours reach 4.5:1 on their own background", () => {
+    expect(HUB_CSS).toMatch(/\.hg-st\{[^}]*background:#fbf1cf;color:var\(--gd\)/);
+    expect(HUB_CSS).toMatch(/\.hg-st--claimed,\.hg-st--saved\{background:#e7f4e8;color:#14491b\}/);
+    expect(HUB_CSS).toMatch(/\.hg-st--pending\{background:#eee;color:#595959\}/);
+    expect(contrast("#7a5c00", "#fbf1cf")).toBeGreaterThanOrEqual(4.5);
+    expect(contrast("#14491b", "#e7f4e8")).toBeGreaterThanOrEqual(4.5);
+    expect(contrast("#595959", "#eee")).toBeGreaterThanOrEqual(4.5);
+    expect(contrast("#595959", "#ffffff")).toBeGreaterThanOrEqual(4.5); // row sub text
+  });
+});
+
+describe("owner notes (coding changes.txt) 1-3", () => {
+  const embed = readFileSync("extensions/hg-loyalty/blocks/embed.liquid", "utf8");
+
+  it("1: the rewards tab says Refer & Earn directly above the referral link", () => {
+    const h = rewardsTab(ctx({ member: makeMember() }));
+    const last = h.slice(h.lastIndexOf('<section class="hg-card">'));
+    expect(last).toMatch(/^<section class="hg-card"><h3 class="hg-h">Refer &amp; Earn<\/h3>/);
+    expect(last).toContain('id="hg-ref-link"');
+  });
+
+  it("2: Your progress is the first block of the VIP tiers tab", () => {
+    expect(tiersView(ctx({ member: makeMember() }))).toMatch(/^<section class="hg-card hg-prog"><h3 class="hg-h">Your progress<\/h3>/);
+  });
+
+  it("3: one gold-and-red gift drawing for every screen size, used by the launcher and before Ways to redeem", () => {
+    expect(embed.match(/<symbol id="hg-i-gift"/g)).toHaveLength(1);
+    const symbol = /<symbol id="hg-i-gift"[^>]*>(.*?)<\/symbol>/.exec(embed)![1];
+    expect(symbol).toContain('fill="#d62839"'); // red ribbon
+    expect(symbol).toContain('fill="#f7c531"'); // gold box
+    expect(symbol).not.toContain("currentColor");
+    expect(embed).toContain('<span class="hg-launcher__ic"><svg class="hg-ico" aria-hidden="true" focusable="false"><use href="#hg-i-gift"/></svg></span>');
+    // No screen-size rule swaps or hides the launcher icon, and no emoji is used.
+    const css = /<style>([\s\S]*?)<\/style>/.exec(embed)![1];
+    for (const block of css.match(/@media[^{]*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}/g) || []) expect(block).not.toMatch(/hg-launcher__ic|hg-ico/);
+    expect(embed).not.toMatch(/[\u{1F300}-\u{1FAFF}]/u);
+    const home = guestHome(ctx());
+    expect(home).toMatch(/<span class="hg-row__ic"><svg class="hg-ico" aria-hidden="true" focusable="false"><use href="#hg-i-gift"\/><\/svg><\/span><span class="hg-nav__t">Ways to redeem<\/span>/);
+    // The same drawing in front of every reward row.
+    expect(redeemList(ctx())).toContain('<use href="#hg-i-gift"/>');
+  });
+
+  it("3: the chevron after Ways to earn / Ways to redeem is larger and darker than a normal icon", () => {
+    const home = guestHome(ctx());
+    for (const label of ["Ways to earn", "Ways to redeem"]) {
+      expect(home).toMatch(new RegExp(`<span class="hg-nav__t">${label}</span><svg class="hg-ic" aria-hidden="true" focusable="false"><use href="#hg-i-chev"/></svg></button>`));
+    }
+    const base = /\.hg-ic,\.hg-ico\{width:(\d+)px/.exec(HUB_CSS)!;
+    const chev = /\.hg-nav>\.hg-ic\{width:(\d+)px;height:(\d+)px;stroke-width:([\d.]+);color:var\(--ink\)\}/.exec(HUB_CSS)!;
+    expect(Number(chev[1])).toBeGreaterThan(Number(base[1]));
+    expect(Number(chev[3])).toBeGreaterThan(1.8);
+    expect(embed).toContain('"shop": {{ routes.all_products_collection_url | json }}');
   });
 });

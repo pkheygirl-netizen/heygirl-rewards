@@ -19,7 +19,7 @@ export type BootData = {
   config: Config;
   customer: { id: string } | null;
   page: string;
-  urls: { login: string; hub: string; rewards: string };
+  urls: { login: string; hub: string; rewards: string; shop?: string };
   cart: CartState;
 };
 

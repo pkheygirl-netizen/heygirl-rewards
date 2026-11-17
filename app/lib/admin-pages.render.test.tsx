@@ -12,6 +12,8 @@ const ID = "11111111-1111-4111-8111-111111111111";
 const SHOP = "heygirl-pk.myshopify.com";
 let loaderData: unknown = null;
 let fetcherData: unknown = undefined;
+let routeError: unknown = null;
+let layoutData: unknown = undefined;
 
 function mockAll(script: Parameters<typeof fakeDb>[0]) {
   vi.resetModules();
@@ -37,9 +39,20 @@ function mockAll(script: Parameters<typeof fakeDb>[0]) {
   vi.doMock("./smile-import-queue.server", () => ({}));
   vi.doMock("./csv-download.client", () => ({ downloadCsv: vi.fn() }));
   vi.doMock("@shopify/polaris-viz", () => ({ LineChart: () => null }));
+  // Shopify's provider wires Polaris links to the real Remix <Link>, which needs a
+  // running router. Here it only has to show that the App Bridge script is asked for.
+  vi.doMock("@shopify/shopify-app-remix/react", () => ({
+    AppProvider: (p: { apiKey: string; children?: unknown }) => (
+      <>
+        <script data-api-key={p.apiKey} />
+        {p.children as never}
+      </>
+    ),
+  }));
   vi.doMock("@shopify/polaris-viz/build/esm/styles.css", () => ({}));
   // The pieces of Remix a page touches, without a running router.
-  vi.doMock("@remix-run/react", () => {
+  vi.doMock("@remix-run/react", async () => {
+    const actual = await vi.importActual<typeof import("@remix-run/react")>("@remix-run/react");
     const fetcher = () => ({
       state: "idle", data: fetcherData, submit: vi.fn(), load: vi.fn(),
       Form: (p: Record<string, unknown>) => <form {...(p as object)} />,
@@ -53,7 +66,9 @@ function mockAll(script: Parameters<typeof fakeDb>[0]) {
       useNavigation: () => ({ state: "idle" }),
       useLocation: () => ({ pathname: "/app" }),
       useSubmit: () => vi.fn(),
-      useRouteError: () => null,
+      useRouteError: () => routeError,
+      useRouteLoaderData: () => layoutData,
+      isRouteErrorResponse: actual.isRouteErrorResponse,
       Form: (p: Record<string, unknown>) => <form {...(p as object)} />,
       Link: (p: { to: string; children?: unknown }) => <a href={p.to}>{p.children as never}</a>,
       Outlet: () => null,
@@ -175,6 +190,8 @@ const empty: Parameters<typeof fakeDb>[0] = {
 beforeEach(() => {
   loaderData = null;
   fetcherData = undefined;
+  routeError = null;
+  layoutData = undefined;
 });
 
 describe("pages render with data", () => {
@@ -182,9 +199,13 @@ describe("pages render with data", () => {
 
   it("Home", async () => {
     const html = await renderRoute("app._index.tsx", "/app?view=claims");
-    for (const text of ["Needs your attention", "3 referrals held for review", "2 review claims waiting", "41 members have points expiring", "1,912", "842,300", "14%", "Rs.386,000", "Reward cost Rs.21,500", "Members by tier", "Order #1042 delivered and paid", "Program live", "Reject"]) {
+    for (const text of ["Needs your attention", "3 referrals held for review", "2 review claims waiting", "41 members have points expiring", "1,912", "842,300", "14%", "Rs.386,000", "Reward cost Rs.21,500", "Members by tier", "Order #1042 delivered and paid", "Program live", "Reject",
+      "Order value using a reward", "after discounts, without shipping and tax, before refunds"]) {
       expect(html, text).toContain(text);
     }
+    // the figure is not called "sales" anywhere on Home, and rewards are available so there is no warning
+    expect(html).not.toMatch(/Sales using a reward/);
+    expect(html).not.toContain("Customers currently have nothing to redeem");
     expect(html).toContain(`href="/app/customers/${ID}"`);
     expect(html).toContain('href="/app/referrals?status=flagged"');
   });
@@ -215,6 +236,10 @@ describe("pages render with data", () => {
 
   it("Program", async () => {
     const html = await renderRoute("app.program.tsx", "/app/program");
+    // every reward row has the switch; none is hidden in this fixture
+    expect(html.match(/Shown to customers/g)!.length).toBeGreaterThanOrEqual(2);
+    expect(html).not.toContain("Customers currently have nothing to redeem");
+    expect(html).not.toContain(">Hidden<");
     for (const text of ["Ways to earn", "Place an order", "1 point per Rs.1", "Post a review", "Ways to redeem", "Add reward", "No profile link yet"]) {
       expect(html, text).toContain(text);
     }
@@ -249,7 +274,8 @@ describe("pages render with data", () => {
 
   it("Analytics", async () => {
     const html = await renderRoute("app.analytics._index.tsx", "/app/analytics?period=90d");
-    for (const text of ["Redemption rate", "Outstanding points", "600,000", "Value at the base redemption rate", "Rs.20,000", "3,000 points for Rs.100 off", "Top earners", "Referral funnel", "Influencers compared"]) {
+    for (const text of ["Redemption rate", "Outstanding points", "600,000", "Value at the base redemption rate", "Rs.20,000", "3,000 points for Rs.100 off", "Top earners", "Referral funnel", "Influencers compared",
+      "Order value using a reward against reward cost", "Order value, before refunds", "after discounts, without shipping and tax", "Refunds made later are not taken off, so this is not net sales"]) {
       expect(html, text).toContain(text);
     }
   });
@@ -275,11 +301,124 @@ describe("pages render with data", () => {
   });
 });
 
+describe("hidden rewards", () => {
+  const withTiers = (tiers: unknown): Parameters<typeof fakeDb>[0] => ({
+    rpc: full.rpc,
+    from: (table, chain) => (table === "app_settings" ? { data: { ...SETTINGS, redemption_tiers: tiers } } : full.from!(table, chain)),
+  });
+
+  it("Program shows a hidden reward muted, with a Hidden badge and its switch off, and keeps it in the table", async () => {
+    mockAll(withTiers([{ points: 3000, discount_pkr: 100, hidden: true }, { points: 6000, discount_pkr: 250 }]));
+    const html = await renderRoute("app.program.tsx", "/app/program");
+    expect(html.match(/>Hidden</g)).toHaveLength(1);
+    expect(html.match(/Shown to customers<\/span>/g)!.length).toBe(2); // one switch per row
+    expect(html.match(/type="checkbox"[^>]*checked=""/g) ?? []).toHaveLength(1); // only the shown reward is ticked
+    expect(html).toContain("customers do not see this reward and cannot redeem it");
+    expect(html).toContain("1 of 2 hidden.");
+    expect(html).toContain('value="3000"'); // still editable, not deleted
+    expect(html).toContain("--p-color-bg-surface-secondary"); // the muted row background
+    expect(html).not.toContain("Customers currently have nothing to redeem");
+  });
+
+  it("with every reward hidden, Program and Home warn that customers have nothing to redeem", async () => {
+    mockAll(withTiers([{ points: 3000, discount_pkr: 100, hidden: true }, { points: 6000, discount_pkr: 250, hidden: true }]));
+    const program = await renderRoute("app.program.tsx", "/app/program");
+    expect(program).toContain("Customers currently have nothing to redeem");
+    expect(program.match(/>Hidden</g)).toHaveLength(2);
+    const home = await renderRoute("app._index.tsx", "/app");
+    expect(home).toContain("Customers currently have nothing to redeem");
+    expect(home).toContain("All 2 rewards are hidden");
+    expect(home).toContain('href="/app/program"');
+  });
+
+  it("Analytics never values points at a hidden reward", async () => {
+    mockAll(withTiers([{ points: 3000, discount_pkr: 100, hidden: true }, { points: 6000, discount_pkr: 250 }]));
+    const some = await renderRoute("app.analytics._index.tsx", "/app/analytics");
+    expect(some).toContain("6,000 points for Rs.250 off");
+    expect(some).not.toContain("3,000 points for Rs.100 off");
+    expect(some).toContain("Rs.25,000"); // 600,000 points at 250 per 6,000
+    mockAll(withTiers([{ points: 3000, discount_pkr: 100, hidden: true }]));
+    const none = await renderRoute("app.analytics._index.tsx", "/app/analytics");
+    expect(none).toContain("No reward is shown");
+    expect(none).not.toContain("3,000 points for Rs.100 off");
+  });
+
+  it("Home does not warn while the program is switched off", async () => {
+    mockAll({ rpc: full.rpc, from: (table, chain) => (table === "app_settings" ? { data: { ...SETTINGS, program_enabled: false, redemption_tiers: [] } } : full.from!(table, chain)) });
+    const home = await renderRoute("app._index.tsx", "/app");
+    expect(home).not.toContain("Customers currently have nothing to redeem");
+  });
+});
+
+describe("admin error boundary", () => {
+  class ErrorResponseImpl {
+    constructor(public status: number, public statusText: string, public data: unknown, public internal = false) {}
+  }
+  async function renderBoundary(): Promise<string> {
+    const mod = (await import("../routes/app")) as unknown as { ErrorBoundary: () => ReactElement | null };
+    const Boundary = mod.ErrorBoundary;
+    return renderToString(<AppProvider i18n={en}><Boundary /></AppProvider>);
+  }
+  beforeEach(() => mockAll(full));
+
+  it("a page that fails to load shows a plain message and none of the system text", async () => {
+    routeError = new Error('relation "points_ledger" does not exist at character 15\n    at loader (/app/build/server/index.js:1:1)');
+    layoutData = { apiKey: "client123" };
+    const html = await renderBoundary();
+    expect(html).toContain("This page could not be loaded");
+    expect(html).toContain("Nothing was changed");
+    expect(html).toContain("Go to Home");
+    expect(html).not.toMatch(/points_ledger|relation|index\.js|at loader/);
+    // App Bridge and the navigation stay on the page, so staff can move on
+    expect(html).toContain('data-api-key="client123"');
+    expect(html).toContain("ui-nav-menu");
+  });
+
+  it("when the layout itself could not load there is no in-app link, only the reload advice", async () => {
+    routeError = new Error("ECONNREFUSED 10.0.0.5:5432");
+    layoutData = undefined;
+    const html = await renderBoundary();
+    expect(html).toContain("This page could not be loaded");
+    expect(html).toContain("Reload this browser tab");
+    expect(html).not.toContain("Go to Home");
+    expect(html).not.toMatch(/ECONNREFUSED|10\.0\.0\.5/);
+  });
+
+  it("a record that does not exist shows a not-found state with the loader's own message", async () => {
+    routeError = new ErrorResponseImpl(404, "Not Found", { adminMessage: "This customer could not be found" });
+    layoutData = { apiKey: "client123" };
+    const html = await renderBoundary();
+    expect(html).toContain("This customer could not be found");
+    expect(html).toContain("open it from the list again");
+    expect(html).not.toContain("This page could not be loaded");
+  });
+
+  it("Shopify's own auth responses still go to Shopify's boundary untouched", async () => {
+    // the App Bridge bounce page that authenticate.admin throws as a Response
+    routeError = new ErrorResponseImpl(200, "OK", '<script data-api-key="k" src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>');
+    layoutData = { apiKey: "client123" };
+    const html = await renderBoundary();
+    expect(html).toContain('src="https://cdn.shopify.com/shopifycloud/app-bridge.js"');
+    expect(html).not.toContain("This page could not be loaded");
+    expect(html).not.toContain("Not found");
+    // an empty 401/410 from the auth flow is also left to Shopify
+    routeError = new ErrorResponseImpl(401, "Unauthorized", null);
+    expect(await renderBoundary()).toContain("Handling response");
+  });
+
+  it("the layout still exports Shopify's headers boundary", async () => {
+    const mod = (await import("../routes/app")) as unknown as { headers: (a: Record<string, Headers>) => Headers };
+    const out = mod.headers({ parentHeaders: new Headers(), loaderHeaders: new Headers(), actionHeaders: new Headers(), errorHeaders: new Headers({ "X-Shopify-Retry-Invalid-Session-Request": "1" }) });
+    expect(out.get("X-Shopify-Retry-Invalid-Session-Request")).toBe("1");
+  });
+});
+
 describe("pages render when there is nothing yet", () => {
   beforeEach(() => mockAll(empty));
 
   it.each([
-    ["app._index.tsx", "/app", "Nothing is waiting for you"],
+    // an empty reward table is itself something to act on
+    ["app._index.tsx", "/app", "There are no rewards. Add one so customers can use their points."],
     ["app.customers._index.tsx", "/app/customers", "Import from Smile"],
     ["app.customers._index.tsx", "/app/customers?q=zzz", "Clear search and filters"],
     ["app.referrals.tsx", "/app/referrals", "Nothing is held for review"],

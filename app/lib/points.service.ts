@@ -477,20 +477,23 @@ export async function ensureTierFollowUps(memberId: string, shop?: string | null
 // ── Social follows (rule 15) ──────────────────────────────────────────────
 
 export async function awardSocial(socialActionId: string): Promise<{ awarded: boolean; reason?: string }> {
-  const { data: row } = await db
+  const { data: row, error: rowErr } = await db
     .from("social_actions")
     .select("id, member_id, action_type, status")
     .eq("id", socialActionId)
     .maybeSingle();
+  if (rowErr) throw new Error(`social action lookup failed: ${rowErr.message}`);
   if (!row) return { awarded: false, reason: "not_found" };
   if (row.status !== "pending") return { awarded: false, reason: "not_pending" };
 
   const platform = row.action_type as "youtube" | "facebook" | "instagram";
-  const { data: member } = await db
+  const { data: member, error: memberErr } = await db
     .from("members")
     .select("id, tier, is_blocked, opted_out")
     .eq("id", row.member_id)
     .maybeSingle();
+  // A failed read is not "no member": the claim must not be voided for it.
+  if (memberErr) throw new Error(`member lookup failed: ${memberErr.message}`);
   const settings = await getSettings();
 
   const void_ = async (reason: string) => {
@@ -523,6 +526,47 @@ export async function awardSocial(socialActionId: string): Promise<{ awarded: bo
       .catch((err) => console.error("[awardSocial] notification enqueue failed:", err));
   }
   return { awarded };
+}
+
+/** How long after `pending_until` a claim is left to its own delayed job. */
+export const SOCIAL_SWEEP_GRACE_MS = 60 * 60 * 1000;
+
+/**
+ * Cron safety net for social claims. The delayed BullMQ job is normally what
+ * awards a `social_actions` row; if Redis loses that job (a flush, a restore
+ * from an older snapshot) nothing else would, and the row would stay pending
+ * for ever. This awards every row still pending more than an hour past its
+ * `pending_until` through awardSocial, the same path the job uses: the ledger
+ * write is idempotent on the claim id, so a job that turns up late, or a
+ * second sweep, cannot pay twice. A row that fails is left pending and tried
+ * again on the next run.
+ */
+export async function awardOverdueSocialActions(
+  now: Date = new Date(),
+  batchSize = 200,
+): Promise<{ awarded: number; closed: number; failed: number }> {
+  const cutoff = new Date(now.getTime() - SOCIAL_SWEEP_GRACE_MS).toISOString();
+  const { data: rows, error } = await db
+    .from("social_actions")
+    .select("id")
+    .eq("status", "pending")
+    .lt("pending_until", cutoff)
+    .order("pending_until", { ascending: true })
+    .limit(batchSize);
+  if (error) throw new Error(`overdue social claim query failed: ${error.message}`);
+
+  const out = { awarded: 0, closed: 0, failed: 0 };
+  for (const row of rows ?? []) {
+    try {
+      const r = await awardSocial(String(row.id));
+      if (r.awarded) out.awarded++;
+      else out.closed++; // voided (blocked, rule off...) or already in the ledger
+    } catch (err) {
+      out.failed++;
+      console.error("[awardOverdueSocialActions] claim", row.id, "failed:", err instanceof Error ? err.message : err);
+    }
+  }
+  return out;
 }
 
 // ── Expiry (rule 8) ───────────────────────────────────────────────────────

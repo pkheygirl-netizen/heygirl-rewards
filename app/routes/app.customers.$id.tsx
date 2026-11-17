@@ -20,7 +20,7 @@ import {
 } from "../lib/admin-members.server";
 import { ADJUST_LIMITS, NOTE_MAX, previewBalance } from "../components/admin-constants";
 import { getSettingsRow } from "../lib/admin-settings.server";
-import { errorMessage, invalid, reasonText } from "../lib/admin-validate.server";
+import { errorMessage, invalid, notFound, reasonText } from "../lib/admin-validate.server";
 import { UUID_RE } from "../lib/admin-db.server";
 import { setBirthday, setOptOut } from "../lib/points.service";
 import { cancelRewardCode } from "../lib/redemption.service";
@@ -33,7 +33,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const id = params.id ?? "";
   const profile = await getCustomerProfile(id);
-  if (!profile) throw new Response("Customer not found", { status: 404 });
+  if (!profile) throw notFound("This customer could not be found");
 
   const sp = new URL(request.url).searchParams;
   const filter = parseActivityFilter(sp.get("activity"));

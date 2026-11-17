@@ -92,15 +92,30 @@ function ruleEnabled(rules: unknown, key: EarnRuleKey): boolean {
   return bool((r as Loose).enabled, true);
 }
 
-function redemptionTiers(v: unknown): StorefrontConfig["redemptionTiers"] {
+/** A reward the owner has hidden (`hidden: true` in the jsonb). Absent = visible. */
+function isHidden(o: Loose): boolean {
+  return o.hidden === true || o.hidden === "true";
+}
+
+/**
+ * Public reward list from the raw `app_settings.redemption_tiers` jsonb.
+ * Hidden rewards are left out entirely: for the storefront they do not exist.
+ */
+export function visibleRedemptionTiers(v: unknown): StorefrontConfig["redemptionTiers"] {
   if (!Array.isArray(v)) return [];
   return v
-    .map((t) => {
-      const o = (t ?? {}) as Loose;
-      return { points: int(o.points), discountPkr: int(o.discount_pkr ?? o.discountPkr) };
-    })
+    .map((t) => (t && typeof t === "object" ? (t as Loose) : {}))
+    .filter((o) => !isHidden(o))
+    .map((o) => ({ points: int(o.points), discountPkr: int(o.discount_pkr ?? o.discountPkr) }))
     .filter((t) => t.points > 0 && t.discountPkr > 0)
     .sort((a, b) => a.points - b.points);
+}
+
+/** True when `points` names a reward that exists but only as a hidden one. */
+export function isHiddenRedemptionTier(v: unknown, points: number): boolean {
+  if (!Array.isArray(v)) return false;
+  const same = v.map((t) => (t && typeof t === "object" ? (t as Loose) : {})).filter((o) => int(o.points) === points);
+  return same.length > 0 && same.every(isHidden);
 }
 
 function faqs(v: unknown): StorefrontConfig["faqs"] {
@@ -147,7 +162,7 @@ export function buildStorefrontConfig(settings: Loose, campaign: CampaignRow | n
     social: { instagram: social("instagram"), facebook: social("facebook"), youtube: social("youtube") },
     earnRules,
     tiers: { gold: int(s.tier_gold_threshold_pkr), diamond: int(s.tier_diamond_threshold_pkr) },
-    redemptionTiers: redemptionTiers(s.redemption_tiers),
+    redemptionTiers: visibleRedemptionTiers(s.redemption_tiers),
     birthday: {
       silver: int(s.birthday_reward_silver_pkr),
       gold: int(s.birthday_reward_gold_pkr),
@@ -226,11 +241,28 @@ async function gql<T>(admin: AdminGraphqlClient, query: string, variables?: Reco
   return body.data;
 }
 
+/**
+ * The stored `redemption_tiers` jsonb exactly as saved, or null when it cannot
+ * be read. Read directly so a hidden reward stays off the storefront even if
+ * the typed settings reader does not carry the `hidden` flag.
+ */
+export async function readRawRedemptionTiers(): Promise<unknown[] | null> {
+  try {
+    const { data, error } = await db.from("app_settings").select("redemption_tiers").eq("id", 1).maybeSingle();
+    const raw = error || !data ? null : (data as Loose).redemption_tiers;
+    return Array.isArray(raw) ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function syncStorefrontConfig(admin: AdminGraphqlClient): Promise<{ ok: boolean; reason?: string }> {
   try {
     const settings = (await getSettings()) as unknown as Loose;
     const campaigns = await getUpcomingCampaigns();
     const config = buildStorefrontConfig(settings, campaigns[0] ?? null, campaigns[1] ?? null);
+    const rawTiers = await readRawRedemptionTiers();
+    if (rawTiers) config.redemptionTiers = config.redemptionTiers.filter((t) => !isHiddenRedemptionTier(rawTiers, t.points));
 
     const inst = await gql<{ currentAppInstallation: { id: string } | null }>(admin, APP_INSTALLATION_QUERY);
     const ownerId = inst.currentAppInstallation?.id;

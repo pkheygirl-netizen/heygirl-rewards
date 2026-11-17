@@ -2,15 +2,9 @@
 // Set once from the storefront; afterwards only the admin can change it (rule 13).
 import type { ActionFunctionArgs } from "@remix-run/node";
 import { guardProxy, proxyJson, readJsonBody } from "../lib/proxy-auth.server";
-import { getMemberByCustomerId } from "../lib/widget-data.server";
+import { getMemberByCustomerId, isValidBirthday } from "../lib/widget-data.server";
 import { setBirthday } from "../lib/points.service";
 import { getSettings } from "../lib/settings.server";
-
-const DAYS_IN_MONTH = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-
-export function isValidBirthday(month: number, day: number): boolean {
-  return Number.isInteger(month) && Number.isInteger(day) && month >= 1 && month <= 12 && day >= 1 && day <= DAYS_IN_MONTH[month - 1];
-}
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   // HMAC first: an unsigned request learns nothing, not even the allowed method.

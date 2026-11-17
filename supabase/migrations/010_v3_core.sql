@@ -206,6 +206,23 @@ UPDATE public.order_webhook_state o
    AND o.refunded_basis_pkr = 0
    AND o.gross_basis_pkr IS NULL;
 
+-- That earlier refund must also count as a refund EVENT. reverse_order_points
+-- adds each new refund to refund_events_basis_pkr and takes the larger of that
+-- and refunded_basis_pkr as the order's refunded total; with the events total
+-- left at 0, a new refund of such an order that is no bigger than the old one
+-- reversed nothing, and a bigger one reversed only the difference.
+-- Only rows v3 has never touched (gross_basis_pkr is set by every v3 write,
+-- refund_ids by every v3 refund), so running this again changes nothing.
+UPDATE public.order_webhook_state o
+   SET refund_events_basis_pkr = o.refunded_basis_pkr
+ WHERE o.points_awarded = true
+   AND o.points_awarded_amount > 0
+   AND o.points_reversed_amount > 0
+   AND o.refunded_basis_pkr > 0
+   AND o.refund_events_basis_pkr = 0
+   AND o.gross_basis_pkr IS NULL
+   AND o.refund_ids = '{}';
+
 -- ─────────────────────────── bonus_campaigns ───────────────────────────
 -- Rule 2: a campaign switched off AFTER an order was placed still counts for
 -- that order. The admin only flips is_active, so the moment is recorded here.

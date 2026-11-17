@@ -34,6 +34,14 @@ describe("outstanding points", () => {
     expect(o).toEqual({ points: 600000, members: 420, baseTier: { points: 3000, discount_pkr: 100 }, valuePkr: 20000 });
   });
 
+  it("ignores hidden rewards: the base rate is the lowest reward customers can choose", async () => {
+    const { mod } = await load();
+    const o = mod.outstandingFrom(600000, 420, [{ points: 3000, discount_pkr: 100, hidden: true }, { points: 6000, discount_pkr: 250 }]);
+    expect(o.baseTier).toEqual({ points: 6000, discount_pkr: 250 });
+    expect(o.valuePkr).toBe(25000);
+    expect(mod.outstandingFrom(600000, 420, [{ points: 3000, discount_pkr: 100, hidden: true }])).toMatchObject({ baseTier: null, valuePkr: 0 });
+  });
+
   it("gives no rupee value when there are no rewards", async () => {
     const { mod } = await load();
     expect(mod.outstandingFrom(600000, 420, [])).toMatchObject({ baseTier: null, valuePkr: 0 });

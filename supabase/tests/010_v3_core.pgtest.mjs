@@ -56,6 +56,13 @@ await q(`select * from award_points($1,'signup','L1',1000,null,null,null,null::n
 await q(`select * from award_points($1,'purchase','LO1',2000,now()+interval '300 days','LO1',null,2000)`, [legacy]);
 await q(`select * from award_points($1,'redemption','code-a',-1500,null,null,null,null::numeric)`, [legacy]);
 await q(`select * from award_points($1,'signup','L2',1000,null,null,null,null::numeric)`, [legacyGold]);
+// a pre-v3 order that was awarded and then partly refunded before the migration
+const [{ id: legacyRefunded }] = await q(`insert into members (shopify_customer_id,email,referral_slug) values ('L3','l3@x.com','legacy-3') returning id`);
+await q(`insert into order_webhook_state (shopify_order_id, shopify_customer_id, order_total_pkr) values ('LO2','L3',4000), ('LO3','L3',4000)`);
+await q(`select * from award_points($1,'purchase','LO2',4000,now()+interval '300 days','LO2',null,4000)`, [legacyRefunded]);
+await q(`select * from award_points($1,'refund_deduction','old-refund-1',-1000,null,'LO2',null,null::numeric)`, [legacyRefunded]);
+await q(`select * from award_points($1,'purchase','LO3',4000,now()+interval '300 days','LO3',null,4000)`, [legacyRefunded]);
+await q(`select * from award_points($1,'refund_deduction','old-refund-2',-1000,null,'LO3',null,null::numeric)`, [legacyRefunded]);
 await q(`insert into loyalty_codes (member_id,code,discount_amount,points_spent,expires_at,shopify_price_rule_id) values
   ($1,'BDAY-AAAA',250,0,now()+interval '30 days','gid://shopify/PriceRule/1'),
   ($1,'FREESHIP-BBBB',0,0,now()+interval '30 days',null),
@@ -101,6 +108,20 @@ for (const f of files.filter((f) => f > "010_v3_core.sql")) {
   eq("unique index: second open referral for the same friend refused", dupErr, "23505");
   const ows = (await q(`select points_awarded_amount, earning_basis_pkr from order_webhook_state where shopify_order_id='LO1'`))[0];
   eq("backfill: legacy awarded order gets points_awarded_amount", [ows.points_awarded_amount, Number(ows.earning_basis_pkr)], [2000, 2000]);
+  // review item 7: a pre-v3 order with an earlier refund, refunded again under v3
+  const lo2 = (await q(`select points_awarded_amount a, points_reversed_amount r, refunded_basis_pkr rb, refund_events_basis_pkr ev from order_webhook_state where shopify_order_id='LO2'`))[0];
+  eq("backfill: legacy refunded order carries the old refund as basis AND as a refund event", [lo2.a, lo2.r, Number(lo2.rb), Number(lo2.ev)], [4000, 1000, 1000, 1000]);
+  const same = (await q(`select * from reverse_order_points('LO2','refund','new-refund-1',1000)`))[0];
+  eq("legacy refunded order: a new refund the SAME size as the old one reverses its full share", same.reversed, 1000);
+  const replay = (await q(`select * from reverse_order_points('LO2','refund','new-refund-1',1000)`))[0];
+  eq("legacy refunded order: the same refund replayed reverses nothing", replay.reversed, 0);
+  const bigger = (await q(`select * from reverse_order_points('LO3','refund','new-refund-2',2500)`))[0];
+  eq("legacy refunded order: a bigger new refund reverses all of it, not just the difference", bigger.reversed, 2500);
+  const after = await q(`select shopify_order_id o, points_reversed_amount r, refunded_basis_pkr::float rb from order_webhook_state where shopify_order_id in ('LO2','LO3') order by 1`);
+  eq("legacy refunded orders: totals after the new refunds", after, [{ o: "LO2", r: 2000, rb: 2000 }, { o: "LO3", r: 3500, rb: 3500 }]);
+  eq("legacy refunded member: balance = 8000 - 2000 - 3500", (await q(`select points_balance b from members where id=$1`, [legacyRefunded]))[0].b, 2500);
+  const cancelRest = (await q(`select * from reverse_order_points('LO3','cancel','cancel-LO3',null)`))[0];
+  eq("legacy refunded order: cancelling takes only the remainder (never more than awarded)", cancelRest.reversed, 500);
   const over = await q(`select count(*)::int c from pg_proc where proname='award_points'`);
   eq("only one award_points overload remains", over[0].c, 1);
   let chk = null;
@@ -494,6 +515,54 @@ console.log("\n[13] campaign switched off is time-stamped");
   await q(`update bonus_campaigns set is_active=true where id=$1`, [c.id]);
   eq("switching back on clears it", (await q(`select deactivated_at from bonus_campaigns where id=$1`, [c.id]))[0].deactivated_at, null);
   await q(`update bonus_campaigns set is_active=false where id=$1`, [c.id]);
+}
+
+console.log("\n[14] 013_rls: row level security on every app table, no policies");
+{
+  const m013 = fs.readFileSync(path.join(MIG, "013_rls.sql"), "utf8");
+  let again = null;
+  try { await db.query(m013); await db.query(m013); } catch (e) { again = e.message; }
+  ok("013 is re-runnable (applied twice more without error)", again === null, again);
+
+  // every table the migrations create, straight from the catalogue, so a
+  // table added later without row level security fails this test
+  const open = await q(`select c.relname from pg_class c join pg_namespace n on n.oid=c.relnamespace
+    where n.nspname='public' and c.relkind='r' and not c.relrowsecurity order by 1`);
+  eq("no table in public is left without row level security", open.map((r) => r.relname), []);
+  const forced = await q(`select c.relname from pg_class c join pg_namespace n on n.oid=c.relnamespace
+    where n.nspname='public' and c.relkind='r' and c.relforcerowsecurity`);
+  eq("FORCE is not used (the owner and definer functions keep working)", forced.length, 0);
+  eq("no policies exist", (await q(`select count(*)::int c from pg_policies where schemaname='public'`))[0].c, 0);
+  const named = await q(`select relname from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname='public' and c.relkind='r' and c.relrowsecurity
+    and relname in ('shopify_sessions','members','points_ledger','order_webhook_state','loyalty_codes','referrals','social_actions','bonus_campaigns','app_settings','notification_log','gdpr_requests') order by 1`);
+  eq("the eleven 001-009 tables are covered", named.length, 11);
+
+  // A role like Supabase's anon (no BYPASSRLS, plain table grants) sees nothing
+  // and can write nothing; one like service_role (BYPASSRLS) is unaffected.
+  await db.query(`do $$ begin
+    if not exists (select 1 from pg_roles where rolname='t_anon') then create role t_anon nologin; end if;
+    if not exists (select 1 from pg_roles where rolname='t_service') then create role t_service nologin bypassrls; end if;
+  end $$;
+  grant usage on schema public to t_anon, t_service;
+  grant all on all tables in schema public to t_anon, t_service;`);
+  const total = (await q(`select count(*)::int c from members`))[0].c;
+  await db.query(`set role t_anon`);
+  const anonSees = (await q(`select (select count(*) from members)::int m, (select count(*) from points_ledger)::int l, (select count(*) from app_settings)::int s, (select count(*) from shopify_sessions)::int ss`))[0];
+  let anonWrite = null;
+  try { await q(`insert into members (shopify_customer_id, referral_slug) values ('ANON','anon-slug')`); } catch (e) { anonWrite = e.code; }
+  const anonUpd = (await db.query(`update members set points_balance = 999999`)).rowCount;
+  await db.query(`reset role`);
+  eq("anon-like role reads zero rows from members, ledger, settings, sessions", anonSees, { m: 0, l: 0, s: 0, ss: 0 });
+  eq("anon-like role cannot insert (42501) and updates zero rows", [anonWrite, anonUpd], ["42501", 0]);
+  await db.query(`set role t_service`);
+  const svc = (await q(`select count(*)::int c from members`))[0].c;
+  const svcSettings = (await q(`select count(*)::int c from app_settings`))[0].c;
+  await db.query(`reset role`);
+  ok("service-like role (BYPASSRLS) still reads everything", total > 0 && svc === total && svcSettings === 1, { total, svc, svcSettings });
+  // the engine's functions still work for the owner after 013
+  const m = await member();
+  const r = await award(m.id, "signup", "after-rls", 100);
+  eq("award_points still works after 013", [r.awarded, r.new_balance], [true, 100]);
 }
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);

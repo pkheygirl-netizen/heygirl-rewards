@@ -33,7 +33,7 @@ describe("schedules", () => {
     await registerCronJobs();
     const jobs = h.cron.jobs;
     expect(jobs.map((j) => j.name).sort()).toEqual([
-      "cron_birthday", "cron_expiry", "cron_expiry_warning", "cron_heartbeat", "cron_pending_codes", "cron_review_release", "cron_storefront_config",
+      "cron_birthday", "cron_expiry", "cron_expiry_warning", "cron_heartbeat", "cron_pending_codes", "cron_review_release", "cron_social_sweep", "cron_storefront_config",
     ]);
     for (const j of jobs) expect((j.opts as { repeat: { tz: string } }).repeat.tz).toBe("Asia/Karachi");
     const pattern = (n: string) => (jobs.find((j) => j.name === n)!.opts as { repeat: { pattern: string } }).repeat.pattern;
@@ -92,6 +92,60 @@ describe("runBirthday", () => {
     h.db.table("app_settings")[0].earn_rules = { birthday: { enabled: false } };
     bustSettingsCache();
     expect(await runBirthday(now)).toMatchObject({ queued: 0, reason: "disabled" });
+  });
+});
+
+describe("cron_social_sweep: a social claim whose delayed job was lost (review item 3)", () => {
+  const NOW = Date.now();
+  const claim = (memberId: unknown, platform: string, minutesPastDue: number, over = {}) =>
+    h.db.seed("social_actions", { member_id: memberId, action_type: platform, status: "pending", pending_until: new Date(NOW - minutesPastDue * 60_000).toISOString(), ...over });
+
+  it("is scheduled twice an hour", async () => {
+    await registerCronJobs();
+    const job = h.cron.jobs.find((j) => j.name === "cron_social_sweep")!;
+    expect((job.opts as { repeat: { pattern: string } }).repeat.pattern).toBe("7,37 * * * *");
+  });
+
+  it("awards rows pending more than an hour past pending_until, once; younger ones are left to their job", async () => {
+    h.db.table("app_settings")[0].social_points_instagram = 750;
+    const m = seedMember(h.db);
+    const lost = claim(m.id, "instagram", 61);
+    const recent = claim(m.id, "facebook", 59); // its own job may still be on its way
+    const notDue = claim(m.id, "youtube", -30);
+
+    expect(await runCronJob("cron_social_sweep")).toEqual({ awarded: 1, closed: 0, failed: 0 });
+    expect(lost).toMatchObject({ status: "awarded", points_awarded: 750 });
+    expect([recent.status, notDue.status]).toEqual(["pending", "pending"]);
+    expect(m.points_balance).toBe(750);
+    expect(h.db.table("points_ledger").filter((l) => l.action_type === "social_instagram")).toHaveLength(1);
+
+    // a second run finds nothing more to do
+    expect(await runCronJob("cron_social_sweep")).toEqual({ awarded: 0, closed: 0, failed: 0 });
+    expect(m.points_balance).toBe(750);
+  });
+
+  it("the job turned up after all and paid: the sweep only closes the row, nothing is paid twice", async () => {
+    const m = seedMember(h.db);
+    const row = claim(m.id, "instagram", 120);
+    // the ledger already holds the award, but the row was never marked
+    await h.db.rpc("award_points", { p_member_id: m.id, p_action_type: "social_instagram", p_reference_id: String(row.id), p_points: 1000 });
+    const before = m.points_balance;
+    expect(await runCronJob("cron_social_sweep")).toEqual({ awarded: 0, closed: 1, failed: 0 });
+    expect(row.status).toBe("awarded");
+    expect(m.points_balance).toBe(before);
+  });
+
+  it("blocked members' claims are voided; a database failure leaves the row pending for the next run", async () => {
+    const blocked = seedMember(h.db, { is_blocked: true });
+    const voided = claim(blocked.id, "instagram", 90);
+    const ok = seedMember(h.db);
+    const stuck = claim(ok.id, "instagram", 80);
+    h.db.failNext("rpc:award_points", "select", { code: "57014", message: "timeout" });
+    expect(await runCronJob("cron_social_sweep")).toEqual({ awarded: 0, closed: 1, failed: 1 });
+    expect(voided.status).toBe("voided");
+    expect(stuck.status).toBe("pending");
+    expect(await runCronJob("cron_social_sweep")).toEqual({ awarded: 1, closed: 0, failed: 0 });
+    expect(stuck.status).toBe("awarded");
   });
 });
 

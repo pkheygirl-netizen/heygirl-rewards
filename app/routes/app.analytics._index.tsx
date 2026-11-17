@@ -94,14 +94,15 @@ export default function Analytics() {
           <InlineGrid columns={{ xs: 1, md: 2 }} gap="400">
             <Card>
               <BlockStack gap="300">
-                <Text as="h2" variant="headingMd">Sales using a reward against reward cost</Text>
+                <Text as="h2" variant="headingMd">Order value using a reward against reward cost</Text>
                 <Row label="Orders placed with a reward code" value={fmtInt(s.rewardOrders)} />
-                <Row label="Sales on those orders" value={fmtPkr(s.rewardSalesPkr)} />
+                <Row label="Order value, before refunds" value={fmtPkr(s.rewardSalesPkr)} />
                 <Row label="Discount given by those codes" value={fmtPkr(s.rewardCostPkr)} />
-                <Row label="Cost as a share of those sales" value={pct(s.rewardCostPkr, s.rewardSalesPkr)} />
+                <Row label="Cost as a share of that order value" value={pct(s.rewardCostPkr, s.rewardSalesPkr)} />
                 <Text as="p" tone="subdued" variant="bodySm">
-                  Counts orders placed in the period that used a code bought with points. Cancelled orders are left out.
-                  Previous period: {fmtPkr(p.rewardSalesPkr)} sales, {fmtPkr(p.rewardCostPkr)} cost.
+                  Counts orders placed in the period that used a code bought with points. Order value is the product value of each order as it was placed:
+                  after discounts, without shipping and tax. Refunds made later are not taken off, so this is not net sales. Cancelled orders are left out.
+                  Previous period: {fmtPkr(p.rewardSalesPkr)} order value, {fmtPkr(p.rewardCostPkr)} cost.
                 </Text>
               </BlockStack>
             </Card>
@@ -113,12 +114,12 @@ export default function Analytics() {
                 <Row label="Pending, waiting for payment" value={fmtInt(s.pointsPending)} />
                 <Row
                   label="Value at the base redemption rate"
-                  value={o.baseTier ? fmtPkr(o.valuePkr) : "No rewards set"}
+                  value={o.baseTier ? fmtPkr(o.valuePkr) : "No reward is shown"}
                 />
                 <Text as="p" tone="subdued" variant="bodySm">
                   {o.baseTier
-                    ? `Base rate is the lowest reward: ${fmtInt(o.baseTier.points)} points for ${fmtPkr(o.baseTier.discount_pkr)} off. Larger rewards give more per point, so the real cost if everyone redeemed could be higher.`
-                    : "Add a reward on the Program page to see a rupee value."}{" "}
+                    ? `Base rate is the lowest reward customers can choose: ${fmtInt(o.baseTier.points)} points for ${fmtPkr(o.baseTier.discount_pkr)} off. Hidden rewards are not counted. Larger rewards give more per point, so the real cost if everyone redeemed could be higher.`
+                    : "No reward is shown to customers, so there is no rate to value points at. Add or show a reward on the Program page."}{" "}
                   <Link url="/app/program">Ways to redeem</Link>
                 </Text>
               </BlockStack>
@@ -154,11 +155,11 @@ export default function Analytics() {
                   <Link url={`/app/influencers?period=${d.period.key}`}>See all</Link>
                 </InlineStack>
                 {d.influencers.length === 0 ? (
-                  <Text as="p" tone="subdued">No influencers yet. <Link url="/app/influencers">Add one</Link> to compare their sales here.</Text>
+                  <Text as="p" tone="subdued">No influencers yet. <Link url="/app/influencers">Add one</Link> to compare their order value here.</Text>
                 ) : (
                   <DataTable
                     columnContentTypes={["text", "numeric", "numeric", "numeric", "numeric"]}
-                    headings={["Influencer", "Completed", "Orders", "Sales", "Points paid"]}
+                    headings={["Influencer", "Completed", "Orders", "Order value", "Points paid"]}
                     rows={d.influencers.map((r) => [
                       <Link url={`/app/influencers/${r.id}`} key={r.id}>{r.name}</Link>,
                       fmtInt(r.completed), fmtInt(r.orders), fmtPkr(r.salesPkr), fmtInt(r.pointsPaid),
