@@ -1,124 +1,70 @@
-import crypto from "node:crypto";
+// app/lib/referral-bonus.service.ts
+// The referred friend's free-shipping code, issued when the referral is
+// recorded at her first sign-in (rule 10), not after her first order.
 import { db } from "../db.server";
-import { shopifyGraphqlWithRetry } from "./shopify-graphql.server";
+import { getAdminForShop } from "./worker-admin.server";
+import { issueAutomaticCode } from "./discounts.server";
+import { getSettings } from "./settings.server";
+import { notificationQueue } from "./queue.server";
 
-type AdminArg = Parameters<typeof shopifyGraphqlWithRetry>[0];
-
-const CREATE_PRICE_RULE = `
-  mutation CreatePriceRule($input: PriceRuleInput!) {
-    priceRuleCreate(input: $input) {
-      priceRule { id }
-      priceRuleUserErrors { field message }
-    }
-  }
-`;
-
-const CREATE_DISCOUNT_CODE = `
-  mutation CreateDiscountCode($priceRuleId: ID!, $code: String!) {
-    priceRuleDiscountCodeCreate(priceRuleId: $priceRuleId, code: $code) {
-      priceRuleDiscountCode { code }
-      userErrors { field message }
-    }
-  }
-`;
-
-export async function awardReferralBonus(
-  referredShopifyCustomerId: string,
+export async function issueReferralFriendCode(
   referralId: string,
-  admin: AdminArg,
-): Promise<{ awarded: boolean; code?: string; reason?: string }> {
-  const customerId = String(referredShopifyCustomerId);
+  shop?: string | null,
+): Promise<{ issued: boolean; code?: string; codeId?: string; reason?: string }> {
+  const settings = await getSettings();
+  if (!settings.program_enabled) return { issued: false, reason: "program_disabled" };
+  if (!settings.referral_friend_free_shipping) return { issued: false, reason: "disabled" };
 
-  const { data: settings } = await db
-    .from("app_settings")
-    .select("referral_friend_discount_pkr")
-    .eq("id", 1)
+  const { data: referral, error } = await db
+    .from("referrals")
+    .select("id, status, referred_shopify_customer_id, friend_code_id")
+    .eq("id", referralId)
     .maybeSingle();
-  if (!settings || (settings.referral_friend_discount_pkr ?? 0) === 0) {
-    return { awarded: false, reason: "disabled" };
-  }
+  if (error) throw new Error(`referral lookup failed: ${error.message}`);
+  if (!referral || !referral.referred_shopify_customer_id) return { issued: false, reason: "referral_not_found" };
+  if (referral.status === "blocked" || referral.status === "rejected") return { issued: false, reason: "referral_closed" };
 
-  const { data: member } = await db
+  const { data: friend } = await db
     .from("members")
-    .select("id")
-    .eq("shopify_customer_id", customerId)
+    .select("id, shopify_customer_id, is_blocked, opted_out")
+    .eq("shopify_customer_id", referral.referred_shopify_customer_id)
     .maybeSingle();
-  if (!member) return { awarded: false, reason: "member_not_found" };
+  if (!friend) return { issued: false, reason: "member_not_found" };
+  if (friend.is_blocked) return { issued: false, reason: "blocked" };
+  if (friend.opted_out) return { issued: false, reason: "opted_out" };
 
-  // Dedup: skip if already awarded for this referral
-  const { error: logErr } = await db.from("notification_log").insert({
-    member_id: member.id,
-    event_type: "referral_bonus",
-    reference_id: String(referralId),
-  });
-  if (logErr) {
-    if (logErr.code === "23505") return { awarded: false, reason: "already_awarded" };
-    console.error("[awardReferralBonus] log insert error:", logErr);
-    return { awarded: false, reason: "db_error" };
-  }
-
-  const now = new Date();
-  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-
-  const priceRuleResult = await shopifyGraphqlWithRetry<{
-    priceRuleCreate: {
-      priceRule: { id: string } | null;
-      priceRuleUserErrors: Array<{ message: string }>;
-    };
-  }>(admin, CREATE_PRICE_RULE, {
-    input: {
-      title: "Referral Welcome — Free Shipping",
-      target: "SHIPPING_LINE",
-      valueType: "PERCENTAGE",
-      value: "-100",
-      // I5: pin to the referred friend so a shared code can't consume the reward
-      customerSelection: { customerIdsToAdd: [`gid://shopify/Customer/${customerId}`] },
-      usageLimit: 1,
-      appliesOncePerCustomer: true,
-      startsAt: now.toISOString(),
-      endsAt: expiresAt,
-    },
+  const admin = await getAdminForShop(shop ?? undefined);
+  const result = await issueAutomaticCode({
+    admin,
+    memberId: friend.id,
+    shopifyCustomerId: friend.shopify_customer_id,
+    kind: "referral_friend",
+    issueKey: `referral_friend:${referral.id}`,
+    title: "HeyGirl Rewards: friend welcome, free shipping",
+    discountPkr: 0,
+    freeShipping: true,
+    expiryDays: settings.reward_code_expiry_days,
   });
 
-  const priceRuleErrors = priceRuleResult.priceRuleCreate.priceRuleUserErrors;
-  if (priceRuleErrors.length > 0 || !priceRuleResult.priceRuleCreate.priceRule) {
-    console.error("[awardReferralBonus] priceRuleCreate errors:", priceRuleErrors);
-    return { awarded: false, reason: "shopify_price_rule_error" };
+  if (!result.issued) {
+    if (result.reason === "already_issued") {
+      if (!referral.friend_code_id && result.codeId) {
+        await db.from("referrals").update({ friend_code_id: result.codeId }).eq("id", referral.id);
+      }
+      return { issued: false, reason: "already_issued", code: result.code, codeId: result.codeId };
+    }
+    return { issued: false, reason: result.reason };
   }
 
-  const priceRuleId = priceRuleResult.priceRuleCreate.priceRule.id;
-  const codeValue = `FREESHIP-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
-
-  const discountResult = await shopifyGraphqlWithRetry<{
-    priceRuleDiscountCodeCreate: {
-      priceRuleDiscountCode: { code: string } | null;
-      userErrors: Array<{ message: string }>;
-    };
-  }>(admin, CREATE_DISCOUNT_CODE, { priceRuleId, code: codeValue });
-
-  if (
-    discountResult.priceRuleDiscountCodeCreate.userErrors.length > 0 ||
-    !discountResult.priceRuleDiscountCodeCreate.priceRuleDiscountCode
-  ) {
-    console.error(
-      "[awardReferralBonus] discountCodeCreate errors:",
-      discountResult.priceRuleDiscountCodeCreate.userErrors,
-    );
-    return { awarded: false, reason: "shopify_discount_code_error" };
-  }
-
-  const finalCode = discountResult.priceRuleDiscountCodeCreate.priceRuleDiscountCode.code;
-
-  await db.from("loyalty_codes").insert({
-    member_id: member.id,
-    code: finalCode,
-    shopify_price_rule_id: priceRuleId,
-    discount_amount: 0,
-    discount_amount_pkr: 0,
-    points_spent: 0,
-    status: "active",
-    expires_at: expiresAt,
-  });
-
-  return { awarded: true, code: finalCode };
+  await db.from("referrals").update({ friend_code_id: result.codeId }).eq("id", referral.id);
+  await notificationQueue
+    .add("reward_code_issued", {
+      memberId: friend.id,
+      code: result.code,
+      kind: "referral_friend",
+      freeShipping: true,
+      expiresAt: result.expiresAt,
+    })
+    .catch((err) => console.error("[issueReferralFriendCode] notification enqueue failed:", err));
+  return { issued: true, code: result.code, codeId: result.codeId };
 }

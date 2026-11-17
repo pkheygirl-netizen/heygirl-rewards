@@ -1,26 +1,21 @@
-// app/routes/proxy.history.tsx
+// app/routes/proxy.history.tsx — GET /apps/loyalty/history?filter=&page=
 import type { LoaderFunctionArgs } from "@remix-run/node";
-import { json } from "@remix-run/node";
-import { extractProxyCustomerId } from "../lib/proxy-auth.server";
-import { getPointsHistory, getProgramEnabled } from "../lib/widget-data.server";
-
-const CORS = { "Access-Control-Allow-Origin": "https://heygirl.pk" };
+import { guardProxy, proxyJson } from "../lib/proxy-auth.server";
+import { getMemberByCustomerId, getPointsHistory, parseHistoryFilter } from "../lib/widget-data.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const url = new URL(request.url);
-  let customerId: string | null;
+  const g = guardProxy(request, "history");
+  if (g.response) return g.response;
+  const { customerId, url } = g.ctx;
+
   try {
-    customerId = extractProxyCustomerId(url, process.env.SHOPIFY_API_SECRET!);
-  } catch {
-    return json({ error: "unauthorized" }, { status: 401, headers: { ...CORS, "Cache-Control": "no-store" } });
+    const member = await getMemberByCustomerId(customerId);
+    if (!member) return proxyJson({ rows: [], page: 1, total: 0, hasMore: false });
+    const page = Number(url.searchParams.get("page") ?? "1");
+    const filter = parseHistoryFilter(url.searchParams.get("filter"));
+    return proxyJson(await getPointsHistory(member.id, page, filter));
+  } catch (err) {
+    console.error("[proxy.history] error:", err instanceof Error ? err.message : err);
+    return proxyJson({ ok: false, error: "server_error" }, 500);
   }
-  if (!customerId) return json({ error: "not_logged_in" }, { status: 403, headers: { ...CORS, "Cache-Control": "no-store" } });
-
-  const programEnabled = await getProgramEnabled();
-  if (!programEnabled) return json({ items: [], total: 0, programEnabled: false }, { headers: { ...CORS, "Cache-Control": "no-store" } });
-
-  const page = Number(url.searchParams.get("page") ?? "1");
-  const filterType = url.searchParams.get("type") ?? null;
-  const result = await getPointsHistory(customerId, Math.max(1, page), filterType);
-  return json(result, { headers: { ...CORS, "Cache-Control": "no-store" } });
 };

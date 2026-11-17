@@ -1,0 +1,19 @@
+{%- comment -%}
+  Prints a whole number with thousands separators (100000 -> 100,000).
+  Usage: {% render 'hg-num', n: 12345 %}
+{%- endcomment -%}
+{%- liquid
+  assign hg_s = n | default: 0 | floor | append: ''
+  assign hg_out = ''
+  assign hg_len = hg_s | size
+  for i in (1..5)
+    if hg_len > 3
+      assign hg_cut = hg_len | minus: 3
+      assign hg_tail = hg_s | slice: hg_cut, 3
+      assign hg_out = hg_tail | append: hg_out | prepend: ','
+      assign hg_s = hg_s | slice: 0, hg_cut
+      assign hg_len = hg_cut
+    endif
+  endfor
+  echo hg_s | append: hg_out
+-%}

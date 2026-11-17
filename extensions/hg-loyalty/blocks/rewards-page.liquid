@@ -1,0 +1,184 @@
+{%- comment -%}
+  HeyGirl Rewards: landing page block for a `page.rewards` JSON template
+  (add it to the template's Apps section). Rendered fully in Liquid from the
+  settings metafield; every number and text comes from the admin.
+{%- endcomment -%}
+{%- assign cfg = app.metafields.hg_loyalty.config.value -%}
+{%- if cfg and cfg.enabled -%}
+  {%- liquid
+    assign r = cfg.earnRules
+    capture hg_mult
+      render 'hg-mult', cfg: cfg
+    endcapture
+    assign hg_mult = hg_mult | strip | times: 1.0
+    assign hg_ig = cfg.social.instagram.url | split: 'instagram.com/' | last | split: '/' | first | split: '?' | first
+  -%}
+  <style>
+    .hg-lp{max-width:960px;margin:0 auto;padding:0 16px 32px;color:#1a1a1a;font-size:16px;line-height:1.5;letter-spacing:normal}
+    .hg-lp *{box-sizing:border-box;letter-spacing:normal}
+    .hg-lp h1,.hg-lp h2,.hg-lp h3,.hg-lp p,.hg-lp ul,.hg-lp ol{margin:0;padding:0}
+    .hg-lp ul,.hg-lp ol{list-style:none}
+    .hg-lp__hero{background:linear-gradient(135deg,#f3bd1c,#e0a400);border-radius:18px;padding:32px 20px;text-align:center}
+    .hg-lp__hero h1{font-size:30px;line-height:1.2;font-weight:800;color:#1a1a1a}
+    .hg-lp__hero p{margin-top:8px;font-size:17px;color:#1a1a1a}
+    .hg-lp__btns{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;margin-top:18px}
+    .hg-lp__btn{display:inline-flex;align-items:center;justify-content:center;min-height:48px;padding:0 24px;border-radius:999px;border:2px solid #1a1a1a;background:#1a1a1a;color:#fff;font:inherit;font-weight:700;text-decoration:none;cursor:pointer}
+    .hg-lp__btn--alt{background:transparent;color:#1a1a1a}
+    .hg-lp__btn:focus-visible{outline:3px solid #1a1a1a;outline-offset:3px}
+    .hg-lp__sec{margin-top:36px}
+    .hg-lp__sec>h2{font-size:22px;font-weight:800;margin-bottom:14px;text-align:center}
+    .hg-lp__grid{display:grid;gap:12px;grid-template-columns:1fr}
+    .hg-lp__card{background:#fff;border:1px solid #e9e2cc;border-radius:14px;padding:16px}
+    .hg-lp__card h3{font-size:17px;font-weight:700}
+    .hg-lp__card p,.hg-lp__card li{color:#595959;font-size:15px}
+    .hg-lp__num{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:50%;background:#1a1a1a;color:#ffd24a;font-weight:800;margin-bottom:8px}
+    .hg-lp__tbl{width:100%;border-collapse:collapse;background:#fff;border:1px solid #e9e2cc;border-radius:14px;overflow:hidden}
+    .hg-lp__tbl th,.hg-lp__tbl td{padding:12px 14px;text-align:left;border-bottom:1px solid #e9e2cc;font-size:15px}
+    .hg-lp__tbl thead th{background:#fbf1cf;font-weight:700}
+    .hg-lp__tbl tr:last-child td,.hg-lp__tbl tr:last-child th{border-bottom:0}
+    .hg-lp__tbl td:last-child,.hg-lp__tbl thead th:last-child{text-align:right;font-weight:700;white-space:nowrap}
+    .hg-lp__tbl tbody th{font-weight:400}
+    .hg-lp__tier{border-top:5px solid #c9c9c9}
+    .hg-lp__tier--gold{border-top-color:#e8ad00}
+    .hg-lp__tier--diamond{border-top-color:#8f6fe0}
+    .hg-lp__tier li{padding:3px 0 3px 18px;position:relative}
+    .hg-lp__tier li:before{content:"";position:absolute;left:2px;top:12px;width:7px;height:7px;border-radius:50%;background:#e8ad00}
+    .hg-lp details{background:#fff;border:1px solid #e9e2cc;border-radius:12px;margin-bottom:8px}
+    .hg-lp summary{min-height:48px;padding:12px 14px;font-weight:700;cursor:pointer}
+    .hg-lp details>div{padding:0 14px 14px;color:#595959}
+    .hg-lp__terms{color:#595959;font-size:14px}
+    @media (min-width:750px){.hg-lp__grid{grid-template-columns:repeat(3,1fr)}.hg-lp__hero h1{font-size:38px}}
+  </style>
+  <div class="hg-lp" {{ block.shopify_attributes }}>
+    <div class="hg-lp__hero">
+      <h1>{{ cfg.programName | escape }}</h1>
+      {%- if cfg.tagline != blank -%}<p>{{ cfg.tagline | escape }}</p>{%- endif -%}
+      <div class="hg-lp__btns">
+        {%- if customer -%}
+          <button type="button" class="hg-lp__btn" data-hg-open="rewards">See my rewards</button>
+        {%- else -%}
+          <a class="hg-lp__btn" href="{{ routes.account_login_url }}">Join now</a>
+          <a class="hg-lp__btn hg-lp__btn--alt" href="{{ routes.account_login_url }}">Sign in</a>
+        {%- endif -%}
+      </div>
+    </div>
+
+    <section class="hg-lp__sec" aria-labelledby="hg-lp-how">
+      <h2 id="hg-lp-how">How it works</h2>
+      <ol class="hg-lp__grid">
+        <li class="hg-lp__card"><span class="hg-lp__num" aria-hidden="true">1</span><h3>Join</h3><p>Sign in to your account{% if r.signup.enabled != false and cfg.signupPoints > 0 %} and get {% render 'hg-num', n: cfg.signupPoints %} points to start{% endif %}. Placing an order also enrols you.</p></li>
+        <li class="hg-lp__card"><span class="hg-lp__num" aria-hidden="true">2</span><h3>Earn</h3><p>Collect points every time you shop, and for a few simple extras.</p></li>
+        <li class="hg-lp__card"><span class="hg-lp__num" aria-hidden="true">3</span><h3>Redeem</h3><p>Swap your points for a discount code and use it at checkout.</p></li>
+      </ol>
+    </section>
+
+    <section class="hg-lp__sec" aria-labelledby="hg-lp-earn">
+      <h2 id="hg-lp-earn">Ways to earn</h2>
+      <table class="hg-lp__tbl">
+        <thead><tr><th scope="col">What you do</th><th scope="col">Points</th></tr></thead>
+        <tbody>
+          {%- if r.signup.enabled != false and cfg.signupPoints > 0 -%}
+            <tr><th scope="row">Join {{ cfg.programName | escape }}</th><td>{% render 'hg-num', n: cfg.signupPoints %}</td></tr>
+          {%- endif -%}
+          {%- if r.purchase.enabled != false and cfg.pointsRate > 0 -%}
+            <tr><th scope="row">Place an order{% if hg_mult > 1 %} ({{ cfg.campaign.name | escape }}: {{ hg_mult | round: 2 }}x points until {{ cfg.campaign.endsAt | date: '%-d %b %Y' }}){% endif %}</th><td>{{ cfg.pointsRate }} per Rs. 1</td></tr>
+          {%- endif -%}
+          {%- if r.instagram.enabled != false and cfg.social.instagram.enabled and cfg.social.instagram.points > 0 -%}
+            <tr><th scope="row">Follow us on Instagram</th><td>{% render 'hg-num', n: cfg.social.instagram.points %}</td></tr>
+          {%- endif -%}
+          {%- if r.facebook.enabled != false and cfg.social.facebook.enabled and cfg.social.facebook.points > 0 -%}
+            <tr><th scope="row">Like us on Facebook</th><td>{% render 'hg-num', n: cfg.social.facebook.points %}</td></tr>
+          {%- endif -%}
+          {%- if r.youtube.enabled != false and cfg.social.youtube.enabled and cfg.social.youtube.points > 0 -%}
+            <tr><th scope="row">Subscribe on YouTube</th><td>{% render 'hg-num', n: cfg.social.youtube.points %}</td></tr>
+          {%- endif -%}
+          {%- if r.review.enabled != false and cfg.reviewPoints > 0 -%}
+            <tr><th scope="row">Post a review{% if hg_ig != blank and cfg.social.instagram.url contains 'instagram.com/' %} and tag @{{ hg_ig | escape }}{% endif %}</th><td>{% render 'hg-num', n: cfg.reviewPoints %}</td></tr>
+          {%- endif -%}
+          {%- if r.referral.enabled != false and cfg.referralPoints > 0 -%}
+            <tr><th scope="row">Refer a friend{% if cfg.friendFreeShipping %} (they get free shipping on their first order){% endif %}</th><td>{% render 'hg-num', n: cfg.referralPoints %}</td></tr>
+          {%- endif -%}
+          {%- if r.birthday.enabled != false and cfg.birthday.silver > 0 -%}
+            <tr><th scope="row">Celebrate your birthday</th><td>Rs. {% render 'hg-num', n: cfg.birthday.silver %} gift code</td></tr>
+          {%- endif -%}
+        </tbody>
+      </table>
+    </section>
+
+    {%- if cfg.redemptionTiers.size > 0 -%}
+      <section class="hg-lp__sec" aria-labelledby="hg-lp-redeem">
+        <h2 id="hg-lp-redeem">Ways to redeem</h2>
+        <table class="hg-lp__tbl">
+          <thead><tr><th scope="col">Points</th><th scope="col">Your discount</th></tr></thead>
+          <tbody>
+            {%- for t in cfg.redemptionTiers -%}
+              <tr><th scope="row">{% render 'hg-num', n: t.points %} points</th><td>Rs. {% render 'hg-num', n: t.discountPkr %} off</td></tr>
+            {%- endfor -%}
+          </tbody>
+        </table>
+        {%- if cfg.codeExpiryDays > 0 -%}
+          <p class="hg-lp__terms" style="margin-top:8px">Each code works once, is valid for {{ cfg.codeExpiryDays }} days, and cannot be combined with another discount code.</p>
+        {%- endif -%}
+      </section>
+    {%- endif -%}
+
+    <section class="hg-lp__sec" aria-labelledby="hg-lp-tiers">
+      <h2 id="hg-lp-tiers">VIP tiers</h2>
+      <div class="hg-lp__grid">
+        <div class="hg-lp__card hg-lp__tier">
+          <h3>Silver</h3>
+          <p>Everyone starts here.</p>
+          <ul>
+            <li>Earn points on every order</li>
+            {%- if cfg.expiryDays > 0 -%}<li>Points stay valid for {% render 'hg-num', n: cfg.expiryDays %} days</li>{%- endif -%}
+            {%- if r.birthday.enabled != false and cfg.birthday.silver > 0 -%}<li>Rs. {% render 'hg-num', n: cfg.birthday.silver %} birthday gift code</li>{%- endif -%}
+          </ul>
+        </div>
+        <div class="hg-lp__card hg-lp__tier hg-lp__tier--gold">
+          <h3>Gold</h3>
+          <p>Spend Rs. {% render 'hg-num', n: cfg.tiers.gold %} in total.</p>
+          <ul>
+            <li>Points never expire</li>
+            {%- if cfg.tierRewards.goldFreeShipping -%}<li>Free shipping code when you reach Gold</li>{%- endif -%}
+            {%- if r.birthday.enabled != false and cfg.birthday.gold > 0 -%}<li>Rs. {% render 'hg-num', n: cfg.birthday.gold %} birthday gift code</li>{%- endif -%}
+          </ul>
+        </div>
+        <div class="hg-lp__card hg-lp__tier hg-lp__tier--diamond">
+          <h3>Diamond</h3>
+          <p>Spend Rs. {% render 'hg-num', n: cfg.tiers.diamond %} in total.</p>
+          <ul>
+            <li>Points never expire</li>
+            {%- if cfg.tierRewards.diamondPkr > 0 -%}<li>Rs. {% render 'hg-num', n: cfg.tierRewards.diamondPkr %} reward code when you reach Diamond</li>{%- endif -%}
+            {%- if r.birthday.enabled != false and cfg.birthday.diamond > 0 -%}<li>Rs. {% render 'hg-num', n: cfg.birthday.diamond %} birthday gift code</li>{%- endif -%}
+            {%- if r.birthday.enabled != false -%}<li>Bonus points on orders in your birthday month</li>{%- endif -%}
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    {%- if cfg.faqs.size > 0 -%}
+      <section class="hg-lp__sec" aria-labelledby="hg-lp-faq">
+        <h2 id="hg-lp-faq">Questions</h2>
+        {%- for f in cfg.faqs -%}
+          <details><summary>{{ f.q | escape }}</summary><div>{{ f.a | escape | newline_to_br }}</div></details>
+        {%- endfor -%}
+      </section>
+    {%- endif -%}
+
+    {%- if cfg.terms != blank -%}
+      <section class="hg-lp__sec" aria-labelledby="hg-lp-terms">
+        <h2 id="hg-lp-terms">Terms</h2>
+        <div class="hg-lp__terms">{{ cfg.terms | escape | newline_to_br }}</div>
+      </section>
+    {%- endif -%}
+  </div>
+{%- endif -%}
+
+{% schema %}
+{
+  "name": "Rewards page",
+  "target": "section",
+  "enabled_on": { "templates": ["page"] },
+  "settings": []
+}
+{% endschema %}

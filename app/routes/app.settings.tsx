@@ -1,287 +1,279 @@
+// app/routes/app.settings.tsx — Settings: program switch, notifications, exports, health, privacy requests
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { useLoaderData, useActionData, useSubmit, useNavigation, useFetcher } from "@remix-run/react";
-import { useEffect, useState } from "react";
+import { useFetcher, useLoaderData } from "@remix-run/react";
+import { useState } from "react";
 import {
-  Page, Card, FormLayout, TextField, Checkbox, Button, Banner, BlockStack, Box, Text,
+  Badge, Banner, BlockStack, Box, Button, Card, IndexTable, InlineStack, Layout, Link, Page, Select, Text,
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
-import { getSettings, updateSettings } from "../lib/admin-settings.server";
+import { ConfirmModal, Pager, ResultBanner, useActionToast } from "../components/admin-ui";
+import { fmtDateTime, fmtInt } from "../components/karachi";
+import { downloadCsv } from "../lib/csv-download.client";
+import { UUID_RE } from "../lib/admin-db.server";
+import { getSystemHealth } from "../lib/admin-health.server";
+import {
+  getSettingsRow, listGdprRequests, notificationStatus, publishSettings, setGdprRequestStatus, updateSettings,
+} from "../lib/admin-settings.server";
+import { errorMessage } from "../lib/admin-validate.server";
+
+const PAGE_SIZE = 25;
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
-  return json({ settings: await getSettings() });
+  const pageRaw = Number(new URL(request.url).searchParams.get("page") ?? "0");
+  const page = Number.isInteger(pageRaw) && pageRaw > 0 ? pageRaw : 0;
+  const [settings, health, gdpr] = await Promise.all([getSettingsRow(), getSystemHealth(), listGdprRequests(page, PAGE_SIZE)]);
+  return json({
+    programEnabled: settings.program_enabled !== false,
+    // Booleans and the "from" address only. No credential ever reaches the browser.
+    notifications: notificationStatus(settings),
+    health, gdpr, page,
+  });
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  await authenticate.admin(request);
+  const { admin } = await authenticate.admin(request);
   const form = await request.formData();
-
-  // The program on/off toggle submits on its own (intent=toggle_program) with only
-  // the program_enabled field. Handle it as a partial update — the full patch below
-  // reads every field via form.get(), which would blank all other settings to
-  // ""/0 if applied to a toggle-only submission.
-  if (form.get("intent") === "toggle_program") {
-    try {
-      const enabled = form.get("program_enabled") === "true";
-      await updateSettings({ program_enabled: enabled });
-      return json({ ok: true, enabled, error: undefined as string | undefined });
-    } catch (e) {
-      return json({ ok: false, error: (e as Error).message }, { status: 400 });
-    }
-  }
-
-  const patch: Record<string, unknown> = {
-    program_name: String(form.get("program_name") ?? ""),
-    tagline: String(form.get("tagline") ?? ""),
-    brand_color_primary: String(form.get("brand_color_primary") ?? ""),
-    brand_color_secondary: String(form.get("brand_color_secondary") ?? ""),
-    tier_gold_threshold_pkr: Number(form.get("tier_gold_threshold_pkr")),
-    tier_diamond_threshold_pkr: Number(form.get("tier_diamond_threshold_pkr")),
-    signup_points: Number(form.get("signup_points")),
-    referral_points: Number(form.get("referral_points")),
-    review_points: Number(form.get("review_points")),
-    social_points_youtube: Number(form.get("social_points_youtube")),
-    social_points_facebook: Number(form.get("social_points_facebook")),
-    social_points_instagram: Number(form.get("social_points_instagram")),
-    birthday_reward_silver_pkr: Number(form.get("birthday_reward_silver_pkr")),
-    birthday_reward_gold_pkr: Number(form.get("birthday_reward_gold_pkr")),
-    birthday_reward_diamond_pkr: Number(form.get("birthday_reward_diamond_pkr")),
-    silver_expiry_days: Number(form.get("silver_expiry_days")),
-    bonus_campaign_default_multiplier: Number(form.get("bonus_campaign_default_multiplier")),
-    influencer_cta_link: String(form.get("influencer_cta_link") ?? ""),
-    whatsapp_enabled: form.get("whatsapp_enabled") === "true",
-    whatsapp_provider: String(form.get("whatsapp_provider") ?? ""),
-    whatsapp_api_key: String(form.get("whatsapp_api_key") ?? ""),
-    wa_referral_template: String(form.get("wa_referral_template") ?? ""),
-    shopify_email_injection_enabled: form.get("shopify_email_injection_enabled") === "true",
-    terms_and_conditions: String(form.get("terms_and_conditions") ?? ""),
-    program_enabled: form.get("program_enabled") === "true",
-  };
+  const intent = String(form.get("intent") ?? "");
   try {
-    await updateSettings(patch);
-    return json({ ok: true, error: undefined as string | undefined });
+    if (intent === "set_program") {
+      const enabled = form.get("enabled") === "true";
+      await updateSettings({ program_enabled: enabled });
+      const { warning } = await publishSettings(admin);
+      return json({ ok: true as const, message: enabled ? "Program switched on" : "Program switched off", warning });
+    }
+    if (intent === "set_whatsapp") {
+      const enabled = form.get("enabled") === "true";
+      await updateSettings({ whatsapp_enabled: enabled });
+      const { warning } = await publishSettings(admin);
+      return json({ ok: true as const, message: enabled ? "WhatsApp messages switched on" : "WhatsApp messages switched off", warning });
+    }
+    if (intent === "gdpr_status") {
+      const id = String(form.get("id") ?? "");
+      if (!UUID_RE.test(id)) return json({ ok: false as const, error: "That request could not be found." }, { status: 404 });
+      const fulfilled = form.get("status") === "fulfilled";
+      await setGdprRequestStatus(id, fulfilled ? "fulfilled" : "open");
+      return json({ ok: true as const, message: fulfilled ? "Marked as answered" : "Reopened" });
+    }
+    return json({ ok: false as const, error: "Unknown action." }, { status: 400 });
   } catch (e) {
-    return json({ ok: false, error: (e as Error).message }, { status: 400 });
+    return json({ ok: false as const, error: errorMessage(e) }, { status: 500 });
   }
 };
 
-function s(v: unknown, fallback = ""): string {
-  return v === null || v === undefined ? fallback : String(v);
-}
+const LEDGER_PERIODS = [
+  { label: "Last 30 days", value: "30d" },
+  { label: "Last 7 days", value: "7d" },
+  { label: "This month", value: "month" },
+  { label: "Last 90 days", value: "90d" },
+  { label: "All time (first 100,000 rows)", value: "all" },
+];
 
 export default function Settings() {
-  const { settings } = useLoaderData<typeof loader>();
-  const actionData = useActionData<typeof action>();
-  const submit = useSubmit();
-  const nav = useNavigation();
-  const saving = nav.state === "submitting";
-  const programFetcher = useFetcher();
-
-  // Controlled string fields keyed by form field name.
-  const [fields, setFields] = useState<Record<string, string>>({
-    program_name: s(settings.program_name),
-    tagline: s(settings.tagline),
-    brand_color_primary: s(settings.brand_color_primary),
-    brand_color_secondary: s(settings.brand_color_secondary),
-    tier_gold_threshold_pkr: s(settings.tier_gold_threshold_pkr),
-    tier_diamond_threshold_pkr: s(settings.tier_diamond_threshold_pkr),
-    signup_points: s(settings.signup_points),
-    referral_points: s(settings.referral_points),
-    review_points: s(settings.review_points),
-    social_points_youtube: s(settings.social_points_youtube, "1000"),
-    social_points_facebook: s(settings.social_points_facebook, "1000"),
-    social_points_instagram: s(settings.social_points_instagram, "1000"),
-    silver_expiry_days: s(settings.silver_expiry_days, "365"),
-    bonus_campaign_default_multiplier: s(settings.bonus_campaign_default_multiplier, "2"),
-    birthday_reward_silver_pkr: s(settings.birthday_reward_silver_pkr, "250"),
-    birthday_reward_gold_pkr: s(settings.birthday_reward_gold_pkr, "500"),
-    birthday_reward_diamond_pkr: s(settings.birthday_reward_diamond_pkr, "1000"),
-    influencer_cta_link: s(settings.influencer_cta_link),
-    whatsapp_provider: s(settings.whatsapp_provider),
-    whatsapp_api_key: s(settings.whatsapp_api_key),
-    wa_referral_template: s(settings.wa_referral_template),
-    terms_and_conditions: s(settings.terms_and_conditions),
-  });
-  const [whatsappEnabled, setWhatsappEnabled] = useState(Boolean(settings.whatsapp_enabled));
-  const [emailInjection, setEmailInjection] = useState(
-    settings.shopify_email_injection_enabled === undefined
-      ? true
-      : Boolean(settings.shopify_email_injection_enabled),
-  );
-  const [programEnabled, setProgramEnabled] = useState(
-    settings.program_enabled === undefined ? true : Boolean(settings.program_enabled),
-  );
-
-  const set = (name: string) => (value: string) =>
-    setFields((f) => ({ ...f, [name]: value }));
-
-  const handleProgramEnabledChange = (checked: boolean) => {
-    setProgramEnabled(checked);
-    programFetcher.submit(
-      { intent: "toggle_program", program_enabled: String(checked) },
-      { method: "post" },
-    );
-  };
-
-  // W11: the toggle was optimistic with the fetcher result never rendered — a
-  // failed save left the checkbox lying about the live program state. Revert on
-  // failure, confirm on success (this switch hides the whole storefront widget).
-  useEffect(() => {
-    if (programFetcher.state !== "idle" || !programFetcher.data) return;
-    const result = programFetcher.data as { ok?: boolean; enabled?: boolean };
-    const toast = (window as { shopify?: { toast?: { show: (m: string, o?: { isError?: boolean }) => void } } }).shopify?.toast;
-    if (result.ok) {
-      // Echoed `enabled` reflects the state that was actually saved, not the
-      // current checkbox (which may have been re-toggled meanwhile).
-      toast?.show(result.enabled ? "Program enabled" : "Program disabled");
-    } else {
-      setProgramEnabled((prev) => !prev); // revert optimistic flip
-      toast?.show("Could not update program status", { isError: true });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [programFetcher.state, programFetcher.data]);
-
-  const onSave = () => {
-    submit(
-      {
-        ...fields,
-        whatsapp_enabled: String(whatsappEnabled),
-        shopify_email_injection_enabled: String(emailInjection),
-        program_enabled: String(programEnabled),
-      },
-      { method: "post" },
-    );
-  };
-
-  const field = (name: string, label: string, type: "text" | "number" = "text") => (
-    <TextField
-      label={label}
-      autoComplete="off"
-      type={type === "number" ? "number" : "text"}
-      value={fields[name]}
-      onChange={set(name)}
-    />
-  );
+  const d = useLoaderData<typeof loader>();
+  const fetcher = useFetcher<typeof action>();
+  useActionToast(fetcher.data);
+  const busy = fetcher.state !== "idle";
+  const [confirm, setConfirm] = useState<{ kind: "program_off" } | { kind: "gdpr"; id: string } | null>(null);
+  const [ledgerPeriod, setLedgerPeriod] = useState("30d");
+  const n = d.notifications;
+  const h = d.health;
+  const post = (fields: Record<string, string>) => fetcher.submit(fields, { method: "post" });
 
   return (
     <Page title="Settings">
-      <BlockStack gap="400">
-        {actionData?.ok ? <Banner tone="success">Settings saved.</Banner> : null}
-        {actionData && !actionData.ok ? <Banner tone="critical">{actionData.error}</Banner> : null}
+      <Layout>
+        <Layout.Section>
+          <BlockStack gap="400">
+            <ResultBanner data={fetcher.data} />
 
-        <Card>
-          <Box padding="400">
-            <BlockStack gap="200">
-              <Text as="h2" variant="headingMd">Program status</Text>
-              <Checkbox
-                label="Loyalty program enabled"
-                helpText="When off, the widget is hidden and customers cannot earn social points or redeem rewards. Purchase points still accumulate in the background."
-                checked={programEnabled}
-                onChange={handleProgramEnabledChange}
-              />
-            </BlockStack>
-          </Box>
-        </Card>
+            <Card>
+              <BlockStack gap="300">
+                <InlineStack align="space-between" blockAlign="center">
+                  <InlineStack gap="200" blockAlign="center">
+                    <Text as="h2" variant="headingMd">Program</Text>
+                    {d.programEnabled ? <Badge tone="success">On</Badge> : <Badge tone="critical">Off</Badge>}
+                  </InlineStack>
+                  {d.programEnabled
+                    ? <Button tone="critical" onClick={() => setConfirm({ kind: "program_off" })}>Switch off</Button>
+                    : <Button variant="primary" loading={busy} onClick={() => post({ intent: "set_program", enabled: "true" })}>Switch on</Button>}
+                </InlineStack>
+                <Text as="p" tone="subdued">
+                  {d.programEnabled
+                    ? "Customers can earn and redeem, and the rewards panel shows on the storefront."
+                    : "Nobody earns or redeems and the rewards panel is hidden. Balances and codes already issued are kept."}
+                </Text>
+              </BlockStack>
+            </Card>
 
-        <Card>
-          <Box padding="400">
-            <BlockStack gap="300">
-              <Text as="h2" variant="headingMd">Branding</Text>
-              <FormLayout>
-                {field("program_name", "Program name")}
-                {field("tagline", "Tagline")}
-                <FormLayout.Group>
-                  {field("brand_color_primary", "Primary colour")}
-                  {field("brand_color_secondary", "Secondary colour")}
-                </FormLayout.Group>
-              </FormLayout>
-            </BlockStack>
-          </Box>
-        </Card>
+            <Card>
+              <BlockStack gap="300">
+                <Text as="h2" variant="headingMd">Notifications</Text>
+                <InlineStack align="space-between" blockAlign="center" gap="300">
+                  <BlockStack gap="050">
+                    <Text as="span" fontWeight="semibold">Email</Text>
+                    <Text as="span" tone="subdued" variant="bodySm">
+                      {n.emailConfigured
+                        ? `Sending${n.emailFrom ? ` from ${n.emailFrom}` : ""}: welcome, points earned, reward code, tier upgrade, birthday, referral completed, points expiring and review released.`
+                        : "Not set up, so no emails are sent. Your developer adds the mail server details (SMTP_HOST and related values) to the app's hosting settings."}
+                    </Text>
+                  </BlockStack>
+                  {n.emailConfigured ? <Badge tone="success">Configured</Badge> : <Badge tone="attention">Not configured</Badge>}
+                </InlineStack>
+                <InlineStack align="space-between" blockAlign="center" gap="300">
+                  <BlockStack gap="050">
+                    <Text as="span" fontWeight="semibold">WhatsApp</Text>
+                    <Text as="span" tone="subdued" variant="bodySm">
+                      {!n.whatsappCredentialsPresent
+                        ? "No WhatsApp account is connected. The switch has no effect until your developer adds WHATSAPP_TOKEN and WHATSAPP_PHONE_NUMBER_ID to the app's hosting settings."
+                        : n.whatsappEnabled
+                          ? "An account is connected and messages are being sent."
+                          : "An account is connected. Messages are switched off."}
+                    </Text>
+                  </BlockStack>
+                  <InlineStack gap="200" blockAlign="center">
+                    {n.whatsappEnabled && n.whatsappCredentialsPresent ? <Badge tone="success">Sending</Badge>
+                      : n.whatsappEnabled ? <Badge tone="attention">On, not connected</Badge> : <Badge>Off</Badge>}
+                    <Button loading={busy} onClick={() => post({ intent: "set_whatsapp", enabled: String(!n.whatsappEnabled) })}>
+                      {n.whatsappEnabled ? "Switch off" : "Switch on"}
+                    </Button>
+                  </InlineStack>
+                </InlineStack>
+                <Text as="p" tone="subdued" variant="bodySm">Passwords and tokens are kept on the server and are never shown here.</Text>
+              </BlockStack>
+            </Card>
 
-        <Card>
-          <Box padding="400">
-            <BlockStack gap="300">
-              <Text as="h2" variant="headingMd">Points & tiers</Text>
-              <FormLayout>
-                <FormLayout.Group>
-                  {field("tier_gold_threshold_pkr", "Gold threshold (Rs.)", "number")}
-                  {field("tier_diamond_threshold_pkr", "Diamond threshold (Rs.)", "number")}
-                </FormLayout.Group>
-                <FormLayout.Group>
-                  {field("signup_points", "Signup points", "number")}
-                  {field("referral_points", "Referral points", "number")}
-                  {field("review_points", "Review points", "number")}
-                </FormLayout.Group>
-                <FormLayout.Group>
-                  {field("social_points_youtube", "YouTube points", "number")}
-                  {field("social_points_facebook", "Facebook points", "number")}
-                  {field("social_points_instagram", "Instagram points", "number")}
-                </FormLayout.Group>
-                {field("silver_expiry_days", "Silver points expiry (days)", "number")}
-                {field("bonus_campaign_default_multiplier", "Campaign default multiplier", "number")}
-              </FormLayout>
-            </BlockStack>
-          </Box>
-        </Card>
+            <Card>
+              <BlockStack gap="300">
+                <Text as="h2" variant="headingMd">Data export</Text>
+                <InlineStack align="space-between" blockAlign="center" gap="300">
+                  <BlockStack gap="050">
+                    <Text as="span" fontWeight="semibold">Customers</Text>
+                    <Text as="span" tone="subdued" variant="bodySm">Every member with tier, balance and lifetime spend.</Text>
+                  </BlockStack>
+                  <Button onClick={() => downloadCsv("/app/customers/export.csv", "customers.csv")}>Download CSV</Button>
+                </InlineStack>
+                <InlineStack align="space-between" blockAlign="center" gap="300">
+                  <BlockStack gap="050">
+                    <Text as="span" fontWeight="semibold">Points ledger</Text>
+                    <Text as="span" tone="subdued" variant="bodySm">Every points change, with the internal reason and the customer note.</Text>
+                  </BlockStack>
+                  <InlineStack gap="200" blockAlign="center">
+                    <Select label="Period" labelHidden options={LEDGER_PERIODS} value={ledgerPeriod} onChange={setLedgerPeriod} />
+                    <Button onClick={() => downloadCsv(`/app/campaigns/ledger.csv?period=${ledgerPeriod}`, "points-ledger.csv")}>Download CSV</Button>
+                  </InlineStack>
+                </InlineStack>
+                <Text as="p" tone="subdued" variant="bodySm">
+                  Text that begins with =, +, - or @ is exported with a leading apostrophe so a spreadsheet does not run it as a formula.
+                  Influencer and analytics exports are on their own pages. To bring members over from Smile, open <Link url="/app/import">Import</Link>.
+                </Text>
+              </BlockStack>
+            </Card>
 
-        <Card>
-          <Box padding="400">
-            <BlockStack gap="300">
-              <Text as="h2" variant="headingMd">Birthday rewards (Rs.)</Text>
-              <FormLayout>
-                <FormLayout.Group>
-                  {field("birthday_reward_silver_pkr", "Silver", "number")}
-                  {field("birthday_reward_gold_pkr", "Gold", "number")}
-                  {field("birthday_reward_diamond_pkr", "Diamond", "number")}
-                </FormLayout.Group>
-              </FormLayout>
-            </BlockStack>
-          </Box>
-        </Card>
+            <Card>
+              <BlockStack gap="300">
+                <InlineStack gap="200" blockAlign="center">
+                  <Text as="h2" variant="headingMd">System health</Text>
+                  <Badge tone={h.status === "healthy" ? "success" : h.status === "attention" ? "critical" : "attention"}>
+                    {h.status === "healthy" ? "Healthy" : h.status === "attention" ? "Needs attention" : "Not reporting yet"}
+                  </Badge>
+                </InlineStack>
+                <Text as="p">{h.summary}</Text>
+                {h.status === "attention" ? (
+                  <Banner tone="critical">
+                    <p>Points for delivered orders may be delayed. Send this page to your developer; the worker process may have stopped or jobs are failing.</p>
+                  </Banner>
+                ) : null}
+                <Text as="p" tone="subdued" variant="bodySm">
+                  Failed background jobs: {h.failedJobs === null ? "could not be read (the job queue did not answer)" : fmtInt(h.failedJobs)}
+                </Text>
+                {h.heartbeats.length === 0 ? (
+                  <Text as="p" tone="subdued">No signals recorded yet. They appear once the background worker has run.</Text>
+                ) : (
+                  <IndexTable
+                    selectable={false} itemCount={h.heartbeats.length} condensed={false}
+                    resourceName={{ singular: "signal", plural: "signals" }}
+                    headings={[{ title: "Signal" }, { title: "Last seen" }, { title: "Detail" }]}
+                  >
+                    {h.heartbeats.map((b, i) => (
+                      <IndexTable.Row id={b.key} key={b.key} position={i}>
+                        <IndexTable.Cell>
+                          <InlineStack gap="200" blockAlign="center">
+                            <Text as="span">{b.key}</Text>
+                            {b.kind === "alert" ? <Badge tone="critical">Alert</Badge> : b.stale ? <Badge tone="critical">Stale</Badge> : null}
+                          </InlineStack>
+                        </IndexTable.Cell>
+                        <IndexTable.Cell>{fmtDateTime(b.at)}</IndexTable.Cell>
+                        <IndexTable.Cell><Box maxWidth="360px"><Text as="span" breakWord>{b.detail}</Text></Box></IndexTable.Cell>
+                      </IndexTable.Row>
+                    ))}
+                  </IndexTable>
+                )}
+              </BlockStack>
+            </Card>
 
-        <Card>
-          <Box padding="400">
-            <BlockStack gap="300">
-              <Text as="h2" variant="headingMd">Integrations & content</Text>
-              <FormLayout>
-                {field("influencer_cta_link", "Influencer CTA link")}
-                <Checkbox
-                  label="Enable WhatsApp notifications"
-                  checked={whatsappEnabled}
-                  onChange={setWhatsappEnabled}
-                />
-                <FormLayout.Group>
-                  {field("whatsapp_provider", "WhatsApp provider")}
-                  {field("whatsapp_api_key", "WhatsApp API key")}
-                </FormLayout.Group>
-                <TextField
-                  label="WhatsApp referral template"
-                  autoComplete="off"
-                  multiline={3}
-                  value={fields.wa_referral_template}
-                  onChange={set("wa_referral_template")}
-                />
-                <Checkbox
-                  label="Inject loyalty content into Shopify Email"
-                  checked={emailInjection}
-                  onChange={setEmailInjection}
-                />
-                <TextField
-                  label="Terms & Conditions"
-                  autoComplete="off"
-                  multiline={5}
-                  value={fields.terms_and_conditions}
-                  onChange={set("terms_and_conditions")}
-                />
-              </FormLayout>
-            </BlockStack>
-          </Box>
-        </Card>
+            <Card padding="0">
+              <Box padding="400">
+                <BlockStack gap="200">
+                  <Text as="h2" variant="headingMd">Privacy requests</Text>
+                  <Text as="p" tone="subdued">
+                    Requests Shopify sends when a customer asks for her data or asks to be erased. A data request must be answered within 30 days.
+                    A shop erasure request is only logged here; nothing is deleted automatically.
+                  </Text>
+                </BlockStack>
+              </Box>
+              {d.gdpr.rows.length === 0 ? (
+                <Box padding="400" paddingBlockStart="0">
+                  <Text as="p" tone="subdued">No requests have been received. There is nothing you need to do.</Text>
+                </Box>
+              ) : (
+                <IndexTable
+                  selectable={false} itemCount={d.gdpr.rows.length}
+                  resourceName={{ singular: "request", plural: "requests" }}
+                  headings={[{ title: "Received" }, { title: "Request" }, { title: "Shopify customer" }, { title: "Status" }, { title: "Action" }]}
+                >
+                  {d.gdpr.rows.map((r, i) => (
+                    <IndexTable.Row id={r.id} key={r.id} position={i}>
+                      <IndexTable.Cell>{fmtDateTime(r.createdAt)}</IndexTable.Cell>
+                      <IndexTable.Cell>{r.typeLabel}</IndexTable.Cell>
+                      <IndexTable.Cell>{r.shopifyCustomerId ?? ""}</IndexTable.Cell>
+                      <IndexTable.Cell>{r.status === "open" ? <Badge tone="attention">Open</Badge> : <Badge tone="success">Answered</Badge>}</IndexTable.Cell>
+                      <IndexTable.Cell>
+                        {r.status === "open"
+                          ? <Button size="slim" onClick={() => setConfirm({ kind: "gdpr", id: r.id })}>Mark as answered</Button>
+                          : <Button size="slim" variant="plain" onClick={() => post({ intent: "gdpr_status", id: r.id, status: "open" })}>Reopen</Button>}
+                      </IndexTable.Cell>
+                    </IndexTable.Row>
+                  ))}
+                </IndexTable>
+              )}
+              <Box padding="300"><Pager page={d.page} pageSize={PAGE_SIZE} total={d.gdpr.total} /></Box>
+            </Card>
+          </BlockStack>
+        </Layout.Section>
+      </Layout>
 
-        <Button variant="primary" loading={saving} onClick={onSave}>Save settings</Button>
-      </BlockStack>
+      <ConfirmModal
+        open={confirm !== null}
+        loading={busy}
+        destructive={confirm?.kind === "program_off"}
+        title={confirm?.kind === "program_off" ? "Switch the program off?" : "Mark this request as answered?"}
+        confirmLabel={confirm?.kind === "program_off" ? "Switch off" : "Mark as answered"}
+        onClose={() => setConfirm(null)}
+        onConfirm={() => {
+          if (!confirm) return;
+          if (confirm.kind === "program_off") post({ intent: "set_program", enabled: "false" });
+          else post({ intent: "gdpr_status", id: confirm.id, status: "fulfilled" });
+          setConfirm(null);
+        }}
+      >
+        <Text as="p">
+          {confirm?.kind === "program_off"
+            ? "Customers stop earning and redeeming straight away and the rewards panel is hidden on the storefront. Balances and codes already issued are kept."
+            : "Only do this after you have sent the customer her data, or completed the erasure. This page records that it was handled."}
+        </Text>
+      </ConfirmModal>
     </Page>
   );
 }

@@ -1,138 +1,93 @@
-import crypto from "node:crypto";
+// app/lib/birthday.service.ts
+// Rule 13: on the 1st (Asia/Karachi) each member whose birthday falls in the
+// month gets one code, sized by tier. Issue is idempotent per member and year
+// (issue_key `birthday:<member>:<year>`) and survives a failed Shopify call.
 import { db } from "../db.server";
-import { shopifyGraphqlWithRetry } from "./shopify-graphql.server";
+import { getAdminForShop } from "./worker-admin.server";
+import { issueAutomaticCode } from "./discounts.server";
+import { getSettings, isEarnRuleEnabled, karachiMonthStart, karachiParts, type AppSettings } from "./settings.server";
 
-type AdminArg = Parameters<typeof shopifyGraphqlWithRetry>[0];
-
-const CREATE_PRICE_RULE = `
-  mutation CreatePriceRule($input: PriceRuleInput!) {
-    priceRuleCreate(input: $input) {
-      priceRule { id }
-      priceRuleUserErrors { field message }
-    }
-  }
-`;
-
-const CREATE_DISCOUNT_CODE = `
-  mutation CreateDiscountCode($priceRuleId: ID!, $code: String!) {
-    priceRuleDiscountCodeCreate(priceRuleId: $priceRuleId, code: $code) {
-      priceRuleDiscountCode { code }
-      userErrors { field message }
-    }
-  }
-`;
-
-function num(v: unknown, fallback: number): number {
-  return typeof v === "number" ? v : fallback;
+export function birthdayDiscountForTier(
+  tier: string,
+  s: Pick<AppSettings, "birthday_reward_silver_pkr" | "birthday_reward_gold_pkr" | "birthday_reward_diamond_pkr">,
+): number {
+  if (tier === "diamond") return s.birthday_reward_diamond_pkr;
+  if (tier === "gold") return s.birthday_reward_gold_pkr;
+  return s.birthday_reward_silver_pkr;
 }
 
 export async function birthdayDiscountPkr(tier: string): Promise<number> {
-  const { data } = await db
-    .from("app_settings")
-    .select("*")
-    .eq("id", 1)
-    .maybeSingle();
-  const s = (data as Record<string, unknown>) ?? {};
-  if (tier === "diamond") return num(s.birthday_reward_diamond_pkr, 1000);
-  if (tier === "gold") return num(s.birthday_reward_gold_pkr, 500);
-  return num(s.birthday_reward_silver_pkr, 250);
+  return birthdayDiscountForTier(tier, await getSettings());
 }
 
-export async function awardBirthdayReward(
-  memberId: string,
-  admin: AdminArg,
-): Promise<{ awarded: boolean; code?: string; discountPkr?: number; reason?: string }> {
-  const now = new Date();
-  const referenceId = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-
-  // Dedup: insert first — unique constraint prevents double award
-  const { error: logErr } = await db.from("notification_log").insert({
-    member_id: memberId,
-    event_type: "birthday_reward",
-    reference_id: referenceId,
-  });
-  if (logErr) {
-    if (logErr.code === "23505") return { awarded: false, reason: "already_awarded_this_month" };
-    console.error("[awardBirthdayReward] log insert error:", logErr);
-    return { awarded: false, reason: "db_error" };
+/** Members to reward this month: right month, set before the month began, not blocked, not opted out. */
+export async function listBirthdayMemberIds(now: Date = new Date()): Promise<string[]> {
+  const { year, month } = karachiParts(now);
+  const monthStart = karachiMonthStart(year, month).toISOString();
+  const ids: string[] = [];
+  const PAGE = 1000;
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await db
+      .from("members")
+      .select("id")
+      .eq("birthday_month", month)
+      .eq("is_blocked", false)
+      .eq("opted_out", false)
+      .lt("birthday_set_at", monthStart)
+      .order("id", { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(`birthday query failed: ${error.message}`);
+    for (const m of data ?? []) ids.push(m.id);
+    if (!data || data.length < PAGE) break;
   }
+  return ids;
+}
 
-  const { data: member } = await db
+export async function issueBirthdayReward(
+  memberId: string,
+  opts: { shop?: string | null; now?: Date } = {},
+): Promise<{ issued: boolean; code?: string; discountPkr?: number; expiresAt?: string; reason?: string }> {
+  const now = opts.now ?? new Date();
+  const settings = await getSettings();
+  if (!isEarnRuleEnabled(settings, "birthday")) return { issued: false, reason: "disabled" };
+
+  const { data: member, error } = await db
     .from("members")
-    .select("tier, email, shopify_customer_id")
+    .select("id, shopify_customer_id, tier, birthday_month, birthday_set_at, is_blocked, opted_out")
     .eq("id", memberId)
     .maybeSingle();
-  if (!member) {
-    await db
-      .from("notification_log")
-      .delete()
-      .eq("member_id", memberId)
-      .eq("event_type", "birthday_reward")
-      .eq("reference_id", referenceId);
-    return { awarded: false, reason: "member_not_found" };
+  if (error) throw new Error(`member lookup failed: ${error.message}`);
+  if (!member) return { issued: false, reason: "member_not_found" };
+  if (member.is_blocked) return { issued: false, reason: "blocked" };
+  if (member.opted_out) return { issued: false, reason: "opted_out" };
+
+  const { year, month } = karachiParts(now);
+  if (member.birthday_month !== month) return { issued: false, reason: "not_birthday_month" };
+  // A birthday first entered during its own month starts next year.
+  const monthStart = karachiMonthStart(year, month).getTime();
+  if (!member.birthday_set_at || Date.parse(member.birthday_set_at) >= monthStart) {
+    return { issued: false, reason: "set_this_month" };
   }
 
-  const discountPkr = await birthdayDiscountPkr(member.tier);
-  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+  const discountPkr = birthdayDiscountForTier(member.tier, settings);
+  if (discountPkr <= 0) return { issued: false, reason: "zero_reward" };
 
-  const priceRuleResult = await shopifyGraphqlWithRetry<{
-    priceRuleCreate: {
-      priceRule: { id: string } | null;
-      priceRuleUserErrors: Array<{ message: string }>;
-    };
-  }>(admin, CREATE_PRICE_RULE, {
-    input: {
-      title: `Birthday Reward — Rs.${discountPkr} off`,
-      target: "LINE_ITEM",
-      valueType: "FIXED_AMOUNT",
-      value: String(-discountPkr),
-      // I5: pin to owner so a shared code can't consume the reward
-      customerSelection: { customerIdsToAdd: [`gid://shopify/Customer/${member.shopify_customer_id}`] },
-      usageLimit: 1,
-      startsAt: now.toISOString(),
-      endsAt: expiresAt,
-    },
+  const admin = await getAdminForShop(opts.shop ?? undefined);
+  const result = await issueAutomaticCode({
+    admin,
+    memberId: member.id,
+    shopifyCustomerId: member.shopify_customer_id,
+    kind: "birthday",
+    issueKey: `birthday:${member.id}:${year}`,
+    title: `HeyGirl Rewards: birthday gift, Rs. ${discountPkr} off`,
+    discountPkr,
+    freeShipping: false,
+    expiryDays: settings.reward_code_expiry_days,
   });
-
-  const priceRuleErrors = priceRuleResult.priceRuleCreate.priceRuleUserErrors;
-  if (priceRuleErrors.length > 0 || !priceRuleResult.priceRuleCreate.priceRule) {
-    console.error("[awardBirthdayReward] priceRuleCreate errors:", priceRuleErrors);
-    return { awarded: false, reason: "shopify_price_rule_error" };
+  if (!result.issued) {
+    if (result.reason === "already_issued") return { issued: false, reason: "already_issued", code: result.code };
+    // Leave the pending row in place and let the job retry: nothing is lost.
+    throw new Error(`birthday code not created (${result.reason}); will retry`);
   }
-
-  const priceRuleId = priceRuleResult.priceRuleCreate.priceRule.id;
-  const codeValue = `BDAY-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
-
-  const discountResult = await shopifyGraphqlWithRetry<{
-    priceRuleDiscountCodeCreate: {
-      priceRuleDiscountCode: { code: string } | null;
-      userErrors: Array<{ message: string }>;
-    };
-  }>(admin, CREATE_DISCOUNT_CODE, { priceRuleId, code: codeValue });
-
-  if (
-    discountResult.priceRuleDiscountCodeCreate.userErrors.length > 0 ||
-    !discountResult.priceRuleDiscountCodeCreate.priceRuleDiscountCode
-  ) {
-    console.error(
-      "[awardBirthdayReward] discountCodeCreate errors:",
-      discountResult.priceRuleDiscountCodeCreate.userErrors,
-    );
-    return { awarded: false, reason: "shopify_discount_code_error" };
-  }
-
-  const finalCode = discountResult.priceRuleDiscountCodeCreate.priceRuleDiscountCode.code;
-
-  await db.from("loyalty_codes").insert({
-    member_id: memberId,
-    code: finalCode,
-    shopify_price_rule_id: priceRuleId,
-    discount_amount: discountPkr,
-    discount_amount_pkr: discountPkr,
-    points_spent: 0,
-    status: "active",
-    expires_at: expiresAt,
-  });
-
-  return { awarded: true, code: finalCode, discountPkr };
+  return { issued: true, code: result.code, discountPkr: result.discountPkr, expiresAt: result.expiresAt };
 }

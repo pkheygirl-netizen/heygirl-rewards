@@ -1,33 +1,40 @@
+// scripts/build-widget.mjs
+// Builds the two storefront bundles into the theme app extension's assets:
+//   app/widget/core.ts → extensions/hg-loyalty/assets/hg-core.js  (every page, deferred)
+//   app/widget/hub.ts  → extensions/hg-loyalty/assets/hg-hub.js   (on first open only)
+// The build fails if either bundle grows past its gzip budget.
 import { build } from "esbuild";
-import { readFileSync, mkdirSync } from "fs";
-import zlib from "zlib";
+import { mkdirSync, readFileSync } from "node:fs";
+import zlib from "node:zlib";
 
-const result = await build({
-  entryPoints: ["app/widget/index.ts"],
-  bundle: true,
-  minify: true,
-  format: "iife",
-  globalName: "__LOYALTY_WIDGET__",
-  outfile: "public/loyalty-widget.js",
-  metafile: true,
-  define: {
-    "process.env.NODE_ENV": '"production"',
-  },
-});
+const OUT = "extensions/hg-loyalty/assets";
+const BUNDLES = [
+  { name: "core", entry: "app/widget/core.ts", outfile: `${OUT}/hg-core.js`, budgetKb: 8 },
+  { name: "hub", entry: "app/widget/hub.ts", outfile: `${OUT}/hg-hub.js`, budgetKb: 22 },
+];
 
-// Write metafile for bundle inspection
-mkdirSync(".superpowers/sdd", { recursive: true });
-import { writeFileSync } from "fs";
-writeFileSync(".superpowers/sdd/widget-meta.json", JSON.stringify(result.metafile, null, 2));
+mkdirSync(OUT, { recursive: true });
 
-// Enforce gzipped size budget. 12 KB → 13 KB (8-section landing page) → 16 KB
-// (logged-out preview overlay: in-page Join & Earn flow with earn/redeem/referral
-// screens). Still a tiny async-loaded storefront script.
-const raw = readFileSync("public/loyalty-widget.js");
-const gzipped = zlib.gzipSync(raw);
-const kb = (gzipped.length / 1024).toFixed(2);
-console.log(`Widget bundle: ${kb} KB gzipped`);
-if (gzipped.length > 16 * 1024) {
-  console.error(`ERROR: bundle exceeds 16 KB limit (${kb} KB). Reduce widget size.`);
-  process.exit(1);
+let failed = false;
+for (const b of BUNDLES) {
+  await build({
+    entryPoints: [b.entry],
+    bundle: true,
+    minify: true,
+    format: "iife",
+    target: ["es2018"],
+    legalComments: "none",
+    outfile: b.outfile,
+    define: { "process.env.NODE_ENV": '"production"' },
+  });
+  const raw = readFileSync(b.outfile);
+  const gz = zlib.gzipSync(raw, { level: 9 }).length;
+  const line = `${b.name}: ${(raw.length / 1024).toFixed(2)} KB raw, ${(gz / 1024).toFixed(2)} KB gzipped (budget ${b.budgetKb} KB)`;
+  if (gz > b.budgetKb * 1024) {
+    console.error(`ERROR ${line}`);
+    failed = true;
+  } else {
+    console.log(line);
+  }
 }
+if (failed) process.exit(1);

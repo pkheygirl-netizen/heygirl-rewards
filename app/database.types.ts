@@ -22,6 +22,7 @@ export type Database = {
           bonus_campaign_default_multiplier: number
           brand_color_primary: string
           brand_color_secondary: string
+          earn_rules: Json
           faqs: Json
           id: number
           influencer_cta_link: string | null
@@ -36,8 +37,11 @@ export type Database = {
           purchase_points_rate: number
           redemption_tiers: Json
           referral_friend_discount_pkr: number
+          referral_friend_free_shipping: boolean
           referral_points: number
           review_points: number
+          review_release_hours: number
+          reward_code_expiry_days: number
           shopify_email_injection_enabled: boolean
           signup_points: number
           silver_expiry_days: number
@@ -45,12 +49,17 @@ export type Database = {
           social_points_facebook: number
           social_points_instagram: number
           social_points_youtube: number
+          social_url_facebook: string | null
+          social_url_instagram: string | null
+          social_url_youtube: string | null
           tagline: string
           terms_and_conditions: string | null
           tier_diamond_threshold_pkr: number
           tier_gold_threshold_pkr: number
           tier_progress_diamond_threshold_pkr: number
           tier_progress_gold_threshold_pkr: number
+          tier_reward_diamond_pkr: number
+          tier_reward_gold_free_shipping: boolean
           updated_at: string
           wa_referral_template: string | null
           whatsapp_api_key: string | null
@@ -64,6 +73,7 @@ export type Database = {
           bonus_campaign_default_multiplier?: number
           brand_color_primary?: string
           brand_color_secondary?: string
+          earn_rules?: Json
           faqs?: Json
           id?: number
           influencer_cta_link?: string | null
@@ -78,8 +88,11 @@ export type Database = {
           purchase_points_rate?: number
           redemption_tiers?: Json
           referral_friend_discount_pkr?: number
+          referral_friend_free_shipping?: boolean
           referral_points?: number
           review_points?: number
+          review_release_hours?: number
+          reward_code_expiry_days?: number
           shopify_email_injection_enabled?: boolean
           signup_points?: number
           silver_expiry_days?: number
@@ -87,12 +100,17 @@ export type Database = {
           social_points_facebook?: number
           social_points_instagram?: number
           social_points_youtube?: number
+          social_url_facebook?: string | null
+          social_url_instagram?: string | null
+          social_url_youtube?: string | null
           tagline?: string
           terms_and_conditions?: string | null
           tier_diamond_threshold_pkr?: number
           tier_gold_threshold_pkr?: number
           tier_progress_diamond_threshold_pkr?: number
           tier_progress_gold_threshold_pkr?: number
+          tier_reward_diamond_pkr?: number
+          tier_reward_gold_free_shipping?: boolean
           updated_at?: string
           wa_referral_template?: string | null
           whatsapp_api_key?: string | null
@@ -106,6 +124,7 @@ export type Database = {
           bonus_campaign_default_multiplier?: number
           brand_color_primary?: string
           brand_color_secondary?: string
+          earn_rules?: Json
           faqs?: Json
           id?: number
           influencer_cta_link?: string | null
@@ -120,8 +139,11 @@ export type Database = {
           purchase_points_rate?: number
           redemption_tiers?: Json
           referral_friend_discount_pkr?: number
+          referral_friend_free_shipping?: boolean
           referral_points?: number
           review_points?: number
+          review_release_hours?: number
+          reward_code_expiry_days?: number
           shopify_email_injection_enabled?: boolean
           signup_points?: number
           silver_expiry_days?: number
@@ -129,12 +151,17 @@ export type Database = {
           social_points_facebook?: number
           social_points_instagram?: number
           social_points_youtube?: number
+          social_url_facebook?: string | null
+          social_url_instagram?: string | null
+          social_url_youtube?: string | null
           tagline?: string
           terms_and_conditions?: string | null
           tier_diamond_threshold_pkr?: number
           tier_gold_threshold_pkr?: number
           tier_progress_diamond_threshold_pkr?: number
           tier_progress_gold_threshold_pkr?: number
+          tier_reward_diamond_pkr?: number
+          tier_reward_gold_free_shipping?: boolean
           updated_at?: string
           wa_referral_template?: string | null
           whatsapp_api_key?: string | null
@@ -205,45 +232,57 @@ export type Database = {
       }
       loyalty_codes: {
         Row: {
+          cancelled_at: string | null
           code: string
           created_at: string
           discount_amount: number
           discount_amount_pkr: number
           expires_at: string
           id: string
+          issue_key: string | null
+          kind: string
           member_id: string
           points_spent: number
           shopify_discount_code_id: string | null
+          shopify_discount_id: string | null
           shopify_order_id: string | null
           shopify_price_rule_id: string | null
           status: string
           used_at: string | null
         }
         Insert: {
+          cancelled_at?: string | null
           code: string
           created_at?: string
           discount_amount: number
           discount_amount_pkr?: number
           expires_at: string
           id?: string
+          issue_key?: string | null
+          kind?: string
           member_id: string
           points_spent: number
           shopify_discount_code_id?: string | null
+          shopify_discount_id?: string | null
           shopify_order_id?: string | null
           shopify_price_rule_id?: string | null
           status?: string
           used_at?: string | null
         }
         Update: {
+          cancelled_at?: string | null
           code?: string
           created_at?: string
           discount_amount?: number
           discount_amount_pkr?: number
           expires_at?: string
           id?: string
+          issue_key?: string | null
+          kind?: string
           member_id?: string
           points_spent?: number
           shopify_discount_code_id?: string | null
+          shopify_discount_id?: string | null
           shopify_order_id?: string | null
           shopify_price_rule_id?: string | null
           status?: string
@@ -263,20 +302,36 @@ export type Database = {
         Row: {
           birthday_day: number | null
           birthday_month: number | null
+          birthday_set_at: string | null
           consent_given: boolean
           consent_given_at: string | null
+          consent_source: string | null
           created_at: string
-          email: string
+          email: string | null
           enrolled_at: string
           first_name: string | null
+          first_order_awarded_at: string | null
           id: string
+          imported_from_smile: boolean
+          influencer_campaign: string | null
+          influencer_code: string | null
+          influencer_code_discount_id: string | null
+          influencer_code_percent: number | null
+          influencer_multiplier: number | null
+          influencer_paused: boolean
+          influencer_rate_ends_at: string | null
+          influencer_rate_starts_at: string | null
           influencer_referral_rate: number | null
           is_blocked: boolean
           is_influencer: boolean
           last_name: string | null
+          last_seen_ip: string | null
           lifetime_spend_pkr: number
+          opted_out: boolean
+          phone: string | null
           points_balance: number
           referral_slug: string
+          referrals_blocked: boolean
           referred_by_member_id: string | null
           shopify_customer_id: string
           tier: string
@@ -285,20 +340,36 @@ export type Database = {
         Insert: {
           birthday_day?: number | null
           birthday_month?: number | null
+          birthday_set_at?: string | null
           consent_given?: boolean
           consent_given_at?: string | null
+          consent_source?: string | null
           created_at?: string
-          email: string
+          email?: string | null
           enrolled_at?: string
           first_name?: string | null
+          first_order_awarded_at?: string | null
           id?: string
+          imported_from_smile?: boolean
+          influencer_campaign?: string | null
+          influencer_code?: string | null
+          influencer_code_discount_id?: string | null
+          influencer_code_percent?: number | null
+          influencer_multiplier?: number | null
+          influencer_paused?: boolean
+          influencer_rate_ends_at?: string | null
+          influencer_rate_starts_at?: string | null
           influencer_referral_rate?: number | null
           is_blocked?: boolean
           is_influencer?: boolean
           last_name?: string | null
+          last_seen_ip?: string | null
           lifetime_spend_pkr?: number
+          opted_out?: boolean
+          phone?: string | null
           points_balance?: number
           referral_slug: string
+          referrals_blocked?: boolean
           referred_by_member_id?: string | null
           shopify_customer_id: string
           tier?: string
@@ -307,20 +378,36 @@ export type Database = {
         Update: {
           birthday_day?: number | null
           birthday_month?: number | null
+          birthday_set_at?: string | null
           consent_given?: boolean
           consent_given_at?: string | null
+          consent_source?: string | null
           created_at?: string
-          email?: string
+          email?: string | null
           enrolled_at?: string
           first_name?: string | null
+          first_order_awarded_at?: string | null
           id?: string
+          imported_from_smile?: boolean
+          influencer_campaign?: string | null
+          influencer_code?: string | null
+          influencer_code_discount_id?: string | null
+          influencer_code_percent?: number | null
+          influencer_multiplier?: number | null
+          influencer_paused?: boolean
+          influencer_rate_ends_at?: string | null
+          influencer_rate_starts_at?: string | null
           influencer_referral_rate?: number | null
           is_blocked?: boolean
           is_influencer?: boolean
           last_name?: string | null
+          last_seen_ip?: string | null
           lifetime_spend_pkr?: number
+          opted_out?: boolean
+          phone?: string | null
           points_balance?: number
           referral_slug?: string
+          referrals_blocked?: boolean
           referred_by_member_id?: string | null
           shopify_customer_id?: string
           tier?: string
@@ -370,44 +457,95 @@ export type Database = {
       }
       order_webhook_state: {
         Row: {
+          campaign_id: string | null
+          cancelled_at: string | null
           created_at: string
+          discount_codes: string[]
+          earning_basis_pkr: number | null
           financial_status: string | null
           fulfillment_status: string | null
+          gift_card_amount_pkr: number
           id: string
+          influencer_member_id: string | null
+          is_first_order: boolean | null
+          multiplier_used: number | null
+          order_name: string | null
           order_total_pkr: number | null
+          pending_points: number
+          placed_at: string | null
           points_awarded: boolean
+          points_awarded_amount: number
+          points_reversed_amount: number
+          refunded_basis_pkr: number
           shopify_customer_id: string | null
           shopify_order_id: string
           updated_at: string
         }
         Insert: {
+          campaign_id?: string | null
+          cancelled_at?: string | null
           created_at?: string
+          discount_codes?: string[]
+          earning_basis_pkr?: number | null
           financial_status?: string | null
           fulfillment_status?: string | null
+          gift_card_amount_pkr?: number
           id?: string
+          influencer_member_id?: string | null
+          is_first_order?: boolean | null
+          multiplier_used?: number | null
+          order_name?: string | null
           order_total_pkr?: number | null
+          pending_points?: number
+          placed_at?: string | null
           points_awarded?: boolean
+          points_awarded_amount?: number
+          points_reversed_amount?: number
+          refunded_basis_pkr?: number
           shopify_customer_id?: string | null
           shopify_order_id: string
           updated_at?: string
         }
         Update: {
+          campaign_id?: string | null
+          cancelled_at?: string | null
           created_at?: string
+          discount_codes?: string[]
+          earning_basis_pkr?: number | null
           financial_status?: string | null
           fulfillment_status?: string | null
+          gift_card_amount_pkr?: number
           id?: string
+          influencer_member_id?: string | null
+          is_first_order?: boolean | null
+          multiplier_used?: number | null
+          order_name?: string | null
           order_total_pkr?: number | null
+          pending_points?: number
+          placed_at?: string | null
           points_awarded?: boolean
+          points_awarded_amount?: number
+          points_reversed_amount?: number
+          refunded_basis_pkr?: number
           shopify_customer_id?: string | null
           shopify_order_id?: string
           updated_at?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "order_webhook_state_influencer_member_id_fkey"
+            columns: ["influencer_member_id"]
+            isOneToOne: false
+            referencedRelation: "members"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       points_ledger: {
         Row: {
           action_type: string
           balance_after: number
+          customer_note: string | null
           earned_at: string
           expired: boolean
           expires_at: string | null
@@ -422,6 +560,7 @@ export type Database = {
         Insert: {
           action_type: string
           balance_after: number
+          customer_note?: string | null
           earned_at?: string
           expired?: boolean
           expires_at?: string | null
@@ -436,6 +575,7 @@ export type Database = {
         Update: {
           action_type?: string
           balance_after?: number
+          customer_note?: string | null
           earned_at?: string
           expired?: boolean
           expires_at?: string | null
@@ -464,14 +604,18 @@ export type Database = {
           created_at: string
           device_fingerprint_hash: string | null
           fraud_flags: string[]
+          friend_code_id: string | null
           id: string
           points_awarded: boolean
-          referred_email: string
+          referred_email: string | null
           referred_ip: string | null
           referred_shipping_address_hash: string | null
           referred_shopify_customer_id: string | null
           referrer_ip: string | null
           referrer_member_id: string
+          reviewed_at: string | null
+          reviewed_note: string | null
+          reward_points: number | null
           shopify_order_id: string | null
           status: string
         }
@@ -481,14 +625,18 @@ export type Database = {
           created_at?: string
           device_fingerprint_hash?: string | null
           fraud_flags?: string[]
+          friend_code_id?: string | null
           id?: string
           points_awarded?: boolean
-          referred_email: string
+          referred_email?: string | null
           referred_ip?: string | null
           referred_shipping_address_hash?: string | null
           referred_shopify_customer_id?: string | null
           referrer_ip?: string | null
           referrer_member_id: string
+          reviewed_at?: string | null
+          reviewed_note?: string | null
+          reward_points?: number | null
           shopify_order_id?: string | null
           status?: string
         }
@@ -498,14 +646,18 @@ export type Database = {
           created_at?: string
           device_fingerprint_hash?: string | null
           fraud_flags?: string[]
+          friend_code_id?: string | null
           id?: string
           points_awarded?: boolean
-          referred_email?: string
+          referred_email?: string | null
           referred_ip?: string | null
           referred_shipping_address_hash?: string | null
           referred_shopify_customer_id?: string | null
           referrer_ip?: string | null
           referrer_member_id?: string
+          reviewed_at?: string | null
+          reviewed_note?: string | null
+          reward_points?: number | null
           shopify_order_id?: string | null
           status?: string
         }
@@ -513,6 +665,47 @@ export type Database = {
           {
             foreignKeyName: "referrals_referrer_member_id_fkey"
             columns: ["referrer_member_id"]
+            isOneToOne: false
+            referencedRelation: "members"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      review_claims: {
+        Row: {
+          claimed_at: string
+          id: string
+          member_id: string
+          points: number
+          release_at: string
+          resolved_at: string | null
+          shopify_order_id: string | null
+          status: string
+        }
+        Insert: {
+          claimed_at?: string
+          id?: string
+          member_id: string
+          points: number
+          release_at: string
+          resolved_at?: string | null
+          shopify_order_id?: string | null
+          status?: string
+        }
+        Update: {
+          claimed_at?: string
+          id?: string
+          member_id?: string
+          points?: number
+          release_at?: string
+          resolved_at?: string | null
+          shopify_order_id?: string | null
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "review_claims_member_id_fkey"
+            columns: ["member_id"]
             isOneToOne: false
             referencedRelation: "members"
             referencedColumns: ["id"]
@@ -552,6 +745,38 @@ export type Database = {
         }
         Relationships: []
       }
+      staff_notes: {
+        Row: {
+          author: string | null
+          created_at: string
+          id: string
+          member_id: string
+          note: string
+        }
+        Insert: {
+          author?: string | null
+          created_at?: string
+          id?: string
+          member_id: string
+          note: string
+        }
+        Update: {
+          author?: string | null
+          created_at?: string
+          id?: string
+          member_id?: string
+          note?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "staff_notes_member_id_fkey"
+            columns: ["member_id"]
+            isOneToOne: false
+            referencedRelation: "members"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       social_actions: {
         Row: {
           action_type: string
@@ -590,44 +815,109 @@ export type Database = {
           },
         ]
       }
+      system_heartbeat: {
+        Row: {
+          at: string
+          detail: Json
+          key: string
+        }
+        Insert: {
+          at: string
+          detail?: Json
+          key: string
+        }
+        Update: {
+          at?: string
+          detail?: Json
+          key?: string
+        }
+        Relationships: []
+      }
+      tier_history: {
+        Row: {
+          created_at: string
+          from_tier: string | null
+          id: string
+          member_id: string
+          shopify_order_id: string | null
+          to_tier: string | null
+        }
+        Insert: {
+          created_at?: string
+          from_tier?: string | null
+          id?: string
+          member_id: string
+          shopify_order_id?: string | null
+          to_tier?: string | null
+        }
+        Update: {
+          created_at?: string
+          from_tier?: string | null
+          id?: string
+          member_id?: string
+          shopify_order_id?: string | null
+          to_tier?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "tier_history_member_id_fkey"
+            columns: ["member_id"]
+            isOneToOne: false
+            referencedRelation: "members"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      award_points:
-        | {
-            Args: {
-              p_action_type: string
-              p_expires_at?: string
-              p_member_id: string
-              p_points: number
-              p_reason_note?: string
-              p_reference_id: string
-              p_shopify_order_id?: string
-            }
-            Returns: {
-              awarded: boolean
-              new_balance: number
-            }[]
-          }
-        | {
-            Args: {
-              p_action_type: string
-              p_expires_at?: string
-              p_member_id: string
-              p_points: number
-              p_purchase_amount_pkr?: number
-              p_reason_note?: string
-              p_reference_id: string
-              p_shopify_order_id?: string
-            }
-            Returns: {
-              awarded: boolean
-              new_balance: number
-              new_lifetime_spend_pkr: number
-            }[]
-          }
+      award_order_points: {
+        Args: {
+          p_basis_pkr: number
+          p_expires_at: string | null
+          p_member_id: string
+          p_multiplier: number
+          p_points: number
+          p_shopify_order_id: string
+        }
+        Returns: {
+          awarded: boolean
+          new_balance: number
+          new_lifetime_spend_pkr: number
+        }[]
+      }
+      award_points: {
+        Args: {
+          p_action_type: string
+          p_customer_note?: string | null
+          p_expires_at?: string | null
+          p_member_id: string
+          p_points: number
+          p_purchase_amount_pkr?: number | null
+          p_reason_note?: string | null
+          p_reference_id: string | null
+          p_shopify_order_id?: string | null
+        }
+        Returns: {
+          awarded: boolean
+          new_balance: number
+          new_lifetime_spend_pkr: number
+        }[]
+      }
+      reverse_order_points: {
+        Args: {
+          p_kind: string
+          p_reference_id: string
+          p_refunded_basis_pkr?: number | null
+          p_shopify_order_id: string
+        }
+        Returns: {
+          reversed: number
+          new_balance: number | null
+        }[]
+      }
     }
     Enums: {
       [_ in never]: never

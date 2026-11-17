@@ -1,111 +1,215 @@
+// app/routes/app.referrals.tsx — Referral review queue
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { useLoaderData, useSearchParams, useFetcher, Form } from "@remix-run/react";
+import { useFetcher, useLoaderData, useSearchParams } from "@remix-run/react";
+import { useState } from "react";
 import {
-  Page, Card, IndexTable, Badge, Select, Button, Text, InlineGrid, Box, BlockStack, Banner,
+  Badge, BlockStack, Box, Button, Card, IndexTable, InlineGrid, InlineStack, Layout, Link, Modal, Page, Tabs,
+  Text, TextField,
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
-import {
-  listReferrals, referralSummary, reviewAndUnblock, type ReferralStatus,
-} from "../lib/admin-referrals.server";
+import { ConfirmModal, EmptyBlock, Pager, ResultBanner, useActionToast } from "../components/admin-ui";
+import { REFERRAL_STATUS_LABELS, REJECT_NOTE_MAX } from "../components/admin-constants";
+import { fmtDate, fmtInt } from "../components/karachi";
+import { actorFromSession } from "../lib/admin-members.server";
+import { approve, listReferrals, parseReferralStatus, referralSummary, reject } from "../lib/admin-referrals.server";
+import { errorMessage } from "../lib/admin-validate.server";
+
+const PAGE_SIZE = 25;
+const TABS = ["flagged", "pending", "completed", "rejected", "blocked", "all"] as const;
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
-  const url = new URL(request.url);
-  const status = (url.searchParams.get("status") as ReferralStatus | "") || undefined;
-  const [referrals, summary] = await Promise.all([
-    listReferrals({ status }),
+  const sp = new URL(request.url).searchParams;
+  // The queue opens on what needs a decision.
+  const raw = sp.get("status");
+  const status = raw === "all" ? null : parseReferralStatus(raw) ?? "flagged";
+  const pageRaw = Number(sp.get("page") ?? "0");
+  const page = Number.isInteger(pageRaw) && pageRaw > 0 ? pageRaw : 0;
+  const [list, summary] = await Promise.all([
+    listReferrals({ status, page, pageSize: PAGE_SIZE }),
     referralSummary(),
   ]);
-  return json({ referrals, summary, status: status ?? "" });
+  return json({ ...list, summary, status: status ?? "all", page });
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
   const form = await request.formData();
+  const intent = String(form.get("intent") ?? "");
+  const id = String(form.get("referral_id") ?? "");
+  const actor = actorFromSession(session);
   try {
-    await reviewAndUnblock(String(form.get("referralId")));
-    return json({ ok: true });
+    if (intent === "approve") {
+      const res = await approve(id, actor, session.shop);
+      return json(res, { status: res.ok ? 200 : 409 });
+    }
+    if (intent === "reject") {
+      const res = await reject(id, actor, String(form.get("note") ?? ""));
+      return json(res, { status: res.ok ? 200 : 409 });
+    }
+    return json({ ok: false as const, error: "Unknown action." }, { status: 400 });
   } catch (e) {
-    return json({ ok: false, error: (e as Error).message }, { status: 400 });
+    return json({ ok: false as const, error: errorMessage(e) }, { status: 500 });
   }
 };
 
-function statusBadge(s: string, ipMatch: boolean) {
-  if (s === "blocked") return <Badge tone="critical">Blocked</Badge>;
-  if (s === "flagged") return <Badge tone="warning">{ipMatch ? "Flagged · IP match" : "Flagged"}</Badge>;
-  if (s === "completed") return <Badge tone="success">Completed</Badge>;
-  return <Badge>Pending</Badge>;
+function tone(status: string): "success" | "attention" | "critical" | "info" | undefined {
+  return status === "completed" ? "success" : status === "flagged" ? "attention"
+    : status === "rejected" || status === "blocked" ? "critical" : "info";
 }
 
 export default function Referrals() {
-  const { referrals, summary, status } = useLoaderData<typeof loader>();
-  const [params, setParams] = useSearchParams();
-  const fetcher = useFetcher<{ ok: boolean; error?: string }>();
+  const d = useLoaderData<typeof loader>();
+  const [sp, setSp] = useSearchParams();
+  const fetcher = useFetcher<typeof action>();
+  useActionToast(fetcher.data);
+  const busy = fetcher.state !== "idle";
+  const [approving, setApproving] = useState<{ id: string; referrer: string; friend: string } | null>(null);
+  const [rejecting, setRejecting] = useState<{ id: string; referrer: string; friend: string } | null>(null);
+  const [note, setNote] = useState("");
+  const selected = Math.max(0, TABS.indexOf(d.status as (typeof TABS)[number]));
+  const s = d.summary;
+
+  const setStatus = (status: string) => {
+    const next = new URLSearchParams(sp);
+    next.set("status", status);
+    next.delete("page");
+    setSp(next, { preventScrollReset: true });
+  };
 
   return (
-    <Page title="Referrals">
-      <BlockStack gap="400">
-        <InlineGrid columns={{ xs: 1, md: 3 }} gap="400">
-          <Card><Box padding="400"><BlockStack gap="100"><Text as="span" tone="subdued">Total referrals</Text><Text as="span" variant="headingLg">{summary.total}</Text></BlockStack></Box></Card>
-          <Card><Box padding="400"><BlockStack gap="100"><Text as="span" tone="subdued">Conversion rate</Text><Text as="span" variant="headingLg">{(summary.conversionRate * 100).toFixed(0)}%</Text></BlockStack></Box></Card>
-          <Card><Box padding="400"><BlockStack gap="100"><Text as="span" tone="subdued">Rewards issued</Text><Text as="span" variant="headingLg">{summary.rewardsIssued}</Text></BlockStack></Box></Card>
-        </InlineGrid>
-
-        {fetcher.data && !fetcher.data.ok ? <Banner tone="critical">{fetcher.data.error}</Banner> : null}
-
-        <Card>
-          <Box padding="400">
-            <Form method="get">
-              <Select
-                label="Status" labelHidden name="status" value={status}
-                options={[
-                  { label: "All", value: "" },
-                  { label: "Pending", value: "pending" },
-                  { label: "Completed", value: "completed" },
-                  { label: "Flagged", value: "flagged" },
-                  { label: "Blocked", value: "blocked" },
+    <Page title="Referrals" subtitle="Approve or reject referrals that were held for review">
+      <Layout>
+        <Layout.Section>
+          <InlineGrid columns={{ xs: 2, md: 4 }} gap="400">
+            <Summary label="Held for review" value={s.flagged} />
+            <Summary label="Waiting for first order" value={s.pending} />
+            <Summary label="Completed" value={s.completed} />
+            <Summary label="Points paid to referrers" value={s.pointsPaid} />
+          </InlineGrid>
+        </Layout.Section>
+        <Layout.Section><ResultBanner data={fetcher.data} /></Layout.Section>
+        <Layout.Section>
+          <Card padding="0">
+            <Tabs
+              tabs={TABS.map((t) => ({
+                id: t,
+                content: t === "all" ? "All" : t === "flagged" ? `Held for review (${fmtInt(s.flagged)})` : REFERRAL_STATUS_LABELS[t],
+              }))}
+              selected={selected}
+              onSelect={(i) => setStatus(TABS[i])}
+            />
+            {d.rows.length === 0 ? (
+              d.status === "flagged" ? (
+                <EmptyBlock heading="Nothing is held for review" action={{ content: "See all referrals", onAction: () => setStatus("all") }}>
+                  <p>A referral is held when the friend signs in from the same network address as the referrer. Held referrals appear here for you to approve or reject.</p>
+                </EmptyBlock>
+              ) : (
+                <EmptyBlock heading="No referrals here yet" action={{ content: "Check the referral reward", url: "/app/program" }}>
+                  <p>Referrals appear when a friend opens a customer's link and signs in. Each customer's link is on her profile.</p>
+                </EmptyBlock>
+              )
+            ) : (
+              <IndexTable
+                selectable={false} itemCount={d.rows.length}
+                resourceName={{ singular: "referral", plural: "referrals" }}
+                headings={[
+                  { title: "Referrer" }, { title: "Friend" }, { title: "Status" }, { title: "Reason" },
+                  { title: "Date" }, { title: "Points", alignment: "end" }, { title: "Action" },
                 ]}
-                onChange={(v) => {
-                  const next = new URLSearchParams(params);
-                  if (v) next.set("status", v); else next.delete("status");
-                  setParams(next);
-                }}
-              />
-            </Form>
-          </Box>
-          {referrals.length === 0 ? (
-            <Box padding="400"><Text as="p" tone="subdued">No referrals match this filter.</Text></Box>
-          ) : (
-            <IndexTable
-              resourceName={{ singular: "referral", plural: "referrals" }}
-              itemCount={referrals.length}
-              selectable={false}
-              headings={[
-                { title: "Referrer" }, { title: "Referred email" }, { title: "Status" },
-                { title: "Created" }, { title: "Action" },
-              ]}
-            >
-              {referrals.map((r, i) => (
-                <IndexTable.Row id={r.id} key={r.id} position={i}>
-                  <IndexTable.Cell>{r.referrerName}</IndexTable.Cell>
-                  <IndexTable.Cell>{r.referredEmail}</IndexTable.Cell>
-                  <IndexTable.Cell>{statusBadge(r.status, r.ipMatch)}</IndexTable.Cell>
-                  <IndexTable.Cell>{r.createdAt.slice(0, 10)}</IndexTable.Cell>
-                  <IndexTable.Cell>
-                    {r.status === "blocked" || r.status === "flagged" ? (
-                      <fetcher.Form method="post">
-                        <input type="hidden" name="referralId" value={r.id} />
-                        <Button submit size="slim">Review &amp; Unblock</Button>
-                      </fetcher.Form>
-                    ) : null}
-                  </IndexTable.Cell>
-                </IndexTable.Row>
-              ))}
-            </IndexTable>
-          )}
-        </Card>
-      </BlockStack>
+              >
+                {d.rows.map((r, i) => (
+                  <IndexTable.Row id={r.id} key={r.id} position={i}>
+                    <IndexTable.Cell>
+                      <InlineStack gap="100" blockAlign="center">
+                        <Link url={`/app/customers/${r.referrerId}`}>{r.referrerName}</Link>
+                        {r.referrerIsInfluencer ? <Badge tone="info">Influencer</Badge> : null}
+                      </InlineStack>
+                    </IndexTable.Cell>
+                    <IndexTable.Cell>{r.friend}</IndexTable.Cell>
+                    <IndexTable.Cell><Badge tone={tone(r.status)}>{r.statusLabel}</Badge></IndexTable.Cell>
+                    <IndexTable.Cell>
+                      <Box maxWidth="320px">
+                        <Text as="span" breakWord>{r.reason || r.reviewedNote || ""}</Text>
+                      </Box>
+                    </IndexTable.Cell>
+                    <IndexTable.Cell>{fmtDate(r.createdAt)}</IndexTable.Cell>
+                    <IndexTable.Cell>
+                      <Text as="span" alignment="end">{r.rewardPoints !== null && r.status === "completed" ? fmtInt(r.rewardPoints) : ""}</Text>
+                    </IndexTable.Cell>
+                    <IndexTable.Cell>
+                      {r.status === "flagged" ? (
+                        <InlineStack gap="200" wrap={false}>
+                          <Button size="slim" onClick={() => setApproving({ id: r.id, referrer: r.referrerName, friend: r.friend })}>Approve</Button>
+                          <Button size="slim" tone="critical" onClick={() => { setNote(""); setRejecting({ id: r.id, referrer: r.referrerName, friend: r.friend }); }}>Reject</Button>
+                        </InlineStack>
+                      ) : null}
+                    </IndexTable.Cell>
+                  </IndexTable.Row>
+                ))}
+              </IndexTable>
+            )}
+            <Box padding="300"><Pager page={d.page} pageSize={PAGE_SIZE} total={d.total} /></Box>
+          </Card>
+        </Layout.Section>
+      </Layout>
+
+      <ConfirmModal
+        open={approving !== null}
+        title="Approve this referral?"
+        confirmLabel="Approve"
+        destructive={false}
+        loading={busy}
+        onClose={() => setApproving(null)}
+        onConfirm={() => {
+          if (!approving) return;
+          fetcher.submit({ intent: "approve", referral_id: approving.id }, { method: "post" });
+          setApproving(null);
+        }}
+      >
+        <Text as="p">
+          {approving?.referrer} is paid when {approving?.friend}'s first order is delivered and paid. If that has already happened, the points are paid now.
+        </Text>
+      </ConfirmModal>
+
+      <Modal
+        open={rejecting !== null}
+        onClose={() => setRejecting(null)}
+        title="Reject this referral?"
+        primaryAction={{
+          content: "Reject referral", destructive: true, loading: busy,
+          onAction: () => {
+            if (!rejecting) return;
+            fetcher.submit({ intent: "reject", referral_id: rejecting.id, note }, { method: "post" });
+            setRejecting(null);
+          },
+        }}
+        secondaryActions={[{ content: "Cancel", onAction: () => setRejecting(null) }]}
+      >
+        <Modal.Section>
+          <BlockStack gap="300">
+            <Text as="p">
+              {rejecting?.referrer} will not be paid for referring {rejecting?.friend}. This cannot be undone from here.
+            </Text>
+            <TextField
+              label="Note for your records, optional" autoComplete="off" value={note} onChange={setNote}
+              maxLength={REJECT_NOTE_MAX} showCharacterCount
+            />
+          </BlockStack>
+        </Modal.Section>
+      </Modal>
     </Page>
+  );
+}
+
+function Summary({ label, value }: { label: string; value: number }) {
+  return (
+    <Card>
+      <BlockStack gap="100">
+        <Text as="p" tone="subdued" variant="bodySm">{label}</Text>
+        <Text as="p" variant="headingLg">{fmtInt(value)}</Text>
+      </BlockStack>
+    </Card>
   );
 }

@@ -1,66 +1,35 @@
-// app/routes/proxy.redeem.tsx
+// app/routes/proxy.redeem.tsx — POST /apps/loyalty/redeem {points}
 import type { ActionFunctionArgs } from "@remix-run/node";
-import { json } from "@remix-run/node";
-import { extractProxyCustomerId } from "../lib/proxy-auth.server";
+import { guardProxy, proxyJson, readJsonBody } from "../lib/proxy-auth.server";
+import { getMemberByCustomerId } from "../lib/widget-data.server";
 import { redeemPoints } from "../lib/redemption.service";
-import { getProgramEnabled } from "../lib/widget-data.server";
-import { unauthenticated } from "../shopify.server";
-
-const CORS = { "Access-Control-Allow-Origin": "https://heygirl.pk" };
+import { getSettings } from "../lib/settings.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  if (request.method === "OPTIONS") {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        "Access-Control-Allow-Origin": "https://heygirl.pk",
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
-      },
-    });
-  }
-  if (request.method !== "POST") return json({ error: "method_not_allowed" }, { status: 405, headers: { ...CORS, "Cache-Control": "no-store" } });
+  if (request.method !== "POST") return proxyJson({ ok: false, error: "method_not_allowed" }, 405);
+  const g = guardProxy(request, "redeem");
+  if (g.response) return g.response;
+  const { customerId, shop } = g.ctx;
 
-  const url = new URL(request.url);
-  let customerId: string | null;
+  const body = await readJsonBody(request);
+  const points = Number(body?.points);
+  if (!body || !Number.isInteger(points) || points <= 0) return proxyJson({ ok: false, error: "invalid_points" }, 400);
+
   try {
-    customerId = extractProxyCustomerId(url, process.env.SHOPIFY_API_SECRET!);
-  } catch {
-    return json({ error: "unauthorized" }, { status: 401, headers: { ...CORS, "Cache-Control": "no-store" } });
-  }
-  if (!customerId) return json({ error: "not_logged_in" }, { status: 403, headers: { ...CORS, "Cache-Control": "no-store" } });
+    const settings = (await getSettings()) as unknown as { program_enabled?: boolean };
+    if (settings.program_enabled === false) return proxyJson({ ok: false, error: "program_disabled" });
 
-  const programEnabled = await getProgramEnabled();
-  if (!programEnabled) return json({ error: "program_disabled" }, { status: 423, headers: { ...CORS, "Cache-Control": "no-store" } });
+    const member = await getMemberByCustomerId(customerId);
+    if (!member) return proxyJson({ ok: false, error: "not_a_member" });
+    // Clear states, not errors: the widget shows a message for each.
+    if (member.opted_out) return proxyJson({ ok: false, error: "opted_out" });
+    if (member.is_blocked) return proxyJson({ ok: false, error: "blocked" });
 
-  let body: { requestedPoints?: number };
-  try {
-    body = await request.json();
-  } catch {
-    return json({ error: "invalid_json" }, { status: 400, headers: { ...CORS, "Cache-Control": "no-store" } });
-  }
-
-  const { requestedPoints } = body;
-  if (!requestedPoints) return json({ error: "missing_fields" }, { status: 400, headers: { ...CORS, "Cache-Control": "no-store" } });
-  if (!Number.isInteger(Number(requestedPoints)) || Number(requestedPoints) < 3000) {
-    return json({ error: "below_minimum" }, { status: 400, headers: { ...CORS, "Cache-Control": "no-store" } });
-  }
-
-  let admin: Awaited<ReturnType<typeof unauthenticated.admin>>["admin"];
-  try {
-    ({ admin } = await unauthenticated.admin(
-      process.env.SHOPIFY_SHOP_DOMAIN ?? "heygirl.myshopify.com"
-    ));
+    const result = await redeemPoints({ memberId: member.id, points, shop });
+    if (!result.ok) return proxyJson({ ok: false, error: result.reason || "redeem_failed" });
+    return proxyJson({ ok: true, code: result.code, discountPkr: result.discountPkr, expiresAt: result.expiresAt });
   } catch (err) {
-    console.error("[proxy.redeem] admin auth failed:", err);
-    return json({ error: "admin_auth_failed" }, { status: 500, headers: { ...CORS, "Cache-Control": "no-store" } });
-  }
-
-  try {
-    const result = await redeemPoints({ shopifyCustomerId: customerId, requestedPoints: Number(requestedPoints), admin });
-    return json(result, { status: result.redeemed ? 200 : 400, headers: { ...CORS, "Cache-Control": "no-store" } });
-  } catch (err) {
-    console.error("[proxy.redeem] error:", err);
-    return json({ error: "internal_error" }, { status: 500, headers: { ...CORS, "Cache-Control": "no-store" } });
+    console.error("[proxy.redeem] error:", err instanceof Error ? err.message : err);
+    return proxyJson({ ok: false, error: "server_error" }, 500);
   }
 };

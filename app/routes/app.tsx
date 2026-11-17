@@ -1,55 +1,61 @@
 // app/routes/app.tsx
-import type { LoaderFunctionArgs } from "@remix-run/node";
+// Layout for the embedded admin. Navigation is Shopify's own app nav (the
+// sidebar entries under the app's name), declared with App Bridge's NavMenu.
+// The link with rel="home" names the landing page and is not shown as an item.
+import type { HeadersFunction, LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import {
-  Outlet,
-  useLoaderData,
-  useLocation,
-  useNavigate,
-} from "@remix-run/react";
-import { Tabs } from "@shopify/polaris";
+import { Link, Outlet, useLoaderData, useLocation, useNavigation, useRouteError } from "@remix-run/react";
+import { NavMenu } from "@shopify/app-bridge-react";
 import { AppProvider } from "@shopify/shopify-app-remix/react";
+import { boundary } from "@shopify/shopify-app-remix/server";
 import { authenticate } from "../shopify.server";
+import { PageSkeleton } from "../components/admin-ui";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
   return json({ apiKey: process.env.SHOPIFY_API_KEY ?? "" });
 };
 
-const TABS = [
-  { id: "overview", content: "Overview", path: "/app" },
-  { id: "members", content: "Members", path: "/app/members" },
-  { id: "influencers", content: "Influencer", path: "/app/influencers" },
-  { id: "referrals", content: "Referrals", path: "/app/referrals" },
-  { id: "campaigns", content: "Points & Campaigns", path: "/app/campaigns" },
-  { id: "analytics", content: "Analytics", path: "/app/analytics" },
-  { id: "nudges", content: "Nudges", path: "/app/nudges" },
-  { id: "settings", content: "Settings", path: "/app/settings" },
-];
+export const NAV_ITEMS = [
+  { label: "Customers", path: "/app/customers" },
+  { label: "Program", path: "/app/program" },
+  { label: "Referrals", path: "/app/referrals" },
+  { label: "Influencers", path: "/app/influencers" },
+  { label: "Campaigns", path: "/app/campaigns" },
+  { label: "Analytics", path: "/app/analytics" },
+  { label: "On-site", path: "/app/onsite" },
+  { label: "Settings", path: "/app/settings" },
+  { label: "Import", path: "/app/import" },
+] as const;
 
 export default function AdminLayout() {
   const { apiKey } = useLoaderData<typeof loader>();
-  const navigate = useNavigate();
+  const navigation = useNavigation();
   const location = useLocation();
-
-  const selected = Math.max(
-    0,
-    TABS.findIndex((t) =>
-      t.path === "/app"
-        ? location.pathname === "/app" || location.pathname === "/app/"
-        : location.pathname.startsWith(t.path),
-    ),
-  );
+  // Skeleton while a different page loads. Not while a form saves or the same
+  // page reloads with new filters: there the page stays put.
+  const loadingOtherPage =
+    navigation.state === "loading" &&
+    !navigation.formMethod &&
+    navigation.location.pathname !== location.pathname;
 
   return (
     <AppProvider isEmbeddedApp apiKey={apiKey}>
-      <Tabs
-        tabs={TABS.map((t) => ({ id: t.id, content: t.content }))}
-        selected={selected}
-        onSelect={(i) => navigate(TABS[i].path)}
-      >
-        <Outlet />
-      </Tabs>
+      <NavMenu>
+        <Link to="/app" rel="home">Home</Link>
+        {NAV_ITEMS.map((item) => (
+          <Link key={item.path} to={item.path}>{item.label}</Link>
+        ))}
+      </NavMenu>
+      {loadingOtherPage ? <PageSkeleton /> : <Outlet />}
     </AppProvider>
   );
 }
+
+// Shopify needs these so auth redirects and its response headers survive Remix's
+// error and header handling inside the admin iframe.
+export function ErrorBoundary() {
+  return boundary.error(useRouteError());
+}
+
+export const headers: HeadersFunction = (headersArgs) => boundary.headers(headersArgs);

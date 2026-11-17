@@ -7,8 +7,20 @@ export class ShopifyRateLimitError extends Error {
 
 const BASE_DELAY_MS = 500;
 
+/**
+ * The slice of Shopify's Admin client the engine needs. Both the request-bound
+ * client (`authenticate.admin`) and the background one (`getAdminForShop`)
+ * satisfy it, and tests can pass a plain object.
+ */
+export type AdminGraphqlClient = {
+  graphql: (
+    query: string,
+    opts?: { variables?: Record<string, unknown> },
+  ) => Promise<{ json: () => Promise<unknown> }>;
+};
+
 export async function shopifyGraphqlWithRetry<T>(
-  admin: { graphql: (query: string, opts?: { variables?: Record<string, unknown> }) => Promise<{ json: () => Promise<unknown> }> },
+  admin: AdminGraphqlClient,
   query: string,
   variables?: Record<string, unknown>,
   maxRetries = 3,

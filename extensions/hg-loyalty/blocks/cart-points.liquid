@@ -1,0 +1,39 @@
+{%- comment -%}
+  HeyGirl Rewards: cart page line (main-cart-footer accepts app blocks).
+  Liquid prints the first paint; hg-core.js refreshes it from /cart.js when the
+  cart changes and adds the member's "Apply reward" link. The cart DRAWER has
+  no block support, so hg-core.js inserts the same line there by itself.
+{%- endcomment -%}
+{%- assign cfg = app.metafields.hg_loyalty.config.value -%}
+{%- if cfg and cfg.enabled -%}
+  {%- liquid
+    capture hg_mult
+      render 'hg-mult', cfg: cfg
+    endcapture
+    assign hg_mult = hg_mult | strip | times: 1.0
+    assign hg_points = 0
+    if cfg.earnRules.purchase.enabled != false
+      assign hg_points = cart.total_price | times: cfg.pointsRate | times: hg_mult | divided_by: 100.0 | floor
+    endif
+  -%}
+  {%- render 'hg-line-css' -%}
+  <div class="hg-line" data-hg-cart-block {% if cart.item_count == 0 %}hidden{% endif %} {{ block.shopify_attributes }}>
+    {%- if cart.item_count > 0 -%}
+      {%- if hg_points > 0 -%}
+        <p class="hg-line__main">{%- render 'hg-gift' -%}<span>You'll earn <strong>{% render 'hg-num', n: hg_points %} points</strong> on this order</span></p>
+      {%- endif -%}
+      {%- unless customer -%}
+        <p class="hg-line__sub">Placing an order enrols you in {{ cfg.programName | escape }}.</p>
+      {%- endunless -%}
+    {%- endif -%}
+  </div>
+{%- endif -%}
+
+{% schema %}
+{
+  "name": "Cart rewards line",
+  "target": "section",
+  "enabled_on": { "templates": ["cart"] },
+  "settings": []
+}
+{% endschema %}

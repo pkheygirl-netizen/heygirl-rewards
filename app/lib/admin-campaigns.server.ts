@@ -1,4 +1,18 @@
-import { db } from "../db.server";
+// app/lib/admin-campaigns.server.ts
+// Bonus campaigns: list with status and results, create, edit, switch off.
+//
+// Times are typed and shown in Asia/Karachi and stored in UTC (handbook R6).
+// Switching a campaign on only ever switches off the campaigns whose dates
+// overlap it, and only after the admin confirms (handbook R7). The database
+// refuses two active campaigns with overlapping dates.
+import { adb, num, rpcRows, str, UUID_RE, type Row } from "./admin-db.server";
+import { FormReader, type FieldErrors } from "./admin-validate.server";
+import { fetchAllPages } from "./csv.server";
+
+import { CAMPAIGN_LIMITS, CAMPAIGN_STATUS_LABELS, type CampaignStatus } from "../components/admin-constants";
+export { CAMPAIGN_LIMITS, CAMPAIGN_STATUS_LABELS, type CampaignStatus };
+
+export type CampaignResults = { orders: number; salesPkr: number; pointsIssued: number; pointsPending: number };
 
 export type CampaignRow = {
   id: string;
@@ -7,6 +21,8 @@ export type CampaignRow = {
   startsAt: string;
   endsAt: string;
   isActive: boolean;
+  status: CampaignStatus;
+  results: CampaignResults;
 };
 
 export type CampaignInput = {
@@ -17,66 +33,162 @@ export type CampaignInput = {
   isActive: boolean;
 };
 
-function validate(input: CampaignInput) {
-  if (!input.name || !input.name.trim()) throw new Error("invalid campaign");
-  if (!(input.multiplier >= 1)) throw new Error("invalid campaign");
-  if (new Date(input.endsAt).getTime() <= new Date(input.startsAt).getTime()) {
-    throw new Error("invalid campaign");
+export function campaignStatus(
+  c: { startsAt: string; endsAt: string; isActive: boolean }, now: Date = new Date(),
+): CampaignStatus {
+  const t = now.getTime();
+  if (t >= new Date(c.endsAt).getTime()) return "ended";
+  if (!c.isActive) return "off";
+  return t < new Date(c.startsAt).getTime() ? "scheduled" : "live";
+}
+
+/** Form → input. Start and end are Karachi wall-clock times. */
+export function parseCampaignForm(
+  form: { get(name: string): unknown },
+): { ok: true; value: CampaignInput } | { ok: false; errors: FieldErrors } {
+  const r = new FormReader(form);
+  const L = CAMPAIGN_LIMITS;
+  const name = r.text("name", "Campaign name", { max: L.name, required: true });
+  // bonus_campaigns.multiplier is numeric(3,1): one decimal place
+  const multiplier = r.decimal("multiplier", "Multiplier", L.multiplier.min, L.multiplier.max, 1);
+  const startsAt = r.karachiDateTime("starts_at", "Start");
+  const endsAt = r.karachiDateTime("ends_at", "End");
+  if (r.ok && new Date(endsAt).getTime() <= new Date(startsAt).getTime()) {
+    r.fail("ends_at", "The end must be after the start.");
   }
+  const isActive = r.bool("is_active");
+  return r.ok ? { ok: true, value: { name, multiplier, startsAt, endsAt, isActive } } : { ok: false, errors: r.errors };
 }
 
-async function deactivateAllExcept(exceptId: string | null) {
-  let q = db.from("bonus_campaigns").update({ is_active: false });
-  q = exceptId ? q.neq("id", exceptId) : q.neq("id", "00000000-0000-0000-0000-000000000000");
-  const { error } = await q;
-  if (error) throw error;
+function toCampaign(c: Row, results: Map<string, CampaignResults>, now: Date): CampaignRow {
+  const base = {
+    id: str(c.id), name: str(c.name), multiplier: num(c.multiplier, 1),
+    startsAt: str(c.starts_at), endsAt: str(c.ends_at), isActive: c.is_active === true,
+  };
+  return {
+    ...base,
+    status: campaignStatus(base, now),
+    results: results.get(base.id) ?? { orders: 0, salesPkr: 0, pointsIssued: 0, pointsPending: 0 },
+  };
 }
 
-export async function listCampaigns(): Promise<CampaignRow[]> {
-  const { data, error } = await db
-    .from("bonus_campaigns")
-    .select("id, name, multiplier, starts_at, ends_at, is_active")
-    .order("created_at", { ascending: false });
-  if (error) throw error;
-  return (data ?? []).map((c: any) => ({
-    id: c.id, name: c.name, multiplier: Number(c.multiplier),
-    startsAt: c.starts_at, endsAt: c.ends_at, isActive: c.is_active,
-  }));
+export async function listCampaigns(now: Date = new Date()): Promise<CampaignRow[]> {
+  const [res, resultRows] = await Promise.all([
+    adb().from("bonus_campaigns").select("id, name, multiplier, starts_at, ends_at, is_active")
+      .order("starts_at", { ascending: false }).limit(500),
+    rpcRows("admin_campaign_results"),
+  ]);
+  if (res.error) throw new Error(`could not read campaigns: ${res.error.message}`);
+  const results = new Map<string, CampaignResults>(
+    resultRows.map((r) => [
+      str(r.campaign_id),
+      {
+        orders: num(r.orders), salesPkr: Math.round(num(r.sales_pkr)),
+        pointsIssued: num(r.points_issued), pointsPending: num(r.points_pending),
+      },
+    ]),
+  );
+  return ((res.data ?? []) as Row[]).map((c) => toCampaign(c, results, now));
 }
 
-export async function createCampaign(input: CampaignInput): Promise<void> {
-  validate(input);
-  if (input.isActive) await deactivateAllExcept(null);
-  const { error } = await db.from("bonus_campaigns").insert({
-    name: input.name.trim(),
-    multiplier: input.multiplier,
-    starts_at: input.startsAt,
-    ends_at: input.endsAt,
-    is_active: input.isActive,
-  });
-  if (error) throw error;
+/** Active campaigns whose dates overlap [startsAt, endsAt), other than `exceptId`. */
+export async function findOverlapping(
+  startsAt: string, endsAt: string, exceptId: string | null,
+): Promise<Array<{ id: string; name: string }>> {
+  let q = adb().from("bonus_campaigns").select("id, name")
+    .eq("is_active", true).lt("starts_at", endsAt).gt("ends_at", startsAt);
+  if (exceptId) q = q.neq("id", exceptId);
+  const { data, error } = await q;
+  if (error) throw new Error(`could not check for overlapping campaigns: ${error.message}`);
+  return ((data ?? []) as Row[]).map((c) => ({ id: str(c.id), name: str(c.name) }));
 }
 
-export async function updateCampaign(id: string, input: CampaignInput): Promise<void> {
-  validate(input);
-  if (input.isActive) await deactivateAllExcept(id);
-  const { error } = await db
-    .from("bonus_campaigns")
-    .update({
-      name: input.name.trim(),
-      multiplier: input.multiplier,
-      starts_at: input.startsAt,
-      ends_at: input.endsAt,
-      is_active: input.isActive,
-    })
-    .eq("id", id);
-  if (error) throw error;
+export type SaveCampaignResult =
+  | { ok: true; switchedOff: string[] }
+  | { ok: false; conflicts: Array<{ id: string; name: string }> }
+  | { ok: false; error: string };
+
+/**
+ * Create (id null) or update. When the campaign is on and other active
+ * campaigns overlap its dates, nothing is saved unless `replaceOverlapping` is
+ * true; then only those overlapping campaigns are switched off. Campaigns that
+ * do not overlap, including future ones, are never touched.
+ */
+export async function saveCampaign(
+  id: string | null, input: CampaignInput, opts: { replaceOverlapping?: boolean } = {},
+): Promise<SaveCampaignResult> {
+  if (id !== null && !UUID_RE.test(id)) return { ok: false, error: "That campaign could not be found." };
+  let switchedOff: string[] = [];
+  if (input.isActive) {
+    const conflicts = await findOverlapping(input.startsAt, input.endsAt, id);
+    if (conflicts.length > 0) {
+      if (!opts.replaceOverlapping) return { ok: false, conflicts };
+      const { error } = await adb().from("bonus_campaigns").update({ is_active: false })
+        .in("id", conflicts.map((c) => c.id));
+      if (error) throw new Error(`could not switch off the overlapping campaigns: ${error.message}`);
+      switchedOff = conflicts.map((c) => c.name);
+    }
+  }
+  const row = {
+    name: input.name, multiplier: input.multiplier,
+    starts_at: input.startsAt, ends_at: input.endsAt, is_active: input.isActive,
+  };
+  const res = id
+    ? await adb().from("bonus_campaigns").update(row).eq("id", id).select("id")
+    : await adb().from("bonus_campaigns").insert(row).select("id");
+  if (res.error) {
+    // 23P01 = exclusion constraint: another active campaign took these dates in the meantime
+    if ((res.error as { code?: string }).code === "23P01") {
+      return { ok: false, error: "Another active campaign now overlaps these dates. Reload the page and try again." };
+    }
+    throw new Error(`could not save the campaign: ${res.error.message}`);
+  }
+  if (id && (!res.data || (res.data as unknown[]).length === 0)) {
+    return { ok: false, error: "That campaign no longer exists." };
+  }
+  return { ok: true, switchedOff };
 }
 
-export async function deleteCampaign(id: string): Promise<void> {
-  const { error } = await db.from("bonus_campaigns").delete().eq("id", id);
-  if (error) throw error;
+export async function setCampaignActive(id: string, active: boolean): Promise<SaveCampaignResult> {
+  if (!UUID_RE.test(id)) return { ok: false, error: "That campaign could not be found." };
+  if (active) {
+    const { data, error } = await adb().from("bonus_campaigns")
+      .select("name, multiplier, starts_at, ends_at").eq("id", id).maybeSingle();
+    if (error) throw new Error(`could not read the campaign: ${error.message}`);
+    if (!data) return { ok: false, error: "That campaign no longer exists." };
+    const c = data as Row;
+    const conflicts = await findOverlapping(str(c.starts_at), str(c.ends_at), id);
+    if (conflicts.length > 0) return { ok: false, conflicts };
+  }
+  const { error } = await adb().from("bonus_campaigns").update({ is_active: active }).eq("id", id);
+  if (error) {
+    if ((error as { code?: string }).code === "23P01") {
+      return { ok: false, error: "Another active campaign overlaps these dates." };
+    }
+    throw new Error(`could not update the campaign: ${error.message}`);
+  }
+  return { ok: true, switchedOff: [] };
 }
+
+/**
+ * Delete is only for a campaign no order was placed under. Orders keep the
+ * multiplier of the campaign that was running when they were placed, so a
+ * campaign with orders stays as a record and can only be switched off.
+ */
+export async function deleteCampaign(id: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!UUID_RE.test(id)) return { ok: false, error: "That campaign could not be found." };
+  const { count, error: countErr } = await adb().from("order_webhook_state")
+    .select("id", { count: "exact", head: true }).eq("campaign_id", id);
+  if (countErr) throw new Error(`could not check the campaign's orders: ${countErr.message}`);
+  if (num(count) > 0) {
+    return { ok: false, error: "Orders were placed under this campaign, so it is kept as a record. Switch it off instead." };
+  }
+  const { error } = await adb().from("bonus_campaigns").delete().eq("id", id);
+  if (error) throw new Error(`could not delete the campaign: ${error.message}`);
+  return { ok: true };
+}
+
+// ── points ledger export ─────────────────────────────────────────────────────
 
 export type LedgerExportRow = {
   earnedAt: string;
@@ -86,28 +198,46 @@ export type LedgerExportRow = {
   points: number;
   balanceAfter: number;
   reason: string;
+  customerNote: string;
+  orderId: string;
 };
 
+export const LEDGER_MAX_ROWS = 100000;
+
+/** The ledger between two instants, read in pages so the export is complete. */
 export async function listLedger(opts: {
-  from?: string;
-  to?: string;
-  actionType?: string;
-}): Promise<LedgerExportRow[]> {
-  let q = db
-    .from("points_ledger")
-    .select("earned_at, action_type, points, balance_after, reason_note, members(first_name,last_name,email)");
-  if (opts.from) q = q.gte("earned_at", opts.from);
-  if (opts.to) q = q.lte("earned_at", opts.to);
-  if (opts.actionType) q = q.eq("action_type", opts.actionType);
-  const { data, error } = await q.order("earned_at", { ascending: false }).limit(5000);
-  if (error) throw error;
-  return (data ?? []).map((r: any) => ({
-    earnedAt: r.earned_at,
-    memberName: [r.members?.first_name, r.members?.last_name].filter(Boolean).join(" ") || "—",
-    email: r.members?.email ?? "",
-    actionType: r.action_type,
-    points: r.points,
-    balanceAfter: r.balance_after,
-    reason: r.reason_note ?? "",
-  }));
+  from?: string | null; to?: string | null; actionType?: string | null;
+}): Promise<{ rows: LedgerExportRow[]; truncated: boolean }> {
+  const { rows, truncated } = await fetchAllPages<Row>(
+    (start, end) => {
+      let q = adb().from("points_ledger").select(
+        "id, earned_at, action_type, points, balance_after, reason_note, customer_note, shopify_order_id, " +
+          "members(first_name,last_name,email,phone)",
+      );
+      if (opts.from) q = q.gte("earned_at", opts.from);
+      if (opts.to) q = q.lt("earned_at", opts.to);
+      if (opts.actionType) q = q.eq("action_type", opts.actionType);
+      return q.order("earned_at", { ascending: false }).order("id", { ascending: true }).range(start, end) as unknown as
+        PromiseLike<{ data: Row[] | null; error: { message: string } | null }>;
+    },
+    { maxRows: LEDGER_MAX_ROWS },
+  );
+  return {
+    truncated,
+    rows: rows.map((r) => {
+      const m = r.members as Row | null;
+      const name = [m?.first_name, m?.last_name].map(str).filter(Boolean).join(" ");
+      return {
+        earnedAt: str(r.earned_at),
+        memberName: name || str(m?.email) || str(m?.phone),
+        email: str(m?.email),
+        actionType: str(r.action_type),
+        points: num(r.points),
+        balanceAfter: num(r.balance_after),
+        reason: str(r.reason_note),
+        customerNote: str(r.customer_note),
+        orderId: str(r.shopify_order_id),
+      };
+    }),
+  };
 }
