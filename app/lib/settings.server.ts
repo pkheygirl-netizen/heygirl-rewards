@@ -206,8 +206,22 @@ export function bustSettingsCache(): void {
   inflight = null;
 }
 
+/**
+ * For an action the customer takes NOW (sign-in, claim, birthday run): the
+ * program must be on and the rule switched on.
+ */
 export function isEarnRuleEnabled(settings: AppSettings, rule: EarnRuleKey): boolean {
-  return settings.program_enabled !== false && settings.earn_rules[rule]?.enabled !== false;
+  return settings.program_enabled !== false && isEarnRuleSwitchedOn(settings, rule);
+}
+
+/**
+ * The rule's own switch only, ignoring the program switch. Used when a reward
+ * comes due for something done earlier: rule 20 decides by the program state
+ * when the triggering action happened (an order's placed_at, a claim made
+ * while the program was on), not by the state at pay-out time.
+ */
+export function isEarnRuleSwitchedOn(settings: AppSettings, rule: EarnRuleKey): boolean {
+  return settings.earn_rules[rule]?.enabled !== false;
 }
 
 export function tierThresholds(settings: AppSettings): { gold: number; diamond: number } {

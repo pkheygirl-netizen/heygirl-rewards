@@ -66,3 +66,27 @@ export function previewBalance(balance: number, direction: "add" | "remove", poi
   if (!Number.isFinite(points) || points <= 0) return balance;
   return direction === "add" ? balance + points : Math.max(balance - points, 0);
 }
+
+/**
+ * What switching the program off does (rule 20), word for word on the
+ * Settings page, its confirmation and the Home banner.
+ */
+export const PROGRAM_OFF_EFFECTS = [
+  "Customers earn no points: no purchase, welcome, referral, review, social or birthday rewards.",
+  "Customers cannot redeem points, and the rewards panel, launcher and points lines are hidden on the storefront.",
+  "Reward codes already issued still work at checkout until they expire.",
+  "An order placed while the program is off never earns points, even if it is delivered and paid after you switch it back on.",
+  "Orders placed before you switched off still earn when they are delivered and paid, and balances are kept.",
+] as const;
+
+/**
+ * FAQ entries the owner approved as defaults. Migration 014 writes them to a
+ * store whose list is still empty; a store with its own list is offered them
+ * on the On-site page.
+ */
+export const SUGGESTED_FAQS: ReadonlyArray<{ q: string; a: string }> = [
+  {
+    q: "How are my points calculated?",
+    a: "Points are earned on the amount you pay after discounts, and are added once your order is delivered and paid. Shipping and tax do not earn points.",
+  },
+];

@@ -243,3 +243,18 @@ describe("storefront config job", () => {
     await expect(runStorefrontConfig(new Date("2026-11-16T19:05:00Z"))).rejects.toThrow(/no_app_installation/);
   });
 });
+
+describe("rule 20: birthday while the program is switched off", () => {
+  it("skips while off; the next daily run after it is back on (same month) queues it; the issue key stops a second code", async () => {
+    const m = seedMember(h.db, { birthday_month: 11, birthday_day: 20, birthday_set_at: "2026-06-01T00:00:00Z" });
+    h.db.table("app_settings")[0].program_enabled = false;
+    bustSettingsCache();
+    expect(await runBirthday(new Date("2026-11-01T04:00:00Z"))).toMatchObject({ queued: 0, reason: "disabled" });
+    h.db.table("app_settings")[0].program_enabled = true;
+    bustSettingsCache();
+    expect(await runBirthday(new Date("2026-11-15T04:00:00Z"))).toEqual({ queued: 1 });
+    // once this year's code exists the member is no longer listed
+    h.db.seed("loyalty_codes", { member_id: m.id, code: "BDAY-X", kind: "birthday", issue_key: `birthday:${m.id}:2026`, discount_amount: 250, points_spent: 0, expires_at: "2026-12-15", created_at: "2026-11-15T04:00:00Z" });
+    expect(await runBirthday(new Date("2026-11-16T04:00:00Z"))).toEqual({ queued: 0 });
+  });
+});

@@ -565,6 +565,60 @@ console.log("\n[14] 013_rls: row level security on every app table, no policies"
   eq("award_points still works after 013", [r.awarded, r.new_balance], [true, 100]);
 }
 
+console.log("\n[15] 014_program_pause: switch history, state at placement, default FAQ");
+{
+  const m014 = fs.readFileSync(path.join(MIG, "014_program_pause.sql"), "utf8");
+  // 014 was applied once with the later migrations above (on the legacy data)
+  const legacyOrder = (await q(`select program_on_at_placement p from order_webhook_state where shopify_order_id='LO1'`))[0];
+  eq("orders recorded before 014 count as placed while on", legacyOrder.p, true);
+  const APPROVED = [{ q: "How are my points calculated?", a: "Points are earned on the amount you pay after discounts, and are added once your order is delivered and paid. Shipping and tax do not earn points." }];
+  // jsonb sorts object keys, so compare in SQL rather than as JSON text
+  const sameFaqs = async (want) => (await q(`select faqs = $1::jsonb s from app_settings where id=1`, [JSON.stringify(want)]))[0].s;
+  eq("an empty FAQ list gets the approved entry", await sameFaqs(APPROVED), true);
+  let again = null;
+  try { await db.query(m014); await db.query(m014); } catch (e) { again = e.message; }
+  ok("014 is re-runnable (applied twice more without error)", again === null, again);
+  eq("one baseline row, not one per run", (await q(`select count(*)::int c from program_switch_history where source='baseline'`))[0].c, 1);
+  eq("the FAQ is not added twice", (await q(`select jsonb_array_length(faqs) n from app_settings where id=1`))[0].n, 1);
+  await q(`update app_settings set faqs='[{"q":"Own question","a":"Own answer"}]'::jsonb where id=1`);
+  await db.query(m014);
+  eq("a store's own FAQ list is left alone", await sameFaqs([{ q: "Own question", a: "Own answer" }]), true);
+
+  // the trigger records every change of the switch, and nothing else
+  const count = async () => (await q(`select count(*)::int c from program_switch_history`))[0].c;
+  const before = await count();
+  await q(`update app_settings set program_enabled=false where id=1`);
+  await q(`update app_settings set program_enabled=false where id=1`); // same value: no row
+  await q(`update app_settings set tagline='x' where id=1`);           // other column: no row
+  await q(`update app_settings set program_enabled=true, tagline='y' where id=1`);
+  const rows = await q(`select enabled, source from program_switch_history order by changed_at desc, id desc limit 2`);
+  eq("switch off then on writes exactly two rows (latest first)", [await count() - before, rows], [2, [{ enabled: true, source: "settings" }, { enabled: false, source: "settings" }]]);
+
+  // program_enabled_at against a known history
+  await q(`truncate program_switch_history`);
+  await q(`insert into program_switch_history (enabled, changed_at, source) values
+    (true,  '2026-01-01T00:00:00Z', 'baseline'),
+    (false, '2026-11-09T00:00:00Z', 'settings'),
+    (true,  '2026-11-12T00:00:00Z', 'settings')`);
+  const at = async (t) => (await q(`select program_enabled_at($1::timestamptz) v`, [t]))[0].v;
+  eq("before the first record: the baseline state", await at("2025-06-01T00:00:00Z"), true);
+  eq("while on", await at("2026-11-08T10:00:00Z"), true);
+  eq("at the moment it was switched off", await at("2026-11-09T00:00:00Z"), false);
+  eq("while off", await at("2026-11-10T10:00:00+05:00"), false);
+  eq("back on", await at("2026-11-13T00:00:00Z"), true);
+  eq("null means now", await at(null), true);
+  await q(`truncate program_switch_history`);
+  await q(`update app_settings set program_enabled=false where id=1`); // trigger writes one row: off
+  await q(`truncate program_switch_history`);
+  eq("no history at all: the current switch", await at("2026-11-10T00:00:00Z"), false);
+  await q(`update app_settings set program_enabled=true where id=1`);
+  let rpcErr = null;
+  try { await q(`insert into order_webhook_state (shopify_order_id, shopify_customer_id, program_on_at_placement) values ('P20','C-P20', false)`); } catch (e) { rpcErr = e.message; }
+  ok("program_on_at_placement can be stored false", rpcErr === null, rpcErr);
+  const rls = (await q(`select relrowsecurity r from pg_class where relname='program_switch_history'`))[0].r;
+  eq("program_switch_history has row level security", rls, true);
+}
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 if (fail) console.log("FAILED:", failures.join(" | "));
 await db.end();

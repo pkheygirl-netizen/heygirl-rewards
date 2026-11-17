@@ -11,8 +11,11 @@ export async function issueReferralFriendCode(
   referralId: string,
   shop?: string | null,
 ): Promise<{ issued: boolean; code?: string; codeId?: string; reason?: string }> {
+  // No program-switch check here (rule 20): a referral is only recorded while
+  // the program is on (recordReferralVisit and the storefront refuse otherwise),
+  // so the friend's code is owed even if a retry or an admin approval runs
+  // during a pause.
   const settings = await getSettings();
-  if (!settings.program_enabled) return { issued: false, reason: "program_disabled" };
   if (!settings.referral_friend_free_shipping) return { issued: false, reason: "disabled" };
 
   const { data: referral, error } = await db

@@ -599,6 +599,7 @@ export type Database = {
           points_awarded: boolean
           points_awarded_amount: number
           points_rate: number | null
+          program_on_at_placement: boolean
           points_reversed_amount: number
           refund_basis_at_award_pkr: number
           refund_events_basis_pkr: number
@@ -632,6 +633,7 @@ export type Database = {
           points_awarded?: boolean
           points_awarded_amount?: number
           points_rate?: number | null
+          program_on_at_placement?: boolean
           points_reversed_amount?: number
           refund_basis_at_award_pkr?: number
           refund_events_basis_pkr?: number
@@ -665,6 +667,7 @@ export type Database = {
           points_awarded?: boolean
           points_awarded_amount?: number
           points_rate?: number | null
+          program_on_at_placement?: boolean
           points_reversed_amount?: number
           refund_basis_at_award_pkr?: number
           refund_events_basis_pkr?: number
@@ -961,6 +964,27 @@ export type Database = {
           },
         ]
       }
+      program_switch_history: {
+        Row: {
+          changed_at: string
+          enabled: boolean
+          id: number
+          source: string
+        }
+        Insert: {
+          changed_at?: string
+          enabled: boolean
+          id?: number
+          source?: string
+        }
+        Update: {
+          changed_at?: string
+          enabled?: boolean
+          id?: number
+          source?: string
+        }
+        Relationships: []
+      }
       system_heartbeat: {
         Row: {
           at: string
@@ -1089,6 +1113,10 @@ export type Database = {
           reversed: number
           pending_points: number
         }[]
+      }
+      program_enabled_at: {
+        Args: { p_at: string | null }
+        Returns: boolean
       }
       upgrade_member_tier: {
         Args: {

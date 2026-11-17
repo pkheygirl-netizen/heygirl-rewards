@@ -103,3 +103,19 @@ describe("referral friend code", () => {
     expect(codes()).toHaveLength(0);
   });
 });
+
+describe("rule 20: program switched off", () => {
+  it("a tier code owed for an upgrade (queued by ensureTierFollowUps) and a friend code for a referral recorded while on are still issued during a pause", async () => {
+    h.db.table("app_settings")[0].program_enabled = false;
+    bustSettingsCache();
+    const m = seedMember(h.db, { tier: "gold" });
+    const r = await issueTierRewards({ memberId: String(m.id), fromTier: "silver", toTier: "gold", shop: "s" });
+    expect(r.issued.map((c) => c.kind)).toEqual(["tier_gold"]);
+
+    const friend = seedMember(h.db, { shopify_customer_id: "FR" });
+    const referral = h.db.seed("referrals", { referrer_member_id: m.id, referred_shopify_customer_id: "FR", status: "pending" });
+    const f = await issueReferralFriendCode(String(referral.id), "s");
+    expect(f.issued).toBe(true);
+    expect(codes().map((c) => [c.member_id, c.kind])).toEqual([[m.id, "tier_gold"], [friend.id, "referral_friend"]]);
+  });
+});

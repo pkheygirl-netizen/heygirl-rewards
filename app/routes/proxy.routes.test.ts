@@ -183,6 +183,13 @@ describe("GET /proxy/history", () => {
 });
 
 describe("POST /proxy/redeem", () => {
+  it("rule 20: refuses while the program is switched off, without calling the engine", async () => {
+    h.getSettings.mockResolvedValueOnce({ program_enabled: false });
+    const res = await redeemAction(args(signedRequest("redeem", { customerId: "42", body: { points: 3000 } })));
+    expect(await json(res)).toEqual({ ok: false, error: "program_disabled" });
+    expect(h.redeemPoints).not.toHaveBeenCalled();
+  });
+
   it("calls redeemPoints with the contract signature and returns the contract shape", async () => {
     h.redeemPoints.mockResolvedValue({ ok: true, code: "REWARD-AB12", discountPkr: 100, expiresAt: "2026-12-16T00:00:00Z" });
     const res = await redeemAction(args(signedRequest("redeem", { customerId: "42", body: { points: 3000 } })));

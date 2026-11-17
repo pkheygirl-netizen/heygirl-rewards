@@ -7,6 +7,10 @@ import { AppProvider } from "@shopify/polaris";
 import en from "@shopify/polaris/locales/en.json";
 import type { ReactElement } from "react";
 import { fakeDb } from "./admin-test-helpers";
+import { PROGRAM_OFF_EFFECTS, SUGGESTED_FAQS } from "../components/admin-constants";
+
+/** React escapes text the way renderToString prints it. */
+const escapeHtml = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#x27;");
 
 const ID = "11111111-1111-4111-8111-111111111111";
 const SHOP = "heygirl-pk.myshopify.com";
@@ -347,6 +351,45 @@ describe("hidden rewards", () => {
     mockAll({ rpc: full.rpc, from: (table, chain) => (table === "app_settings" ? { data: { ...SETTINGS, program_enabled: false, redemption_tiers: [] } } : full.from!(table, chain)) });
     const home = await renderRoute("app._index.tsx", "/app");
     expect(home).not.toContain("Customers currently have nothing to redeem");
+  });
+});
+
+describe("rule 20: program switch wording", () => {
+  beforeEach(() => mockAll(full));
+  const off = () =>
+    mockAll({ rpc: full.rpc, from: (table, chain) => (table === "app_settings" ? { data: { ...SETTINGS, program_enabled: false } } : full.from!(table, chain)) });
+
+  it("Settings says exactly what switching off does, in both states", async () => {
+    const on = await renderRoute("app.settings.tsx", "/app/settings");
+    expect(on).toContain("If you switch it off:");
+    for (const t of PROGRAM_OFF_EFFECTS) expect(on, t).toContain(escapeHtml(t));
+    off();
+    const offHtml = await renderRoute("app.settings.tsx", "/app/settings");
+    expect(offHtml).toContain("While it is off:");
+    expect(offHtml).toContain(escapeHtml("Reward codes already issued still work at checkout until they expire."));
+    expect(offHtml).toContain(escapeHtml("An order placed while the program is off never earns points, even if it is delivered and paid after you switch it back on."));
+  });
+
+  it("Home shows the switched-off banner with the same list only while off", async () => {
+    const on = await renderRoute("app._index.tsx", "/app");
+    expect(on).not.toContain("The program is switched off");
+    off();
+    const offHtml = await renderRoute("app._index.tsx", "/app");
+    expect(offHtml).toContain("The program is switched off");
+    for (const t of PROGRAM_OFF_EFFECTS) expect(offHtml, t).toContain(escapeHtml(t));
+  });
+
+  it("On-site offers the approved FAQ when the saved list lacks it, and not once it is there", async () => {
+    const without = await renderRoute("app.onsite.tsx", "/app/onsite");
+    expect(without).toContain("Suggested question: How are my points calculated?");
+    expect(without).toContain("Add this question");
+    mockAll({
+      rpc: full.rpc,
+      from: (table, chain) => (table === "app_settings" ? { data: { ...SETTINGS, faqs: [...SETTINGS.faqs, ...SUGGESTED_FAQS] } } : full.from!(table, chain)),
+    });
+    const withIt = await renderRoute("app.onsite.tsx", "/app/onsite");
+    expect(withIt).not.toContain("Suggested question:");
+    expect(withIt).toContain("How are my points calculated?");
   });
 });
 

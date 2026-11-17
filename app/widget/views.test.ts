@@ -82,6 +82,15 @@ describe("member views", () => {
     expect(h).toContain("1,500 more");
   });
 
+  it("referral wording says delivered AND paid on the guest home, the Rewards tab and the Refer tab (rule 10)", () => {
+    const m = makeMember();
+    const pages = { guest: guestHome(ctx()), rewards: rewardsTab(ctx({ member: m })), refer: referTab(ctx({ member: m }), null) };
+    for (const [name, html] of Object.entries(pages)) {
+      expect(html, name).toContain("first order is delivered and paid.");
+      expect(html, name).not.toMatch(/first order is delivered\./);
+    }
+  });
+
   it("rewards tab shows pending points, next expiry and Refer & Earn above the link", () => {
     const m = makeMember({ pendingPoints: 1200 }, { nextExpiry: { points: 800, at: "2026-12-01T10:00:00Z" } });
     const h = rewardsTab(ctx({ member: m }));

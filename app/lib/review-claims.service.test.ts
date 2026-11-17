@@ -149,3 +149,29 @@ describe("L4: release re-checks the rule and the order", () => {
     expect(part.m.points_balance).toBe(3000);
   });
 });
+
+describe("rule 20: program switched off", () => {
+  it("an order placed while the program was off cannot be claimed for review points", async () => {
+    const m = seedMember(h.db);
+    awardedOrder(m.shopify_customer_id, "O-OFF", { program_on_at_placement: false });
+    expect(await claimReview(String(m.id))).toEqual({ ok: false, reason: "no_eligible_order" });
+    awardedOrder(m.shopify_customer_id, "O-ON");
+    expect(await claimReview(String(m.id))).toMatchObject({ ok: true });
+    expect(claims().map((c) => c.shopify_order_id)).toEqual(["O-ON"]);
+  });
+
+  it("a claim made while on is released when due even during a pause; the review rule's own switch still holds it", async () => {
+    const m = seedMember(h.db);
+    awardedOrder(m.shopify_customer_id, "O1", { earning_basis_pkr: 2000, points_awarded_amount: 2000 });
+    const c = h.db.seed("review_claims", { member_id: m.id, shopify_order_id: "O1", points: 3000, release_at: "2026-11-01T00:00:00Z" });
+    h.db.table("app_settings")[0].program_enabled = false;
+    h.db.table("app_settings")[0].earn_rules = { review: { enabled: false } };
+    bustSettingsCache();
+    expect(await releaseDueReviewClaims(new Date("2026-11-10T00:00:00Z"))).toMatchObject({ released: 0, reason: "disabled" });
+    h.db.table("app_settings")[0].earn_rules = {};
+    bustSettingsCache();
+    expect(await releaseDueReviewClaims(new Date("2026-11-10T00:00:00Z"))).toEqual({ released: 1, rejected: 0 });
+    expect(c.status).toBe("awarded");
+    expect(m.points_balance).toBe(3000);
+  });
+});

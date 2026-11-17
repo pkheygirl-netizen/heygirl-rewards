@@ -4,7 +4,7 @@ import { json } from "@remix-run/node";
 import { useFetcher, useLoaderData } from "@remix-run/react";
 import { useState } from "react";
 import {
-  Badge, Banner, BlockStack, Box, Button, Card, IndexTable, InlineStack, Layout, Link, Page, Select, Text,
+  Badge, Banner, BlockStack, Box, Button, Card, IndexTable, InlineStack, Layout, Link, List, Page, Select, Text,
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import { ConfirmModal, Pager, ResultBanner, useActionToast } from "../components/admin-ui";
@@ -16,6 +16,7 @@ import {
   getSettingsRow, listGdprRequests, notificationStatus, publishSettings, setGdprRequestStatus, updateSettings,
 } from "../lib/admin-settings.server";
 import { errorMessage } from "../lib/admin-validate.server";
+import { PROGRAM_OFF_EFFECTS } from "../components/admin-constants";
 
 const PAGE_SIZE = 25;
 
@@ -102,8 +103,14 @@ export default function Settings() {
                 <Text as="p" tone="subdued">
                   {d.programEnabled
                     ? "Customers can earn and redeem, and the rewards panel shows on the storefront."
-                    : "Nobody earns or redeems and the rewards panel is hidden. Balances and codes already issued are kept."}
+                    : "The program is off."}
                 </Text>
+                <BlockStack gap="100">
+                  <Text as="p" fontWeight="semibold">{d.programEnabled ? "If you switch it off:" : "While it is off:"}</Text>
+                  <List type="bullet">
+                    {PROGRAM_OFF_EFFECTS.map((t) => <List.Item key={t}>{t}</List.Item>)}
+                  </List>
+                </BlockStack>
               </BlockStack>
             </Card>
 
@@ -270,7 +277,7 @@ export default function Settings() {
       >
         <Text as="p">
           {confirm?.kind === "program_off"
-            ? "Customers stop earning and redeeming straight away and the rewards panel is hidden on the storefront. Balances and codes already issued are kept."
+            ? "Customers stop earning and redeeming straight away and the rewards panel is hidden on the storefront. Reward codes already issued still work. Orders placed while the program is off never earn points."
             : "Only do this after you have sent the customer her data, or completed the erasure. This page records that it was handled."}
         </Text>
       </ConfirmModal>

@@ -5,7 +5,7 @@ import { Form, useFetcher, useLoaderData, useSearchParams } from "@remix-run/rea
 import { useState } from "react";
 import {
   Badge, Banner, BlockStack, Box, Button, ButtonGroup, Card, IndexTable, InlineGrid, InlineStack, Layout,
-  Link, Page, ProgressBar, Text, TextField,
+  Link, List, Page, ProgressBar, Text, TextField,
 } from "@shopify/polaris";
 import { LineChart } from "@shopify/polaris-viz";
 import "@shopify/polaris-viz/build/esm/styles.css";
@@ -27,7 +27,7 @@ import { actorFromSession } from "../lib/admin-members.server";
 import { getSettingsRow } from "../lib/admin-settings.server";
 import { errorMessage } from "../lib/admin-validate.server";
 import { UUID_RE } from "../lib/admin-db.server";
-import { ACTIVITY_FILTERS } from "../components/admin-constants";
+import { ACTIVITY_FILTERS, PROGRAM_OFF_EFFECTS } from "../components/admin-constants";
 import { rejectReviewClaim } from "../lib/review-claims.service";
 
 const LIST_PAGE = 25;
@@ -146,7 +146,9 @@ export default function Home() {
         {!d.programEnabled ? (
           <Layout.Section>
             <Banner tone="warning" title="The program is switched off" action={{ content: "Open Settings", url: "/app/settings" }}>
-              <p>Customers cannot earn or redeem and the storefront panel is hidden until it is switched on again.</p>
+              <List type="bullet">
+                {PROGRAM_OFF_EFFECTS.map((t) => <List.Item key={t}>{t}</List.Item>)}
+              </List>
             </Banner>
           </Layout.Section>
         ) : null}

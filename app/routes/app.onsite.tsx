@@ -9,7 +9,7 @@ import {
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import { AdminExternalLink, ResultBanner, fieldError, fieldValue, useActionToast } from "../components/admin-ui";
-import { ONSITE_LIMITS } from "../components/admin-constants";
+import { ONSITE_LIMITS, SUGGESTED_FAQS } from "../components/admin-constants";
 import { fmtInt } from "../components/karachi";
 import { blockDeepLink, discoverThemeBlocks, embedDeepLink, themeEditorUrl } from "../lib/admin-onsite.server";
 import { getSettingsRow, parseOnsiteForm, publishSettings, readFaqs, updateSettings } from "../lib/admin-settings.server";
@@ -208,6 +208,17 @@ function OnsiteForm({ d }: { d: ReturnType<typeof useLoaderData<typeof loader>> 
                       <Button disabled={faqs.length >= ONSITE_LIMITS.faqCount} onClick={() => setFaqs((f) => [...f, { q: "", a: "" }])}>Add question</Button>
                     </InlineStack>
                     {fieldError(result, "faqs") ? <Banner tone="critical"><p>{fieldError(result, "faqs")}</p></Banner> : null}
+                    {SUGGESTED_FAQS.filter((s) => !faqs.some((f) => f.q.trim().toLowerCase() === s.q.toLowerCase())).map((s) => (
+                      <Banner key={s.q} tone="info" title={`Suggested question: ${s.q}`}>
+                        <BlockStack gap="200">
+                          <Text as="p">{s.a}</Text>
+                          <InlineStack>
+                            <Button disabled={faqs.length >= ONSITE_LIMITS.faqCount} onClick={() => setFaqs((f) => [...f, { q: s.q, a: s.a }])}>Add this question</Button>
+                          </InlineStack>
+                          <Text as="p" tone="subdued" variant="bodySm">It is added to the list below; press Save to publish it.</Text>
+                        </BlockStack>
+                      </Banner>
+                    ))}
                     {faqs.length === 0 ? (
                       <Text as="p" tone="subdued">No questions yet. Press Add question to write the first one, for example “When do I get my points?”.</Text>
                     ) : (

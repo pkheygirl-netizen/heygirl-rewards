@@ -10,7 +10,7 @@ import type { Database } from "../database.types";
 import { notificationQueue } from "./queue.server";
 import { shopifyGraphqlWithRetry } from "./shopify-graphql.server";
 import { getAdminForShop } from "./worker-admin.server";
-import { getSettings, isEarnRuleEnabled, karachiParts } from "./settings.server";
+import { getSettings, isEarnRuleSwitchedOn, karachiParts } from "./settings.server";
 import {
   checkAndUpgradeTier,
   computePurchasePoints,
@@ -314,6 +314,19 @@ export async function multiplierAtPlacement(
 }
 
 /**
+ * Rule 20: was the program switched on when the order was PLACED? Answered by
+ * the database from the recorded history of the switch (migration 014), not by
+ * the switch as it is now, so an order first seen late (orders/create lost or
+ * delayed, first sight is orders/updated or orders/paid) still gets the state
+ * at its own created_at. Worked out once and stored with the order.
+ */
+export async function programOnAtPlacement(placedAt: Date): Promise<boolean> {
+  const { data, error } = await db.rpc("program_enabled_at", { p_at: placedAt.toISOString() });
+  if (error) throw new Error(`program_enabled_at failed: ${error.message}`);
+  return data !== false;
+}
+
+/**
  * Mark the member's own loyalty codes used by this order (codes are matched
  * without regard to case). A row still `pending` counts too: the discount
  * exists in Shopify (it was just used) and only the app's last step, flipping
@@ -359,13 +372,15 @@ export async function processOrderEvent(ev: OrderEvent, shop?: string | null): P
   }
 
   const settings = await getSettings();
-  const canEarn = !member.is_blocked && !member.opted_out && isEarnRuleEnabled(settings, "purchase");
 
   let state = await readState(ev.id);
   let giftCard: number;
+  // Rule 20: the program state when the order was placed decides, not the switch now.
+  let placedWhileOn = state ? state.program_on_at_placement !== false : true;
   if (!state) {
     const placedAt = ev.placedAt ? new Date(ev.placedAt) : new Date();
     const { multiplier, campaignId } = await multiplierAtPlacement(member, placedAt);
+    placedWhileOn = await programOnAtPlacement(placedAt);
     giftCard = ev.hasGiftCard ? await fetchGiftCardAmount(ev.id, shop) : 0;
 
     let influencerId: string | null = null;
@@ -400,6 +415,7 @@ export async function processOrderEvent(ev: OrderEvent, shop?: string | null): P
       gift_card_amount_pkr: giftCard,
       multiplier_used: multiplier,
       campaign_id: campaignId,
+      program_on_at_placement: placedWhileOn,
       discount_codes: ev.discountCodes,
       influencer_member_id: influencerId,
       is_first_order: isFirstOrder,
@@ -407,11 +423,21 @@ export async function processOrderEvent(ev: OrderEvent, shop?: string | null): P
     });
     // 23505: another event for the same order got there first; carry on with its row.
     if (insErr && insErr.code !== "23505") throw new Error(`order state insert failed: ${insErr.message}`);
+    if (insErr) {
+      const winner = await readState(ev.id);
+      if (winner) placedWhileOn = winner.program_on_at_placement !== false;
+    }
   } else {
     giftCard = ev.hasGiftCard && !state.points_awarded && !state.cancelled_at
       ? await fetchGiftCardAmount(ev.id, shop)
       : Number(state.gift_card_amount_pkr ?? 0);
   }
+
+  // An order placed while the program was off never earns, even when it is
+  // delivered and paid after the program is back on; one placed while it was
+  // on still earns when it completes during a pause (rule 20). The purchase
+  // rule's own switch is still read as it is now (rule 17).
+  const canEarn = !member.is_blocked && !member.opted_out && placedWhileOn && isEarnRuleSwitchedOn(settings, "purchase");
 
   // The figures go through the database, which ignores a payload older than
   // the newest one already applied, never lets the refunded total shrink, and
@@ -561,8 +587,11 @@ export async function awardInfluencerSale(state: OrderState): Promise<{ awarded:
   if (error) throw new Error(`referral lookup failed: ${error.message}`);
   if ((linkReferral ?? []).length > 0) return { awarded: false, reason: "link_referral_wins" };
 
+  // Rule 20: a code sale placed while the program was off earns nothing; one
+  // placed while it was on is paid even if the program is off by delivery.
+  if (state.program_on_at_placement === false) return { awarded: false, reason: "placed_while_program_off" };
   const settings = await getSettings();
-  if (!isEarnRuleEnabled(settings, "referral")) return { awarded: false, reason: "disabled" };
+  if (!isEarnRuleSwitchedOn(settings, "referral")) return { awarded: false, reason: "disabled" };
 
   const { data: influencer } = await db.from("members").select("*").eq("id", state.influencer_member_id).maybeSingle();
   if (!influencer || !influencer.is_influencer) return { awarded: false, reason: "not_an_influencer" };

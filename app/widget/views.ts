@@ -221,7 +221,7 @@ export function guestHome(c: Ctx): string {
   const { cfg } = c;
   const refer =
     on(cfg, "referral") && cfg.referralPoints > 0
-      ? `<section class="hg-card"><h3 class="hg-h">Refer &amp; Earn</h3><p class="hg-p">Invite a friend. You are rewarded when their first order is delivered.</p>${referPerks(c, cfg.referralPoints)}</section>`
+      ? `<section class="hg-card"><h3 class="hg-h">Refer &amp; Earn</h3><p class="hg-p">Invite a friend. You are rewarded when their first order is delivered and paid.</p>${referPerks(c, cfg.referralPoints)}</section>`
       : "";
   return (
     `<section class="hg-card"><h3 class="hg-h">Become a member</h3><p class="hg-p">${esc(cfg.tagline || "Earn points every time you shop and turn them into rewards.")}</p>${joinCta(c)}</section>` +
@@ -288,7 +288,7 @@ export function rewardsTab(c: Ctx): string {
   }
   const refer =
     on(c.cfg, "referral") && referralUrl(c)
-      ? `<section class="hg-card"><h3 class="hg-h">Refer &amp; Earn</h3><p class="hg-p">Share your link. You earn when a friend's first order is delivered.</p>${referBox(c)}</section>`
+      ? `<section class="hg-card"><h3 class="hg-h">Refer &amp; Earn</h3><p class="hg-p">Share your link. You earn when a friend's first order is delivered and paid.</p>${referBox(c)}</section>`
       : "";
   return (
     `<section class="hg-bal"><p class="hg-bal__l">Hi ${esc(mm.firstName || "there")}, you have</p><p class="hg-bal__n">${fmt(mm.pointsBalance)} <span>points</span></p><span class="hg-tier hg-tier--${mm.tier}">${TIER_NAME[mm.tier]} member</span></section>` +
