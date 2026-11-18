@@ -192,12 +192,15 @@ Deploy the branch to the dev store, in this order: (a) back up `heygirl-rewards-
 
 - Confirm the distribution type allows install on heygirl.pk, or create a second app entry (new client id, secret, proxy, env).
 - Separate Supabase project and Redis for live. Never point live at `heygirl-rewards-dev`.
-- **Live database plan (owner decision, 18 Nov 2026): Supabase FREE plan plus our own daily backup** (the owner declined Pro at $25/month for now). This uses both free projects (dev + live).
-  - Build before go-live: a scheduled Railway job that runs `pg_dump` of the live database every night and keeps the last ~14 copies on a private Railway volume. Copies contain customer emails and phone numbers: never put them on GitHub or any public place. The database connection string is kept only as a Railway variable.
-  - Test one restore from a copy into the dev project before go-live, and note how long it took.
-  - Pausing: free projects pause after a week of too little database activity; the app queries every minute, and Supabase emails a warning about a week before. Whoever receives Supabase account emails must act on that warning.
-  - Upgrade to Pro (one click, no code change) if the database nears 400 MB, the app is slow, or the program clearly pays for itself.
-  - Details of the backup job (connection type, Postgres version match, cost) are being checked by an independent reviewer; record the outcome here.
+- **Live database plan (owner decision, 18 Nov 2026): Supabase FREE plan plus our own daily backup** (the owner declined Pro at $25/month for now). Reviewed: confidence 78/100.
+  - **Put the live project in its own Supabase organization**, separate from `heygirl-rewards-dev`. Free-plan quotas (500 MB database size, 5 GB egress) are per organization, and going over can restrict every project in it (402 errors, read-only or pause), which would stop the live app. Supabase allows two active free projects per account, so dev + live uses both.
+  - **Backup job (build before go-live):** a Railway cron service runs `pg_dump -Fc -n public --no-owner --no-acl` nightly (schedules are UTC; the job must exit when done). Connect through the Supabase **session pooler** (port 5432, IPv4); the direct connection is IPv6-only on Free unless outbound IPv6 is enabled on the service. Use a pg_dump client of the same major version as the server or newer (check `select version()` on the live project; Supabase defaults to Postgres 17). Encrypt each dump (age or gpg) and upload it to a **Railway Bucket**, keeping the last 14. Dumps contain customer emails and phone numbers: never GitHub. Connection string and encryption key only as Railway variables; keep a copy of the decryption key somewhere safe outside Railway.
+  - **Restore test:** into a throwaway Postgres (local or a temporary Railway service), then delete it. Never restore live data into the dev project.
+  - **Egress:** each nightly dump sends the whole database over the pooler, which counts as egress (a 50 MB database ≈ 1.5 GB a month of the 5 GB). Check Supabase usage after the first week.
+  - **Disk:** Free has a fixed disk; the database turns read-only near full. Watch Database size in the usage page.
+  - **Pausing:** risk is low because real store traffic (order webhooks, sign-ins) reaches the database every day; whether the one-minute heartbeat counts is not confirmed. Supabase emails about a week before pausing, so that inbox must be read. A paused project stops the app until resumed by hand.
+  - **Other Free limits:** shared CPU (the Smile import runs on it), community support only, 1 day of logs.
+  - **Upgrade to Pro** (one click, no code change) if: the database nears 400 MB, monthly egress passes about 3 GB, any quota, fair-use or pause email arrives, the app is slow, or the program clearly pays for itself.
 - Backup before migrations and before the import; test one restore.
 - Protected customer data access granted for the live app.
 - Theme steps on a duplicate of the live theme first.
