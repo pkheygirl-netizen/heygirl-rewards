@@ -169,7 +169,7 @@ Each returns: findings with file:line and a concrete failure scenario, severity,
 
 ## 10. Dev-store acceptance test (needed before any claim above 90)
 
-Deploy the branch to the dev store (confirm Railway `SUPABASE_SERVICE_KEY` is the service-role key, then apply migrations 010–013 to `heygirl-rewards-dev`, set env, `npm run build`, `shopify app deploy`, enable the embed and blocks). Then:
+Deploy the branch to the dev store, in this order: (a) back up `heygirl-rewards-dev`; (b) confirm Railway `SUPABASE_SERVICE_KEY` is the service-role key (done: `sb_secret_`); (c) apply migrations 010, 011, 012, 013, 014 in order BEFORE the new code starts (010 drops old function signatures; 014 adds `panel_theme`, which the On-site save needs); (d) set env (`STOREFRONT_URL` must be the address of the store being tested — the dev store's address while testing on the dev store, `https://www.heygirl.pk` only for live); (e) deploy the branch on Railway (web and worker); (f) copy the example toml changes into `shopify.app.toml`, `shopify app deploy`; (g) enable the embed and blocks in the theme editor; (h) make one admin save (e.g. On-site) so the storefront config is republished with `redeemPaused` and `panelTheme`. Then:
 
 1. Guest: launcher shows; network tab shows no request to `/apps/loyalty`.
 2. Sign in as a new customer: member created, +welcome bonus once; reload does not add again.
