@@ -94,7 +94,7 @@ describe("rule 20: the program switch only pauses redeeming", () => {
 
   it("the embed publishes redeemPaused and the panel style as plain literals", () => {
     expect(embed).toContain(`"redeemPaused": {% if cfg.redeemPaused == true %}true{% else %}false{% endif %},`);
-    expect(embed).toContain(`"panelTheme": {% if cfg.panelTheme == 'dark' %}"dark"{% else %}"light"{% endif %},`);
+    expect(embed).toContain(`"panelTheme": {% if cfg.panelTheme == 'light' %}"light"{% else %}"dark"{% endif %},`);
   });
 
   it("the rewards page says redeeming is paused above the reward table, only when it is", () => {
@@ -187,9 +187,9 @@ describe("panel style: Light and Dark token sets", () => {
     // The dark set only redefines tokens the light set already has.
     for (const k of Object.keys(tokens(HUB_DARK))) expect(light, k).toHaveProperty(k);
     const hub = readFileSync("app/widget/hub.ts", "utf8");
-    expect(hub).toContain('if (cfg.panelTheme === "dark") hub.className += " hg-hub--dark";');
+    expect(hub).toContain('if (cfg.panelTheme !== "light") hub.className += " hg-hub--dark";');
     for (const src of [embed, product, cartBlock, read("snippets/hg-line-css.liquid"), readFileSync("app/widget/core.ts", "utf8"), readFileSync("app/widget/cart-line.ts", "utf8")]) {
-      expect(src).not.toMatch(/hg-hub--dark|panelTheme ===|--ink|--card/);
+      expect(src).not.toMatch(/hg-hub--dark|panelTheme [!=]==|--ink|--card/);
     }
     expect(embed).toMatch(/\.hg-launcher\{.*background:#e8ad00;color:#1a1a1a/); // the launcher keeps its gold look
   });

@@ -573,7 +573,7 @@ console.log("\n[15] 014_faq_panel_theme: panel style column, default FAQ, no swi
   // jsonb sorts object keys, so compare in SQL rather than as JSON text
   const sameFaqs = async (want) => (await q(`select faqs = $1::jsonb s from app_settings where id=1`, [JSON.stringify(want)]))[0].s;
   eq("an empty FAQ list gets the approved entry", await sameFaqs(APPROVED), true);
-  eq("panel_theme defaults to light", (await q(`select panel_theme t from app_settings where id=1`))[0].t, "light");
+  eq("panel_theme defaults to dark", (await q(`select panel_theme t from app_settings where id=1`))[0].t, "dark");
   let again = null;
   try { await db.query(m014); await db.query(m014); } catch (e) { again = e.message; }
   ok("014 is re-runnable (applied twice more without error)", again === null, again);
@@ -584,9 +584,9 @@ console.log("\n[15] 014_faq_panel_theme: panel style column, default FAQ, no swi
   eq("a store's own FAQ list is left alone", await sameFaqs([{ q: "Own question", a: "Own answer" }]), true);
 
   // panel style: only the two known values
-  await q(`update app_settings set panel_theme='dark' where id=1`);
+  await q(`update app_settings set panel_theme='light' where id=1`);
   await db.query(m014);
-  eq("dark is stored and a re-run keeps it", (await q(`select panel_theme t from app_settings where id=1`))[0].t, "dark");
+  eq("light is stored and a re-run keeps it", (await q(`select panel_theme t from app_settings where id=1`))[0].t, "light");
   let bad = null;
   try { await q(`update app_settings set panel_theme='blue' where id=1`); } catch (e) { bad = e.code; }
   eq("any other value is refused by the check (23514)", bad, "23514");

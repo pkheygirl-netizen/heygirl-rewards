@@ -94,10 +94,10 @@ describe("buildStorefrontConfig", () => {
     expect(buildStorefrontConfig({ ...SETTINGS, program_enabled: undefined }, null).redeemPaused).toBe(false);
   });
 
-  it("panel style: light by default, dark only for the exact value", () => {
-    expect(buildStorefrontConfig(SETTINGS, null).panelTheme).toBe("light");
-    expect(buildStorefrontConfig({ ...SETTINGS, panel_theme: "dark" }, null).panelTheme).toBe("dark");
-    for (const v of ["DARK", "", null, 1, "light", "<script>"]) expect(panelTheme(v)).toBe("light");
+  it("panel style: dark by default (owner, 17 Nov), light only for the exact value", () => {
+    expect(buildStorefrontConfig(SETTINGS, null).panelTheme).toBe("dark");
+    expect(buildStorefrontConfig({ ...SETTINGS, panel_theme: "light" }, null).panelTheme).toBe("light");
+    for (const v of ["LIGHT", "", null, 1, "dark", "<script>"]) expect(panelTheme(v)).toBe("dark");
   });
 
   it("sorts and cleans the redemption table", () => {
@@ -211,7 +211,7 @@ describe("syncStorefrontConfig", () => {
     const value = JSON.parse(mf[0].value);
     expect(value.enabled).toBe(true);
     expect(value.redeemPaused).toBe(false);
-    expect(value.panelTheme).toBe("light");
+    expect(value.panelTheme).toBe("dark");
     expect(value.campaign.multiplier).toBe(2);
   });
 

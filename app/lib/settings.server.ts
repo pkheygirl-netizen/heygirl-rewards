@@ -95,7 +95,7 @@ const DEFAULTS: SettingsRow = {
   social_url_facebook: null,
   social_url_youtube: null,
   reward_code_expiry_days: 30,
-  panel_theme: "light",
+  panel_theme: "dark",
   updated_at: new Date(0).toISOString(),
 };
 

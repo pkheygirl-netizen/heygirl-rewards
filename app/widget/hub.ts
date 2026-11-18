@@ -64,7 +64,7 @@ import { earnTab, errorText, guestHome, guestSub, historyFilters, historyRows, r
     const launcher = document.getElementById("hg-launcher");
     if (launcher && launcher.getAttribute("data-pos") === "left") hub.className += " hg-hub--left";
     // Panel style chosen on the admin On-site page: only colour tokens change.
-    if (cfg.panelTheme === "dark") hub.className += " hg-hub--dark";
+    if (cfg.panelTheme !== "light") hub.className += " hg-hub--dark";
     hub.hidden = true;
     hub.setAttribute("role", "dialog");
     hub.setAttribute("aria-modal", "true");

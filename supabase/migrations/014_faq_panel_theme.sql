@@ -25,7 +25,7 @@
 
 -- ─────────────────────────── panel style ───────────────────────────
 ALTER TABLE public.app_settings
-  ADD COLUMN IF NOT EXISTS panel_theme text NOT NULL DEFAULT 'light';
+  ADD COLUMN IF NOT EXISTS panel_theme text NOT NULL DEFAULT 'dark';
 
 DO $$
 BEGIN

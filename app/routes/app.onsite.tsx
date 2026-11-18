@@ -30,7 +30,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       nudge_tier_progress_enabled: s.nudge_tier_progress_enabled !== false,
       tier_progress_gold_threshold_pkr: fieldValue(s.tier_progress_gold_threshold_pkr, "5000"),
       tier_progress_diamond_threshold_pkr: fieldValue(s.tier_progress_diamond_threshold_pkr, "10000"),
-      panel_theme: (s.panel_theme === "dark" ? "dark" : "light") as PanelThemeChoice,
+      panel_theme: (s.panel_theme === "light" ? "light" : "dark") as PanelThemeChoice,
     },
     faqs: readFaqs(s.faqs),
     version: String(s.updated_at ?? ""),
@@ -56,8 +56,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 const PANEL_STYLES: Record<PanelThemeChoice, { label: string; help: string }> = {
-  light: { label: "Light", help: "Cream panel with white cards and gold buttons (the original look)." },
-  dark: { label: "Dark", help: "Black panel with dark cards, light text and gold buttons." },
+  light: { label: "Light", help: "Cream panel with white cards and gold buttons." },
+  dark: { label: "Dark", help: "Black panel with dark cards, light text and gold buttons (default)." },
 };
 
 /**

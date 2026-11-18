@@ -95,9 +95,9 @@ function safeUrl(v: unknown): string {
   return /^https?:\/\/[^\s"'<>]+$/i.test(s) ? s : "";
 }
 
-/** Only the two known values are published; anything else is the default light look. */
+/** Only the two known values are published; anything else is the default dark look (owner, 17 Nov 2026). */
 export function panelTheme(v: unknown): PanelTheme {
-  return v === "dark" ? "dark" : "light";
+  return v === "light" ? "light" : "dark";
 }
 
 function ruleEnabled(rules: unknown, key: EarnRuleKey): boolean {

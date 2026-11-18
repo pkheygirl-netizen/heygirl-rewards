@@ -398,18 +398,18 @@ describe("rule 20: the switch only pauses redeeming (admin wording)", () => {
     for (const t of PROGRAM_OFF_EFFECTS) expect(offHtml, t).toContain(escapeHtml(t));
   });
 
-  it("On-site has the Panel style choice (Light and Dark with swatches), Light by default, Dark when saved", async () => {
+  it("On-site has the Panel style choice (Light and Dark with swatches), Dark by default, Light when saved", async () => {
     const html = await renderRoute("app.onsite.tsx", "/app/onsite");
     expect(html).toContain(">Panel style</h2>");
     expect(html).toContain('data-swatch="light"');
     expect(html).toContain('data-swatch="dark"');
-    expect(html).toMatch(/<input id="panel_theme_light" name="panel_theme" type="radio"[^>]*checked=""[^>]*value="light"/);
-    expect(html).toMatch(/<input id="panel_theme_dark" name="panel_theme" type="radio"[^>]*value="dark"/);
-    expect(html).not.toMatch(/<input id="panel_theme_dark"[^>]*checked=""/);
-    mockAll({ rpc: full.rpc, from: (table, chain) => (table === "app_settings" ? { data: { ...SETTINGS, panel_theme: "dark" } } : full.from!(table, chain)) });
-    const dark = await renderRoute("app.onsite.tsx", "/app/onsite");
-    expect(dark).toMatch(/<input id="panel_theme_dark"[^>]*checked=""/);
-    expect(dark).not.toMatch(/<input id="panel_theme_light"[^>]*checked=""/);
+    expect(html).toMatch(/<input id="panel_theme_dark" name="panel_theme" type="radio"[^>]*checked=""[^>]*value="dark"/);
+    expect(html).toMatch(/<input id="panel_theme_light" name="panel_theme" type="radio"[^>]*value="light"/);
+    expect(html).not.toMatch(/<input id="panel_theme_light"[^>]*checked=""/);
+    mockAll({ rpc: full.rpc, from: (table, chain) => (table === "app_settings" ? { data: { ...SETTINGS, panel_theme: "light" } } : full.from!(table, chain)) });
+    const light = await renderRoute("app.onsite.tsx", "/app/onsite");
+    expect(light).toMatch(/<input id="panel_theme_light"[^>]*checked=""/);
+    expect(light).not.toMatch(/<input id="panel_theme_dark"[^>]*checked=""/);
   });
 
   it("On-site offers the approved FAQ when the saved list lacks it, and not once it is there", async () => {

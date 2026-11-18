@@ -49,7 +49,7 @@
       "config": {
         "enabled": true,
         "redeemPaused": {% if cfg.redeemPaused == true %}true{% else %}false{% endif %},
-        "panelTheme": {% if cfg.panelTheme == 'dark' %}"dark"{% else %}"light"{% endif %},
+        "panelTheme": {% if cfg.panelTheme == 'light' %}"light"{% else %}"dark"{% endif %},
         "programName": {{ cfg.programName | json }},
         "tagline": {{ cfg.tagline | json }},
         "pointsRate": {{ cfg.pointsRate | default: 0 | json }},
