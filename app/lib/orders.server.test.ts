@@ -735,140 +735,57 @@ describe("L5 / L6", () => {
   });
 });
 
-describe("rule 20: program switched off (owner decision 17 Nov 2026)", () => {
-  // History as migration 014 records it: on since January, off 9-12 Nov.
-  const pauseHistory = () => {
-    h.db.seed("program_switch_history", { enabled: true, changed_at: "2026-01-01T00:00:00Z", source: "baseline" });
-    h.db.seed("program_switch_history", { enabled: false, changed_at: "2026-11-09T00:00:00Z" });
-    h.db.seed("program_switch_history", { enabled: true, changed_at: "2026-11-12T00:00:00Z" });
-  };
-  const setProgram = (on: boolean) => {
-    h.db.table("app_settings")[0].program_enabled = on;
+describe("rule 20: the program switch only pauses redeeming (owner decision 17 Nov 2026, evening)", () => {
+  const switchOff = () => {
+    h.db.table("app_settings")[0].program_enabled = false;
     bustSettingsCache();
   };
-  const DURING = "2026-11-10T10:00:00Z"; // placed while off
-  const BEFORE = "2026-11-08T10:00:00Z"; // placed while on
   const delivered = { fulfillmentStatus: "fulfilled", financialStatus: "paid" } as const;
 
-  it("an order PLACED while the program was off earns nothing, even when delivered and paid after it is back on", async () => {
-    pauseHistory();
-    setProgram(false);
-    await processOrderEvent(order({ placedAt: DURING }), "s");
-    expect(state()).toMatchObject({ program_on_at_placement: false, pending_points: 0 });
-    expect(await pendingPointsForCustomer("C1")).toBe(0);
-
-    setProgram(true); // sale over, program back on
-    const r = await processOrderEvent(order({ placedAt: DURING, ...delivered }), "s");
-    expect(r).toMatchObject({ status: "awarded", pointsAwarded: 0 });
-    expect(member()).toMatchObject({ points_balance: 0, lifetime_spend_pkr: 3000 }); // spend still counts for the tier
-    expect(ledger("purchase")).toHaveLength(0);
-    expect(h.notifications.named("points_earned")).toHaveLength(0);
-  });
-
-  it("an order PLACED while the program was on still earns when it is delivered and paid during a pause", async () => {
-    pauseHistory();
-    await processOrderEvent(order({ placedAt: BEFORE }), "s");
-    expect(state()).toMatchObject({ program_on_at_placement: true, pending_points: 3000 });
-
-    setProgram(false); // switched off before the COD order is delivered and paid
-    await processOrderEvent(order({ placedAt: BEFORE, fulfillmentStatus: "fulfilled" }), "s");
-    expect(state().pending_points).toBe(3000); // a sync during the pause keeps the promised points
-    const r = await processOrderEvent(order({ placedAt: BEFORE, ...delivered }), "s");
+  it("purchase: an order placed, delivered and paid while the program is off earns its points as usual", async () => {
+    switchOff();
+    await processOrderEvent(order(), "s");
+    expect(state().pending_points).toBe(3000);
+    expect(await pendingPointsForCustomer("C1")).toBe(3000);
+    const r = await processOrderEvent(order(delivered), "s");
     expect(r).toMatchObject({ status: "awarded", pointsAwarded: 3000 });
-    expect(member().points_balance).toBe(3000);
+    expect(member()).toMatchObject({ points_balance: 3000, lifetime_spend_pkr: 3000 });
+    expect(ledger("purchase")).toHaveLength(1);
+    expect(h.notifications.named("points_earned")).toHaveLength(1);
   });
 
-  it("orders/create lost or late: the first sight (orders/updated, delivered and paid) uses the order's created_at against the switch history", async () => {
-    pauseHistory();
-    setProgram(false); // the switch NOW is off ...
-    await processOrderEvent(order({ id: "O-ON", placedAt: BEFORE, ...delivered }), "s");
-    expect(state("O-ON").program_on_at_placement).toBe(true); // ... but it was on when this order was placed
-    expect(member().points_balance).toBe(3000);
-
-    setProgram(true); // the switch NOW is on ...
-    await processOrderEvent(order({ id: "O-OFF", placedAt: DURING, ...delivered }), "s");
-    expect(state("O-OFF").program_on_at_placement).toBe(false); // ... but it was off when this one was placed
-    expect(member().points_balance).toBe(3000);
-    expect(h.db.rpcCalls.filter((c) => c.fn === "program_enabled_at").map((c) => c.args.p_at)).toEqual([
-      new Date(BEFORE).toISOString(),
-      new Date(DURING).toISOString(),
-    ]);
-  });
-
-  it("the state is fixed at first sight: a later change to the history does not move an order already recorded", async () => {
-    pauseHistory();
-    await processOrderEvent(order({ placedAt: DURING }), "s");
-    h.db.tables.program_switch_history = [];
-    await processOrderEvent(order({ placedAt: DURING, ...delivered }), "s");
-    expect(member().points_balance).toBe(0);
-    expect(h.db.rpcCalls.filter((c) => c.fn === "program_enabled_at")).toHaveLength(1);
-  });
-
-  it("influencer code sale: placed while off pays nothing; placed while on is paid even during a pause", async () => {
-    pauseHistory();
-    const inf = seedMember(h.db, { shopify_customer_id: "INF", is_influencer: true, influencer_code: "AYESHA10" });
-    await processOrderEvent(order({ placedAt: DURING, discountCodes: ["ayesha10"], ...delivered }), "s");
-    expect(state().influencer_member_id).toBe(inf.id); // still attributed for stats
-    expect(ledger("influencer_sale")).toHaveLength(0);
-
-    resetHarness();
+  it("purchase: the purchase rule's own switch still stops it (rule 17)", async () => {
+    switchOff();
+    h.db.table("app_settings")[0].earn_rules = { purchase: { enabled: false } };
     bustSettingsCache();
-    pauseHistory();
-    const inf2 = seedMember(h.db, { shopify_customer_id: "INF", is_influencer: true, influencer_code: "AYESHA10" });
-    await processOrderEvent(order({ placedAt: BEFORE, discountCodes: ["ayesha10"] }), "s");
-    setProgram(false);
-    await processOrderEvent(order({ placedAt: BEFORE, discountCodes: ["ayesha10"], ...delivered }), "s");
-    expect(inf2.points_balance).toBe(6000);
+    await processOrderEvent(order(delivered), "s");
+    expect(member().points_balance).toBe(0);
+    expect(ledger("purchase")).toHaveLength(0);
   });
 
-  it("referral: a friend's first order placed while off does not pay the referrer; her next order placed while on does", async () => {
-    pauseHistory();
+  it("influencer code sale is paid while the program is off", async () => {
+    switchOff();
+    const inf = seedMember(h.db, { shopify_customer_id: "INF", is_influencer: true, influencer_code: "AYESHA10" });
+    await processOrderEvent(order({ discountCodes: ["ayesha10"], ...delivered }), "s");
+    expect(ledger("influencer_sale")).toHaveLength(1);
+    expect(inf.points_balance).toBe(6000);
+  });
+
+  it("referral: the friend's first order pays the referrer while the program is off", async () => {
+    switchOff();
     const referrer = seedMember(h.db, { shopify_customer_id: "REF" });
     seedMember(h.db, { shopify_customer_id: "C1" });
     const referral = h.db.seed("referrals", { referrer_member_id: referrer.id, referred_shopify_customer_id: "C1", status: "pending" });
-    await processOrderEvent(order({ placedAt: DURING, ...delivered }), "s");
-    expect(referrer.points_balance).toBe(0);
-    expect(referral.status).toBe("pending");
-
-    await processOrderEvent(order({ id: "O2", name: "#1002", placedAt: "2026-11-13T10:00:00Z", ...delivered }), "s");
+    await processOrderEvent(order(delivered), "s");
     expect(referrer.points_balance).toBe(6000);
-    expect(referral).toMatchObject({ status: "completed", shopify_order_id: "O2" });
+    expect(referral).toMatchObject({ status: "completed", shopify_order_id: "O1" });
   });
 
-  it("referral: the friend's first order placed while on pays the referrer even when it completes during a pause", async () => {
-    pauseHistory();
-    const referrer = seedMember(h.db, { shopify_customer_id: "REF" });
-    seedMember(h.db, { shopify_customer_id: "C1" });
-    h.db.seed("referrals", { referrer_member_id: referrer.id, referred_shopify_customer_id: "C1", status: "pending" });
-    await processOrderEvent(order({ placedAt: BEFORE }), "s");
-    setProgram(false);
-    await processOrderEvent(order({ placedAt: BEFORE, ...delivered }), "s");
-    expect(referrer.points_balance).toBe(6000);
-  });
-
-  it("tier: an upgrade reached with an order placed while off keeps the tier but queues no tier code; one placed while on queues it during a pause", async () => {
-    pauseHistory();
+  it("tier: an upgrade reached while the program is off queues the tier code", async () => {
+    switchOff();
     h.db.table("app_settings")[0].tier_gold_threshold_pkr = 2500;
-    await processOrderEvent(order({ placedAt: DURING, ...delivered }), "s");
-    expect(member().tier).toBe("gold");
-    expect(h.points.named("issue_tier_reward")).toHaveLength(0);
-
-    resetHarness();
-    bustSettingsCache();
-    pauseHistory();
-    h.db.table("app_settings")[0].tier_gold_threshold_pkr = 2500;
-    await processOrderEvent(order({ placedAt: BEFORE }), "s");
-    setProgram(false);
-    await processOrderEvent(order({ placedAt: BEFORE, ...delivered }), "s");
+    await processOrderEvent(order(delivered), "s");
     expect(member().tier).toBe("gold");
     expect(h.points.named("issue_tier_reward")).toHaveLength(1);
-  });
-
-  it("orders seen before migration 014 (no recorded state) keep earning", async () => {
-    seedMember(h.db, { shopify_customer_id: "C1" });
-    h.db.seed("order_webhook_state", { shopify_order_id: "O1", shopify_customer_id: "C1", placed_at: DURING, multiplier_used: 1 }); // default true
-    pauseHistory();
-    await processOrderEvent(order({ placedAt: DURING, ...delivered }), "s");
-    expect(member().points_balance).toBe(3000);
   });
 });

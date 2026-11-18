@@ -4,7 +4,7 @@
 // the privacy-request log.
 import { adb, num, str, type Row } from "./admin-db.server";
 import { FormReader, type FieldErrors } from "./admin-validate.server";
-import { ONSITE_LIMITS } from "../components/admin-constants";
+import { ONSITE_LIMITS, PANEL_THEMES } from "../components/admin-constants";
 import { bustSettingsCache } from "./settings.server";
 import { syncStorefrontConfig } from "./storefront-config.server";
 
@@ -49,6 +49,7 @@ export const EDITABLE_KEYS = [
   "nudge_tier_progress_enabled",
   "tier_progress_gold_threshold_pkr",
   "tier_progress_diamond_threshold_pkr",
+  "panel_theme",
 ] as const;
 
 /** Never sent to the browser, whatever a loader does with the row. */
@@ -127,6 +128,7 @@ export function parseOnsiteForm(
       "tier_progress_gold_threshold_pkr", "Gold reminder distance", 0, ONSITE_LIMITS.withinMax),
     tier_progress_diamond_threshold_pkr: r.int(
       "tier_progress_diamond_threshold_pkr", "Diamond reminder distance", 0, ONSITE_LIMITS.withinMax),
+    panel_theme: r.oneOf("panel_theme", "Panel style", PANEL_THEMES),
   };
 
   let parsed: unknown;

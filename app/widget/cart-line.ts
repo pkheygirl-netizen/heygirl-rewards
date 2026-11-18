@@ -36,10 +36,12 @@ export function cartFromJson(c: unknown): CartState {
 
 /**
  * Inner HTML of the rewards line; "" when nothing should be shown (empty cart,
- * program off, opted-out or blocked member).
+ * opted-out or blocked member). While redeeming is paused (rule 20) the
+ * "points to spend" nudge is left out; the earn line and the member's own
+ * issued codes are not affected.
  */
 export function cartLineHtml(cfg: Config, cart: CartState, member: MemberData | null, signedIn: boolean, path: string, now: number = Date.now()): string {
-  if (!cfg.enabled || cart.count <= 0) return "";
+  if (cart.count <= 0) return "";
   const m = member && member.member;
   if (m && (m.optedOut || m.blocked)) return "";
 
@@ -63,7 +65,7 @@ export function cartLineHtml(cfg: Config, cart: CartState, member: MemberData | 
       out.push(`<p class="hg-line__sub">A discount code is already applied. Reward codes can't be combined with it.</p>`);
     } else if (best && cfg.nudges.rewardUsage) {
       out.push(`<a class="hg-line__link" href="${esc(discountUrl(best.code, path))}">Apply reward: ${esc(codeValue(best))}</a>`);
-    } else if (!best && cfg.nudges.pointsSpending && minRedeem(cfg) > 0 && m.pointsBalance >= minRedeem(cfg)) {
+    } else if (!best && !cfg.redeemPaused && cfg.nudges.pointsSpending && minRedeem(cfg) > 0 && m.pointsBalance >= minRedeem(cfg)) {
       out.push(`<button type="button" class="hg-line__link" data-hg-open="rewards">You have ${fmt(m.pointsBalance)} points. Redeem now</button>`);
     }
   }

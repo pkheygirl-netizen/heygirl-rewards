@@ -87,7 +87,7 @@ describe("On-site form", () => {
   const base = {
     program_name: "HeyGirl.pk Rewards", tagline: "Shop. Earn. Glow.", terms_and_conditions: "Terms",
     nudge_account_creation_enabled: "true", nudge_tier_progress_enabled: "true",
-    tier_progress_gold_threshold_pkr: "5000", tier_progress_diamond_threshold_pkr: "10000",
+    tier_progress_gold_threshold_pkr: "5000", tier_progress_diamond_threshold_pkr: "10000", panel_theme: "light",
     faqs: JSON.stringify([{ q: "When do I get points?", a: "When your order is delivered and paid." }, { q: " ", a: "" }]),
   };
 
@@ -100,11 +100,22 @@ describe("On-site form", () => {
         program_name: "HeyGirl.pk Rewards", tagline: "Shop. Earn. Glow.", terms_and_conditions: "Terms",
         nudge_account_creation_enabled: true, nudge_points_spending_enabled: false,
         nudge_reward_usage_enabled: false, nudge_tier_progress_enabled: true,
-        tier_progress_gold_threshold_pkr: 5000, tier_progress_diamond_threshold_pkr: 10000,
+        tier_progress_gold_threshold_pkr: 5000, tier_progress_diamond_threshold_pkr: 10000, panel_theme: "light",
         faqs: [{ q: "When do I get points?", a: "When your order is delivered and paid." }],
       },
     });
     if (res.ok) expect(res.patch).not.toHaveProperty("nudge_post_purchase_enabled");
+  });
+
+  it("panel style: light or dark only; anything else is refused with a message", async () => {
+    const { mod } = await load();
+    const dark = mod.parseOnsiteForm(formOf({ ...base, panel_theme: "dark" }));
+    expect(dark.ok && dark.patch.panel_theme).toBe("dark");
+    for (const bad of ["", "blue", "DARK"]) {
+      const r = mod.parseOnsiteForm(formOf({ ...base, panel_theme: bad }));
+      expect(!r.ok && r.errors.panel_theme, bad).toBe("Panel style is not a valid choice.");
+    }
+    expect(mod.EDITABLE_KEYS).toContain("panel_theme");
   });
 
   it("rejects a blank program name and blank or negative distances (R3)", async () => {

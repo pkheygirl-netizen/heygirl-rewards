@@ -11,7 +11,7 @@ vi.mock("../db.server", () => {
   return { db: { from: vi.fn(() => c) } };
 });
 
-import { APP_INSTALLATION_QUERY, buildStorefrontConfig, CONFIG_METAFIELD_MUTATION, isHiddenRedemptionTier, syncStorefrontConfig, visibleRedemptionTiers } from "./storefront-config.server";
+import { APP_INSTALLATION_QUERY, buildStorefrontConfig, CONFIG_METAFIELD_MUTATION, isHiddenRedemptionTier, panelTheme, syncStorefrontConfig, visibleRedemptionTiers } from "./storefront-config.server";
 
 const SETTINGS = {
   program_enabled: true,
@@ -77,8 +77,27 @@ describe("buildStorefrontConfig", () => {
       faqs: [{ q: "When do points expire?", a: "After a year on Silver." }],
     });
     expect(Object.keys(c).sort()).toEqual(
-      ["campaign", "nextCampaign", "birthday", "codeExpiryDays", "earnRules", "enabled", "expiryDays", "faqs", "friendFreeShipping", "nudges", "pointsRate", "programName", "redemptionTiers", "referralPoints", "reviewPoints", "reviewReleaseHours", "signupPoints", "social", "tagline", "terms", "tierRewards", "tiers"].sort(),
+      ["campaign", "nextCampaign", "birthday", "codeExpiryDays", "earnRules", "enabled", "expiryDays", "faqs", "friendFreeShipping", "nudges", "panelTheme", "pointsRate", "programName", "redeemPaused", "redemptionTiers", "referralPoints", "reviewPoints", "reviewReleaseHours", "signupPoints", "social", "tagline", "terms", "tierRewards", "tiers"].sort(),
     );
+  });
+
+  it("rule 20: the program switch only sets redeemPaused; the storefront stays on and every earn rule is still published", () => {
+    const on = buildStorefrontConfig(SETTINGS, CAMPAIGN);
+    expect(on).toMatchObject({ enabled: true, redeemPaused: false });
+    const off = buildStorefrontConfig({ ...SETTINGS, program_enabled: false }, CAMPAIGN);
+    expect(off).toMatchObject({ enabled: true, redeemPaused: true });
+    // Everything else is the same as when it is on: earning, rewards table, campaign, nudges.
+    expect({ ...off, redeemPaused: false }).toEqual(on);
+    expect(off.earnRules.purchase).toEqual({ enabled: true });
+    expect(off.redemptionTiers).toHaveLength(2);
+    // A row without the column (not yet migrated) counts as on.
+    expect(buildStorefrontConfig({ ...SETTINGS, program_enabled: undefined }, null).redeemPaused).toBe(false);
+  });
+
+  it("panel style: light by default, dark only for the exact value", () => {
+    expect(buildStorefrontConfig(SETTINGS, null).panelTheme).toBe("light");
+    expect(buildStorefrontConfig({ ...SETTINGS, panel_theme: "dark" }, null).panelTheme).toBe("dark");
+    for (const v of ["DARK", "", null, 1, "light", "<script>"]) expect(panelTheme(v)).toBe("light");
   });
 
   it("sorts and cleans the redemption table", () => {
@@ -191,6 +210,8 @@ describe("syncStorefrontConfig", () => {
     expect(mf[0]).toMatchObject({ ownerId: "gid://shopify/AppInstallation/1", namespace: "hg_loyalty", key: "config", type: "json" });
     const value = JSON.parse(mf[0].value);
     expect(value.enabled).toBe(true);
+    expect(value.redeemPaused).toBe(false);
+    expect(value.panelTheme).toBe("light");
     expect(value.campaign.multiplier).toBe(2);
   });
 

@@ -8,6 +8,7 @@ import {
   DEFAULT_REDEMPTION_TIERS,
   getSettings,
   isEarnRuleEnabled,
+  isRedeemPaused,
   karachiMonthStart,
   karachiParts,
   normaliseSettings,
@@ -102,11 +103,29 @@ describe("parsers", () => {
     expect(Object.keys(rules)).toHaveLength(8);
   });
 
-  it("isEarnRuleEnabled is false for every rule when the programme is off", () => {
+  it("owner defaults (17 Nov 2026): social follows 500 each, review 3,000, and 50,000 points -> Rs. 2,500 in the reward table", () => {
+    const d = normaliseSettings(null);
+    expect([d.social_points, d.social_points_instagram, d.social_points_facebook, d.social_points_youtube]).toEqual([500, 500, 500, 500]);
+    expect(d.review_points).toBe(3000);
+    expect(d.redemption_tiers.map((t) => [t.points, t.discount_pkr])).toEqual([
+      [3000, 100], [6000, 250], [11500, 500], [22000, 1000], [50000, 2500], [100000, 5000], [180000, 10000],
+    ]);
+    // A saved row keeps its own values.
+    expect(normaliseSettings({ social_points_instagram: 1000 }).social_points_instagram).toBe(1000);
+  });
+
+  it("rule 20: isEarnRuleEnabled reads only the rule's own switch; the program switch only pauses redeeming", () => {
     const on = normaliseSettings({ earn_rules: { review: { enabled: false } } });
     expect(isEarnRuleEnabled(on, "purchase")).toBe(true);
     expect(isEarnRuleEnabled(on, "review")).toBe(false);
-    expect(isEarnRuleEnabled(normaliseSettings({ program_enabled: false }), "purchase")).toBe(false);
+    const off = normaliseSettings({ program_enabled: false, earn_rules: { review: { enabled: false } } });
+    for (const rule of ["purchase", "signup", "referral", "instagram", "facebook", "youtube", "birthday"] as const) {
+      expect(isEarnRuleEnabled(off, rule), rule).toBe(true);
+    }
+    expect(isEarnRuleEnabled(off, "review")).toBe(false);
+    expect(isRedeemPaused(off)).toBe(true);
+    expect(isRedeemPaused(on)).toBe(false);
+    expect(isRedeemPaused(normaliseSettings(null))).toBe(false);
   });
 });
 

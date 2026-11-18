@@ -180,13 +180,6 @@ describe("getCustomerPayload", () => {
     expect(out.member.tier).toBe("silver");
   });
 
-  it("rule 20: an order placed while the program was off does not make the review button eligible", async () => {
-    h.results.order_webhook_state = [{ data: [{ pending_points: 0, points_awarded: true, cancelled_at: null, program_on_at_placement: false }], error: null }];
-    expect((await getCustomerPayload(MEMBER, NOW)).review.eligible).toBe(false);
-    h.results.order_webhook_state = [{ data: [{ pending_points: 0, points_awarded: true, cancelled_at: null, program_on_at_placement: true }], error: null }];
-    expect((await getCustomerPayload(MEMBER, NOW)).review.eligible).toBe(true);
-  });
-
   it("throws when a query fails, so the route answers 500 instead of wrong data", async () => {
     h.results.loyalty_codes = [{ data: null, error: { message: "boom" } }];
     await expect(getCustomerPayload(MEMBER, NOW)).rejects.toThrow("customer_payload_failed: boom");

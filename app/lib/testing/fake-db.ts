@@ -32,7 +32,7 @@ const TABLE_DEFAULTS: Record<string, () => Row> = {
     pending_points: 0, points_awarded_amount: 0, points_reversed_amount: 0, discount_codes: [],
     influencer_member_id: null, is_first_order: null, gross_basis_pkr: null, refund_events_basis_pkr: 0,
     refund_ids: [], refund_basis_at_award_pkr: 0, spend_reversed_pkr: 0, source_updated_at: null,
-    points_rate: null, taxes_included: false, program_on_at_placement: true,
+    points_rate: null, taxes_included: false,
   }),
   loyalty_codes: () => ({
     kind: "reward", status: "active", shopify_discount_id: null, issue_key: null, cancelled_at: null,
@@ -144,7 +144,6 @@ export class FakeDb {
       if (fn === "reverse_order_points") return { data: [this.reverseOrderPoints(args)], error: null };
       if (fn === "sync_order_snapshot") return { data: [this.syncOrderSnapshot(args)], error: null };
       if (fn === "upgrade_member_tier") return { data: this.upgradeMemberTier(args) as never, error: null };
-      if (fn === "program_enabled_at") return { data: this.programEnabledAt(args) as never, error: null };
       return { data: null, error: { code: "PGRST202", message: `function ${fn} not found` } };
     } catch (err) {
       return { data: null, error: { code: "P0001", message: err instanceof Error ? err.message : String(err) } };
@@ -336,18 +335,6 @@ export class FakeDb {
     const pending = Math.max(0, Math.floor(earning * rate * Number(order.multiplier_used ?? 1) + 1e-6));
     Object.assign(order, { earning_basis_pkr: earning, points_rate: rate, pending_points: pending });
     return { applied: true, reversed: 0, pending_points: pending };
-  }
-
-  /** Model of program_enabled_at (migration 014): latest switch record at or before p_at. */
-  private programEnabledAt(a: Row): boolean {
-    const at = a.p_at ? Date.parse(String(a.p_at)) : Date.now();
-    const history = this.table("program_switch_history")
-      .map((r, i) => ({ r, i, t: Date.parse(String(r.changed_at)) }))
-      .sort((x, y) => x.t - y.t || x.i - y.i);
-    const before = history.filter((h) => h.t <= at);
-    if (before.length > 0) return before[before.length - 1].r.enabled !== false;
-    if (history.length > 0) return history[0].r.enabled !== false;
-    return this.table("app_settings")[0]?.program_enabled !== false;
   }
 
   private upgradeMemberTier(a: Row): boolean {

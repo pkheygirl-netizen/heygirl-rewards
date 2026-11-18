@@ -184,12 +184,25 @@ export function birthdayForm(): string {
   );
 }
 
-/** Ways to redeem. Members get a Redeem button on every tier they can afford. */
+/** Shown instead of the Redeem buttons while the owner has paused redeeming (rule 20). */
+export const REDEEM_PAUSED_TEXT = "Redeeming points is paused for now. You are still earning points, and your balance is safe.";
+
+function redeemPausedNote(): string {
+  return `<p class="hg-note hg-note--warn">${ico("clock")}<span>${REDEEM_PAUSED_TEXT}</span></p>`;
+}
+
+/**
+ * Ways to redeem. Members get a Redeem button on every tier they can afford.
+ * While redeeming is paused (rule 20) members see only the notice; guests see
+ * the notice above the reward table (no buttons either way).
+ */
 export function redeemList(c: Ctx): string {
+  const paused = !!c.cfg.redeemPaused;
+  if (paused && c.member) return redeemPausedNote();
   const balance = c.member ? c.member.member.pointsBalance : 0;
   const items = c.cfg.redemptionTiers.map((t) => {
     let right = "";
-    if (c.member) {
+    if (c.member && !paused) {
       right =
         balance >= t.points
           ? `<button type="button" class="hg-btn hg-btn--sm" data-act="redeem" data-points="${t.points}" data-pkr="${t.discountPkr}">Redeem</button>`
@@ -197,8 +210,8 @@ export function redeemList(c: Ctx): string {
     }
     return row(GIFT_ICON, `${rs(t.discountPkr)} off`, pts(t.points), right);
   });
-  if (!items.length) return `<p class="hg-empty">No rewards are available right now.</p>`;
-  return `<ul class="hg-list">${items.join("")}</ul>`;
+  if (!items.length) return paused ? redeemPausedNote() : `<p class="hg-empty">No rewards are available right now.</p>`;
+  return (paused ? redeemPausedNote() : "") + `<ul class="hg-list">${items.join("")}</ul>`;
 }
 
 function referPerks(c: Ctx, youGet: number): string {
@@ -241,7 +254,7 @@ export function guestSub(c: Ctx, screen: "earn" | "redeem" | "tiers"): string {
 
 export function codesList(c: Ctx): string {
   const m = c.member;
-  if (!m || !m.codes.length) return `<p class="hg-empty">No rewards yet. Redeem your points below.</p>`;
+  if (!m || !m.codes.length) return `<p class="hg-empty">${c.cfg.redeemPaused ? "No rewards yet." : "No rewards yet. Redeem your points below."}</p>`;
   return (
     `<ul class="hg-list">` +
     m.codes
@@ -393,9 +406,6 @@ export function historyRows(rows: HistoryRow[]): string {
 
 export function stateMessage(c: Ctx, state: MemberState = "error"): string {
   const mm = c.member ? c.member.member : null;
-  if (!mm && state === "paused") {
-    return `<section class="hg-card"><h3 class="hg-h">Rewards are paused</h3><p class="hg-p">${esc(c.cfg.programName)} is taking a short break. Your points are safe, so please check back soon.</p></section>`;
-  }
   if (!mm && state === "not_enrolled") {
     return `<section class="hg-card"><h3 class="hg-h">Your rewards are being set up</h3><p class="hg-p">We are getting your ${esc(c.cfg.programName)} account ready. Please check again in a few minutes.</p><button type="button" class="hg-btn hg-btn--block" data-act="retry">Check again</button></section>`;
   }
@@ -421,7 +431,7 @@ const ERRORS: Record<string, string> = {
   invalid_date: "Please choose a valid day and month.",
   no_eligible_order: "You can claim a review after your next delivered order.",
   disabled: "This way to earn is not available right now.",
-  program_disabled: "The rewards program is paused right now.",
+  program_disabled: REDEEM_PAUSED_TEXT,
   not_signed_in: "Please sign in again.",
   unauthorized: "Please refresh the page and try again.",
 };

@@ -42,7 +42,9 @@ declare const __HG_LINE_CSS__: string;
     return;
   }
   const cfg = data.config;
-  if (!cfg || !cfg.enabled) return;
+  // Only a missing config turns the storefront off; the program switch only
+  // pauses redeeming (rule 20, `cfg.redeemPaused`).
+  if (!cfg) return;
   if (data.customer) data.customer.id = String(data.customer.id);
   data.cart.codes = (data.cart.codes || []).filter(Boolean);
   const cid = data.customer ? data.customer.id : null;
@@ -95,7 +97,7 @@ declare const __HG_LINE_CSS__: string;
   function loadMember(force?: boolean): Promise<MemberData | null> {
     if (!cid) return Promise.resolve(null);
     if (!force) {
-      const c = ss ? readCache(ss, cid) : null;
+      const c = fresh(ss ? readCache(ss, cid) : null);
       if (c) return Promise.resolve(take(c));
       if (!ss && (member || state)) return Promise.resolve(member);
     }
@@ -106,11 +108,9 @@ declare const __HG_LINE_CSS__: string;
         inflight = null;
         let entry: CacheEntry | null = null;
         if (d && d.member) entry = d as MemberData;
-        else if (d && d.enabled === false) entry = { member: null, state: "paused" };
         else if (d && d.state === "not_enrolled") entry = { member: null, state: "not_enrolled" };
-        // Negative answers are cached too, so a paused program or a customer
-        // without a member row is not asked about again on every page. A failed
-        // request (entry null) is not cached.
+        // A customer without a member row is cached too, so she is not asked
+        // about again on every page. A failed request (entry null) is not cached.
         if (entry && ss) {
           const queued = !!(entry.member && (entry as MemberData).welcomeQueued);
           // A welcome bonus still in the queue: let the cache lapse within 30 s.
@@ -126,6 +126,11 @@ declare const __HG_LINE_CSS__: string;
         return null;
       });
     return inflight;
+  }
+
+  /** A cached answer still worth using: the old "paused" answer is not (rule 20 no longer hides anything). */
+  function fresh(c: CacheEntry | null): CacheEntry | null {
+    return c && (c.member || (c as { state?: string }).state === "not_enrolled") ? c : null;
   }
 
   function invalidate() {
@@ -367,7 +372,7 @@ declare const __HG_LINE_CSS__: string;
   }
   // Fresh cached data paints at once (no request).
   if (cid && ss) {
-    const c = readCache(ss, cid);
+    const c = fresh(readCache(ss, cid));
     if (c) {
       take(c);
       onMember();

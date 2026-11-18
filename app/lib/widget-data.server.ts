@@ -142,7 +142,7 @@ export async function getCustomerPayload(member: MemberRow, now: Date = new Date
     sdb.from("social_actions").select("action_type").eq("member_id", member.id),
     sdb
       .from("order_webhook_state")
-      .select("pending_points, points_awarded, cancelled_at, program_on_at_placement")
+      .select("pending_points, points_awarded, cancelled_at")
       .eq("shopify_customer_id", member.shopify_customer_id)
       .limit(1000),
     sdb.from("review_claims").select("status").eq("member_id", member.id).limit(1000),
@@ -161,13 +161,12 @@ export async function getCustomerPayload(member: MemberRow, now: Date = new Date
     if (r.error) throw new Error(`customer_payload_failed: ${r.error.message}`);
   }
 
-  type OrderRow = { pending_points: number | null; points_awarded: boolean | null; cancelled_at: string | null; program_on_at_placement?: boolean | null };
+  type OrderRow = { pending_points: number | null; points_awarded: boolean | null; cancelled_at: string | null };
   const orders = (ordersRes.data ?? []) as OrderRow[];
   const pendingPoints = orders
     .filter((o) => !o.cancelled_at && !o.points_awarded)
     .reduce((n, o) => n + Math.max(0, o.pending_points ?? 0), 0);
-  // Same orders claimReview accepts: an order placed while the program was off never earns (rule 20).
-  const awardedOrders = orders.filter((o) => o.points_awarded && !o.cancelled_at && o.program_on_at_placement !== false).length;
+  const awardedOrders = orders.filter((o) => o.points_awarded && !o.cancelled_at).length;
 
   const claims = (claimsRes.data ?? []) as Array<{ status: string }>;
   const liveClaims = claims.filter((c) => c.status !== "rejected").length;

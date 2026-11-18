@@ -7,7 +7,7 @@ import type { Database, Json } from "../database.types";
 import { notificationQueue, pointsQueue } from "./queue.server";
 import { shopifyGraphqlWithRetry } from "./shopify-graphql.server";
 import { getAdminForShop } from "./worker-admin.server";
-import { getSettings, isEarnRuleEnabled, isEarnRuleSwitchedOn, tierThresholds, type AppSettings } from "./settings.server";
+import { getSettings, isEarnRuleEnabled, tierThresholds, type AppSettings } from "./settings.server";
 import { recordHeartbeat } from "./heartbeat.server";
 
 export type Tier = "silver" | "gold" | "diamond";
@@ -442,26 +442,12 @@ export async function ensureTierFollowUps(memberId: string, shop?: string | null
 
   if (member.is_blocked || member.opted_out) return { queued: false };
 
-  const { data: allHistory, error: histErr } = await db
+  const { data: historyRows, error: histErr } = await db
     .from("tier_history")
-    .select("from_tier, to_tier, shopify_order_id")
+    .select("from_tier, to_tier")
     .eq("member_id", memberId);
   if (histErr) throw new Error(`tier history lookup failed: ${histErr.message}`);
-  // Rule 20: an upgrade reached with an order placed while the program was off
-  // keeps the new tier (spend still counts) but earns no tier code. One reached
-  // with an order placed while it was on is issued now, even during a pause.
-  const orderIds = [...new Set((allHistory ?? []).map((h) => h.shopify_order_id).filter((id): id is string => !!id))];
-  const pausedOrders = new Set<string>();
-  if (orderIds.length > 0) {
-    const { data: paused, error: pausedErr } = await db
-      .from("order_webhook_state")
-      .select("shopify_order_id")
-      .in("shopify_order_id", orderIds)
-      .eq("program_on_at_placement", false);
-    if (pausedErr) throw new Error(`order lookup failed: ${pausedErr.message}`);
-    for (const o of paused ?? []) pausedOrders.add(o.shopify_order_id);
-  }
-  const history = (allHistory ?? []).filter((h) => !h.shopify_order_id || !pausedOrders.has(h.shopify_order_id));
+  const history = historyRows ?? [];
   // Only upgrades this version recorded earn a code (members who were already
   // Gold before v3 have no history row and are not suddenly sent one).
   const reachedGold = history.some((h) => h.to_tier === "gold" || (h.to_tier === "diamond" && h.from_tier === "silver"));
@@ -470,6 +456,7 @@ export async function ensureTierFollowUps(memberId: string, shop?: string | null
   const settings = await getSettings();
   const owedGold = reachedGold && settings.tier_reward_gold_free_shipping;
   const owedDiamond = reachedDiamond && member.tier === "diamond" && settings.tier_reward_diamond_pkr > 0;
+  // The program switch is not read: it only pauses redeeming (rule 20).
   if (!owedGold && !owedDiamond) return { queued: false };
 
   const keys = [`tier_gold:${memberId}`, `tier_diamond:${memberId}`];
@@ -518,10 +505,8 @@ export async function awardSocial(socialActionId: string): Promise<{ awarded: bo
   if (!member) return void_("member_not_found");
   if (member.is_blocked) return void_("blocked");
   if (member.opted_out) return void_("opted_out");
-  // The claim was made while the program was on (the storefront refuses one
-  // while it is off), so a pause that starts before the hold ends does not
-  // void it (rule 20). The platform's own switch still does (rule 17).
-  if (!isEarnRuleSwitchedOn(settings, platform)) return void_("rule_off");
+  // The platform's own switch (rule 17); the program switch never voids a claim (rule 20).
+  if (!isEarnRuleEnabled(settings, platform)) return void_("rule_off");
 
   const perPlatform = Number(settings[`social_points_${platform}` as const]);
   const points = Number.isFinite(perPlatform) ? perPlatform : settings.social_points;

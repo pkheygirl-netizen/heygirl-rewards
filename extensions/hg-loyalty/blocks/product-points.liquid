@@ -8,7 +8,8 @@
   assign cfg = app.metafields.hg_loyalty.config.value
   assign hg_product = block.settings.product | default: product
 -%}
-{%- if cfg and cfg.enabled and cfg.earnRules.purchase.enabled != false and hg_product -%}
+{%- comment -%} Shown while redeeming is paused too (rule 20); only the purchase rule's own switch hides it. {%- endcomment -%}
+{%- if cfg and cfg.earnRules.purchase.enabled != false and hg_product -%}
   {%- liquid
     capture hg_mult
       render 'hg-mult', cfg: cfg

@@ -26,9 +26,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { customerId, shop } = g.ctx;
 
   try {
-    const settings = (await getSettings()) as unknown as { program_enabled?: boolean; referral_points?: number };
-    // Clear states (the widget shows a message for each and caches them briefly).
-    if (settings.program_enabled === false) return proxyJson({ enabled: false, member: null, state: "paused" });
+    // The program switch is not read here: it only pauses redeeming (rule 20),
+    // so signing in enrols and the welcome bonus is queued either way.
+    const settings = (await getSettings()) as unknown as { referral_points?: number };
 
     // Signing in on the storefront enrols the customer and queues the welcome
     // bonus when it was never given (business rules 3 and 4). A failure here must

@@ -19,6 +19,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   try {
     const settings = (await getSettings()) as unknown as { program_enabled?: boolean; redemption_tiers?: unknown };
+    // Rule 20: the program switch pauses redeeming (and only redeeming).
     if (settings.program_enabled === false) return proxyJson({ ok: false, error: "program_disabled" });
     // A hidden reward does not exist for the storefront (same answer as an unknown one).
     if (isHiddenRedemptionTier(settings.redemption_tiers, points)) return proxyJson({ ok: false, error: "invalid_tier" });

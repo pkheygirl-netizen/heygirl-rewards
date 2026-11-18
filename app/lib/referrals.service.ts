@@ -9,7 +9,7 @@ import type { Database } from "../database.types";
 import { notificationQueue, pointsQueue } from "./queue.server";
 import { shopifyGraphqlWithRetry } from "./shopify-graphql.server";
 import { getAdminForShop } from "./worker-admin.server";
-import { getSettings, isEarnRuleEnabled, isEarnRuleSwitchedOn } from "./settings.server";
+import { getSettings, isEarnRuleEnabled } from "./settings.server";
 import { effectiveReferralPoints } from "./influencer.service";
 import { issueReferralFriendCode } from "./referral-bonus.service";
 import { expiresAtForTier } from "./points.service";
@@ -233,27 +233,23 @@ type OrderLite = {
   refund_basis_at_award_pkr: number;
   points_awarded_amount: number;
   points_reversed_amount: number;
-  program_on_at_placement: boolean;
 };
 
 /**
- * The friend's first order = her earliest order that was not cancelled and
- * was placed while the program was on (rule 20: an order placed during a
- * pause counts for nothing in the program, so her next order placed while the
- * program is on is the one that pays the referrer). The referral was only
- * recorded because she had no orders at all, so every order of hers is in
- * order_webhook_state.
+ * The friend's first order = her earliest order that was not cancelled. The
+ * referral was only recorded because she had no orders at all, so every order
+ * of hers is in order_webhook_state.
  */
 export async function firstQualifyingOrder(shopifyCustomerId: string): Promise<OrderLite | null> {
   const { data, error } = await db
     .from("order_webhook_state")
-    .select("shopify_order_id, points_awarded, cancelled_at, placed_at, created_at, earning_basis_pkr, refunded_basis_pkr, refund_basis_at_award_pkr, points_awarded_amount, points_reversed_amount, program_on_at_placement")
+    .select("shopify_order_id, points_awarded, cancelled_at, placed_at, created_at, earning_basis_pkr, refunded_basis_pkr, refund_basis_at_award_pkr, points_awarded_amount, points_reversed_amount")
     .eq("shopify_customer_id", shopifyCustomerId)
     .is("cancelled_at", null)
     .order("created_at", { ascending: true })
     .limit(200);
   if (error) throw new Error(`order lookup failed: ${error.message}`);
-  const rows = ((data ?? []) as OrderLite[]).filter((o) => o.program_on_at_placement !== false);
+  const rows = (data ?? []) as OrderLite[];
   if (rows.length === 0) return null;
   const when = (o: OrderLite) => Date.parse(o.placed_at ?? o.created_at);
   return rows.slice().sort((a, b) => when(a) - when(b))[0];
@@ -277,10 +273,8 @@ async function payReferral(
   referral: ReferralRow,
   shopifyOrderId: string,
 ): Promise<{ paid: boolean; points?: number; reason?: string }> {
-  // The qualifying order was placed while the program was on (see
-  // firstQualifyingOrder), so it is paid even if the program is off now (rule 20).
   const settings = await getSettings();
-  if (!isEarnRuleSwitchedOn(settings, "referral")) return { paid: false, reason: "disabled" };
+  if (!isEarnRuleEnabled(settings, "referral")) return { paid: false, reason: "disabled" };
 
   const { data: referrer } = await db.from("members").select("*").eq("id", referral.referrer_member_id).maybeSingle();
   if (!referrer) return { paid: false, reason: "referrer_not_found" };

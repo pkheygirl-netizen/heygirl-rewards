@@ -565,58 +565,59 @@ console.log("\n[14] 013_rls: row level security on every app table, no policies"
   eq("award_points still works after 013", [r.awarded, r.new_balance], [true, 100]);
 }
 
-console.log("\n[15] 014_program_pause: switch history, state at placement, default FAQ");
+console.log("\n[15] 014_faq_panel_theme: panel style column, default FAQ, no switch history");
 {
-  const m014 = fs.readFileSync(path.join(MIG, "014_program_pause.sql"), "utf8");
+  const m014 = fs.readFileSync(path.join(MIG, "014_faq_panel_theme.sql"), "utf8");
   // 014 was applied once with the later migrations above (on the legacy data)
-  const legacyOrder = (await q(`select program_on_at_placement p from order_webhook_state where shopify_order_id='LO1'`))[0];
-  eq("orders recorded before 014 count as placed while on", legacyOrder.p, true);
   const APPROVED = [{ q: "How are my points calculated?", a: "Points are earned on the amount you pay after discounts, and are added once your order is delivered and paid. Shipping, tax and any part paid by gift card do not earn points." }];
   // jsonb sorts object keys, so compare in SQL rather than as JSON text
   const sameFaqs = async (want) => (await q(`select faqs = $1::jsonb s from app_settings where id=1`, [JSON.stringify(want)]))[0].s;
   eq("an empty FAQ list gets the approved entry", await sameFaqs(APPROVED), true);
+  eq("panel_theme defaults to light", (await q(`select panel_theme t from app_settings where id=1`))[0].t, "light");
   let again = null;
   try { await db.query(m014); await db.query(m014); } catch (e) { again = e.message; }
   ok("014 is re-runnable (applied twice more without error)", again === null, again);
-  eq("one baseline row, not one per run", (await q(`select count(*)::int c from program_switch_history where source='baseline'`))[0].c, 1);
   eq("the FAQ is not added twice", (await q(`select jsonb_array_length(faqs) n from app_settings where id=1`))[0].n, 1);
+  eq("the panel_theme check is created once", (await q(`select count(*)::int c from pg_constraint where conname='app_settings_panel_theme_check'`))[0].c, 1);
   await q(`update app_settings set faqs='[{"q":"Own question","a":"Own answer"}]'::jsonb where id=1`);
   await db.query(m014);
   eq("a store's own FAQ list is left alone", await sameFaqs([{ q: "Own question", a: "Own answer" }]), true);
 
-  // the trigger records every change of the switch, and nothing else
-  const count = async () => (await q(`select count(*)::int c from program_switch_history`))[0].c;
-  const before = await count();
-  await q(`update app_settings set program_enabled=false where id=1`);
-  await q(`update app_settings set program_enabled=false where id=1`); // same value: no row
-  await q(`update app_settings set tagline='x' where id=1`);           // other column: no row
-  await q(`update app_settings set program_enabled=true, tagline='y' where id=1`);
-  const rows = await q(`select enabled, source from program_switch_history order by changed_at desc, id desc limit 2`);
-  eq("switch off then on writes exactly two rows (latest first)", [await count() - before, rows], [2, [{ enabled: true, source: "settings" }, { enabled: false, source: "settings" }]]);
+  // panel style: only the two known values
+  await q(`update app_settings set panel_theme='dark' where id=1`);
+  await db.query(m014);
+  eq("dark is stored and a re-run keeps it", (await q(`select panel_theme t from app_settings where id=1`))[0].t, "dark");
+  let bad = null;
+  try { await q(`update app_settings set panel_theme='blue' where id=1`); } catch (e) { bad = e.code; }
+  eq("any other value is refused by the check (23514)", bad, "23514");
+  let nul = null;
+  try { await q(`update app_settings set panel_theme=null where id=1`); } catch (e) { nul = e.code; }
+  eq("null is refused (23502)", nul, "23502");
+  await q(`update app_settings set panel_theme='light' where id=1`);
 
-  // program_enabled_at against a known history
-  await q(`truncate program_switch_history`);
-  await q(`insert into program_switch_history (enabled, changed_at, source) values
-    (true,  '2026-01-01T00:00:00Z', 'baseline'),
-    (false, '2026-11-09T00:00:00Z', 'settings'),
-    (true,  '2026-11-12T00:00:00Z', 'settings')`);
-  const at = async (t) => (await q(`select program_enabled_at($1::timestamptz) v`, [t]))[0].v;
-  eq("before the first record: the baseline state", await at("2025-06-01T00:00:00Z"), true);
-  eq("while on", await at("2026-11-08T10:00:00Z"), true);
-  eq("at the moment it was switched off", await at("2026-11-09T00:00:00Z"), false);
-  eq("while off", await at("2026-11-10T10:00:00+05:00"), false);
-  eq("back on", await at("2026-11-13T00:00:00Z"), true);
-  eq("null means now", await at(null), true);
-  await q(`truncate program_switch_history`);
-  await q(`update app_settings set program_enabled=false where id=1`); // trigger writes one row: off
-  await q(`truncate program_switch_history`);
-  eq("no history at all: the current switch", await at("2026-11-10T00:00:00Z"), false);
+  // owner defaults (17 Nov 2026): new rows get 500 social points and the 50,000 -> 2,500 reward;
+  // the existing row keeps what it had (the dev store changes it on the Program page)
+  const kept = (await q(`select social_points_instagram i, social_points s, jsonb_array_length(redemption_tiers) n from app_settings where id=1`))[0];
+  eq("014 leaves the saved settings row alone", kept, { i: 1000, s: 1000, n: 6 });
+  await q(`begin`);
+  await q(`delete from app_settings where id=1`);
+  await q(`insert into app_settings (id) values (1)`);
+  const fresh = (await q(`select social_points s, social_points_instagram i, social_points_facebook f, social_points_youtube y, review_points r,
+      redemption_tiers @> '[{"points":50000,"discount_pkr":2500}]'::jsonb t50, jsonb_array_length(redemption_tiers) n from app_settings where id=1`))[0];
+  await q(`rollback`);
+  eq("a new settings row gets the new defaults", fresh, { s: 500, i: 500, f: 500, y: 500, r: 3000, t50: true, n: 7 });
+
+  // rule 20 now only pauses redeeming: the old earn-blocking objects must not exist
+  const leftovers = (await q(`select
+      to_regclass('public.program_switch_history') is not null t,
+      exists (select 1 from pg_proc where proname in ('program_enabled_at','app_settings_track_program_switch')) f,
+      exists (select 1 from pg_trigger where tgname='trg_app_settings_program_switch') g,
+      exists (select 1 from information_schema.columns where table_name='order_webhook_state' and column_name='program_on_at_placement') c`))[0];
+  eq("no switch history table, function, trigger or program_on_at_placement column", leftovers, { t: false, f: false, g: false, c: false });
+  // switching the program off and on is a plain column update
+  await q(`update app_settings set program_enabled=false where id=1`);
   await q(`update app_settings set program_enabled=true where id=1`);
-  let rpcErr = null;
-  try { await q(`insert into order_webhook_state (shopify_order_id, shopify_customer_id, program_on_at_placement) values ('P20','C-P20', false)`); } catch (e) { rpcErr = e.message; }
-  ok("program_on_at_placement can be stored false", rpcErr === null, rpcErr);
-  const rls = (await q(`select relrowsecurity r from pg_class where relname='program_switch_history'`))[0].r;
-  eq("program_switch_history has row level security", rls, true);
+  eq("program_enabled still switches", (await q(`select program_enabled p from app_settings where id=1`))[0].p, true);
 }
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);

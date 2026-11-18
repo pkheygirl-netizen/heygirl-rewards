@@ -298,7 +298,7 @@ describe("pages render with data", () => {
 
   it("Settings, without any secret", async () => {
     const html = await renderRoute("app.settings.tsx", "/app/settings");
-    for (const text of ["Program", "Notifications", "Not configured", "Data export", "System health", "Healthy", "Privacy requests", "Mark as answered"]) {
+    for (const text of ["Redeeming", "Notifications", "Not configured", "Data export", "System health", "Healthy", "Privacy requests", "Mark as answered"]) {
       expect(html, text).toContain(text);
     }
     expect(html).not.toContain("never-shown");
@@ -354,29 +354,62 @@ describe("hidden rewards", () => {
   });
 });
 
-describe("rule 20: program switch wording", () => {
+describe("rule 20: the switch only pauses redeeming (admin wording)", () => {
   beforeEach(() => mockAll(full));
   const off = () =>
     mockAll({ rpc: full.rpc, from: (table, chain) => (table === "app_settings" ? { data: { ...SETTINGS, program_enabled: false } } : full.from!(table, chain)) });
 
-  it("Settings says exactly what switching off does, in both states", async () => {
+  it("Settings: the switch is 'Redeeming' and says exactly what pausing does, in both states", async () => {
     const on = await renderRoute("app.settings.tsx", "/app/settings");
-    expect(on).toContain("If you switch it off:");
+    expect(on).toContain(">Redeeming</h2>");
+    expect(on).toContain(">Allowed<");
+    expect(on).toContain(">Pause redeeming<");
+    expect(on).toContain("If you pause redeeming:");
     for (const t of PROGRAM_OFF_EFFECTS) expect(on, t).toContain(escapeHtml(t));
     off();
     const offHtml = await renderRoute("app.settings.tsx", "/app/settings");
-    expect(offHtml).toContain("While it is off:");
-    expect(offHtml).toContain(escapeHtml("Reward codes already issued still work at checkout until they expire."));
-    expect(offHtml).toContain(escapeHtml("An order placed while the program is off never earns points, even if it is delivered and paid after you switch it back on."));
+    expect(offHtml).toContain(">Paused<");
+    expect(offHtml).toContain(">Allow redeeming<");
+    expect(offHtml).toContain("While redeeming is paused:");
+    expect(offHtml).toContain(escapeHtml("Customers cannot redeem points right now. They are still earning as normal."));
+    for (const t of PROGRAM_OFF_EFFECTS) expect(offHtml, t).toContain(escapeHtml(t));
+    // Nothing left from the old rule (no earning while off).
+    for (const old of ["earn no new points", "never earns points", "are hidden on the storefront", "switched off"]) expect(offHtml).not.toContain(old);
   });
 
-  it("Home shows the switched-off banner with the same list only while off", async () => {
+  it("the wording covers the owner's four points", () => {
+    const all = PROGRAM_OFF_EFFECTS.join(" ");
+    expect(all).toContain("Customers cannot redeem points");
+    expect(all).toContain("Customers still earn points as normal");
+    expect(all).toContain("Reward codes already issued still work at checkout until they expire");
+    expect(all).toContain("run the sale as an automatic discount");
+    expect(all).toContain("Shopify applies only the one discount that is best for the customer");
+    expect(all).toContain("Everything else continues");
+  });
+
+  it("Home shows the 'Redeeming is paused' banner with the same list only while paused", async () => {
     const on = await renderRoute("app._index.tsx", "/app");
-    expect(on).not.toContain("The program is switched off");
+    expect(on).not.toContain("Redeeming is paused");
+    expect(on).toContain("Program live");
     off();
     const offHtml = await renderRoute("app._index.tsx", "/app");
-    expect(offHtml).toContain("The program is switched off");
+    expect(offHtml).toContain("Redeeming is paused");
+    expect(offHtml).toContain("Redeeming paused");
     for (const t of PROGRAM_OFF_EFFECTS) expect(offHtml, t).toContain(escapeHtml(t));
+  });
+
+  it("On-site has the Panel style choice (Light and Dark with swatches), Light by default, Dark when saved", async () => {
+    const html = await renderRoute("app.onsite.tsx", "/app/onsite");
+    expect(html).toContain(">Panel style</h2>");
+    expect(html).toContain('data-swatch="light"');
+    expect(html).toContain('data-swatch="dark"');
+    expect(html).toMatch(/<input id="panel_theme_light" name="panel_theme" type="radio"[^>]*checked=""[^>]*value="light"/);
+    expect(html).toMatch(/<input id="panel_theme_dark" name="panel_theme" type="radio"[^>]*value="dark"/);
+    expect(html).not.toMatch(/<input id="panel_theme_dark"[^>]*checked=""/);
+    mockAll({ rpc: full.rpc, from: (table, chain) => (table === "app_settings" ? { data: { ...SETTINGS, panel_theme: "dark" } } : full.from!(table, chain)) });
+    const dark = await renderRoute("app.onsite.tsx", "/app/onsite");
+    expect(dark).toMatch(/<input id="panel_theme_dark"[^>]*checked=""/);
+    expect(dark).not.toMatch(/<input id="panel_theme_light"[^>]*checked=""/);
   });
 
   it("On-site offers the approved FAQ when the saved list lacks it, and not once it is there", async () => {

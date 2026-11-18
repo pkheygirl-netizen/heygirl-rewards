@@ -334,3 +334,15 @@ describe("fix round", () => {
     expect(referrer.points_balance).toBe(6000);
   });
 });
+
+describe("rule 20: the program switch only pauses redeeming", () => {
+  it("a referral visit is recorded and the friend's code issued while the program is off", async () => {
+    setup();
+    h.db.table("app_settings")[0].program_enabled = false;
+    bustSettingsCache();
+    const r = await visit();
+    expect(r).toMatchObject({ ok: true, recorded: true, status: "pending" });
+    expect(r.friendCode).toMatch(/^WELCOME-/);
+    expect(h.db.table("loyalty_codes")).toHaveLength(1);
+  });
+});

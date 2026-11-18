@@ -3,7 +3,6 @@ import type { ActionFunctionArgs } from "@remix-run/node";
 import { guardProxy, proxyJson } from "../lib/proxy-auth.server";
 import { getMemberByCustomerId } from "../lib/widget-data.server";
 import { claimReview } from "../lib/review-claims.service";
-import { getSettings } from "../lib/settings.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   // HMAC first: an unsigned request learns nothing, not even the allowed method.
@@ -12,9 +11,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (request.method !== "POST") return proxyJson({ ok: false, error: "method_not_allowed" }, 405);
 
   try {
-    const settings = (await getSettings()) as unknown as { program_enabled?: boolean };
-    if (settings.program_enabled === false) return proxyJson({ ok: false, error: "program_disabled" });
-
+    // No program-switch check: it only pauses redeeming (rule 20).
     const member = await getMemberByCustomerId(g.ctx.customerId);
     if (!member) return proxyJson({ ok: false, error: "not_a_member" });
     if (member.opted_out) return proxyJson({ ok: false, error: "opted_out" });

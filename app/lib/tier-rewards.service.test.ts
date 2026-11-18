@@ -104,8 +104,8 @@ describe("referral friend code", () => {
   });
 });
 
-describe("rule 20: program switched off", () => {
-  it("a tier code owed for an upgrade (queued by ensureTierFollowUps) and a friend code for a referral recorded while on are still issued during a pause", async () => {
+describe("rule 20: the program switch only pauses redeeming", () => {
+  it("a tier code and a referral friend code are issued while the program is off", async () => {
     h.db.table("app_settings")[0].program_enabled = false;
     bustSettingsCache();
     const m = seedMember(h.db, { tier: "gold" });

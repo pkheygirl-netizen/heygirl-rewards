@@ -39,11 +39,12 @@ export const DEFAULT_REDEMPTION_TIERS: RedemptionTier[] = [
   { points: 6000, discount_pkr: 250 },
   { points: 11500, discount_pkr: 500 },
   { points: 22000, discount_pkr: 1000 },
+  { points: 50000, discount_pkr: 2500 },
   { points: 100000, discount_pkr: 5000 },
   { points: 180000, discount_pkr: 10000 },
 ];
 
-// Mirrors the column defaults of migrations 001-010. Used only when the row
+// Mirrors the column defaults of migrations 001-014. Used only when the row
 // cannot be read at all, and to fill a column a not-yet-migrated database lacks.
 const DEFAULTS: SettingsRow = {
   id: 1,
@@ -57,10 +58,10 @@ const DEFAULTS: SettingsRow = {
   signup_points: 1000,
   purchase_points_rate: 1,
   referral_points: 6000,
-  social_points: 1000,
-  social_points_youtube: 1000,
-  social_points_facebook: 1000,
-  social_points_instagram: 1000,
+  social_points: 500,
+  social_points_youtube: 500,
+  social_points_facebook: 500,
+  social_points_instagram: 500,
   review_points: 3000,
   silver_expiry_days: 365,
   whatsapp_enabled: false,
@@ -94,6 +95,7 @@ const DEFAULTS: SettingsRow = {
   social_url_facebook: null,
   social_url_youtube: null,
   reward_code_expiry_days: 30,
+  panel_theme: "light",
   updated_at: new Date(0).toISOString(),
 };
 
@@ -207,21 +209,16 @@ export function bustSettingsCache(): void {
 }
 
 /**
- * For an action the customer takes NOW (sign-in, claim, birthday run): the
- * program must be on and the rule switched on.
+ * The earn rule's own switch (rule 17). Earning never depends on the program
+ * switch: `program_enabled = false` only pauses redeeming (rule 20).
  */
 export function isEarnRuleEnabled(settings: AppSettings, rule: EarnRuleKey): boolean {
-  return settings.program_enabled !== false && isEarnRuleSwitchedOn(settings, rule);
+  return settings.earn_rules[rule]?.enabled !== false;
 }
 
-/**
- * The rule's own switch only, ignoring the program switch. Used when a reward
- * comes due for something done earlier: rule 20 decides by the program state
- * when the triggering action happened (an order's placed_at, a claim made
- * while the program was on), not by the state at pay-out time.
- */
-export function isEarnRuleSwitchedOn(settings: AppSettings, rule: EarnRuleKey): boolean {
-  return settings.earn_rules[rule]?.enabled !== false;
+/** Rule 20: `program_enabled = false` pauses redeeming, and nothing else. */
+export function isRedeemPaused(settings: Pick<AppSettings, "program_enabled">): boolean {
+  return settings.program_enabled === false;
 }
 
 export function tierThresholds(settings: AppSettings): { gold: number; diamond: number } {

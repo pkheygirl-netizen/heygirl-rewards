@@ -1,15 +1,15 @@
-// app/routes/app.onsite.tsx — On-site: storefront text, nudges, FAQs, terms, theme checklist
+// app/routes/app.onsite.tsx — On-site: storefront text, panel style, nudges, FAQs, terms, theme checklist
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import { useFetcher, useLoaderData } from "@remix-run/react";
 import { useState } from "react";
 import {
-  Banner, BlockStack, Box, Button, Card, Checkbox, Divider, FormLayout, InlineStack, Layout, List, Page, Text,
-  TextField,
+  Banner, BlockStack, Box, Button, Card, Checkbox, Divider, FormLayout, InlineStack, Layout, List, Page, RadioButton,
+  Text, TextField,
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import { AdminExternalLink, ResultBanner, fieldError, fieldValue, useActionToast } from "../components/admin-ui";
-import { ONSITE_LIMITS, SUGGESTED_FAQS } from "../components/admin-constants";
+import { ONSITE_LIMITS, PANEL_THEMES, SUGGESTED_FAQS, type PanelThemeChoice } from "../components/admin-constants";
 import { fmtInt } from "../components/karachi";
 import { blockDeepLink, discoverThemeBlocks, embedDeepLink, themeEditorUrl } from "../lib/admin-onsite.server";
 import { getSettingsRow, parseOnsiteForm, publishSettings, readFaqs, updateSettings } from "../lib/admin-settings.server";
@@ -30,6 +30,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       nudge_tier_progress_enabled: s.nudge_tier_progress_enabled !== false,
       tier_progress_gold_threshold_pkr: fieldValue(s.tier_progress_gold_threshold_pkr, "5000"),
       tier_progress_diamond_threshold_pkr: fieldValue(s.tier_progress_diamond_threshold_pkr, "10000"),
+      panel_theme: (s.panel_theme === "dark" ? "dark" : "light") as PanelThemeChoice,
     },
     faqs: readFaqs(s.faqs),
     version: String(s.updated_at ?? ""),
@@ -53,6 +54,35 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return json({ ok: false as const, error: errorMessage(e) }, { status: 500 });
   }
 };
+
+const PANEL_STYLES: Record<PanelThemeChoice, { label: string; help: string }> = {
+  light: { label: "Light", help: "Cream panel with white cards and gold buttons (the original look)." },
+  dark: { label: "Dark", help: "Black panel with dark cards, light text and gold buttons." },
+};
+
+/**
+ * Small picture of the panel in each style (decorative: the radio label says
+ * the same in words). Colours are the storefront's own tokens (hub-css.ts).
+ */
+function PanelSwatch({ theme }: { theme: PanelThemeChoice }) {
+  const c = theme === "dark"
+    ? { bg: "#121212", card: "#1e1e1e", line: "#3a3a3a", head: "#0b0b0b", headText: "#ffd24a", bal: "#2a2a2a", text: "#bdbdbd" }
+    : { bg: "#faf7ee", card: "#ffffff", line: "#e9e2cc", head: "linear-gradient(135deg,#f3bd1c,#e0a400)", headText: "#1a1a1a", bal: "#1a1a1a", text: "#595959" };
+  return (
+    <div aria-hidden="true" data-swatch={theme} style={{ width: 148, borderRadius: 10, overflow: "hidden", border: `1px solid ${c.line}`, background: c.bg, fontSize: 10, lineHeight: 1.3 }}>
+      <div style={{ background: c.head, color: c.headText, padding: "5px 8px", fontWeight: 700 }}>Rewards</div>
+      <div style={{ padding: 6 }}>
+        <div style={{ background: c.bal, color: "#e6e6e6", borderRadius: 6, padding: "5px 7px", marginBottom: 5 }}>
+          Hi Aisha<div style={{ color: "#ffd24a", fontWeight: 800, fontSize: 13 }}>4,500</div>
+        </div>
+        <div style={{ background: c.card, border: `1px solid ${c.line}`, borderRadius: 6, padding: "5px 7px", color: c.text, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          Rs. 100 off
+          <span style={{ background: "#e8ad00", color: "#1a1a1a", border: "1px solid #7a5c00", borderRadius: 999, padding: "1px 6px", fontWeight: 700 }}>Redeem</span>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 const NUDGES = [
   { name: "nudge_account_creation_enabled", label: "Invite guests to create an account", help: "Shown to visitors who are not signed in." },
@@ -79,6 +109,7 @@ function OnsiteForm({ d }: { d: ReturnType<typeof useLoaderData<typeof loader>> 
   const initialNudges = () => Object.fromEntries(NUDGES.map((n) => [n.name, d.values[n.name]])) as Record<string, boolean>;
   const [nudges, setNudges] = useState(initialNudges);
   const [faqs, setFaqs] = useState(d.faqs);
+  const [panelTheme, setPanelTheme] = useState<PanelThemeChoice>(d.values.panel_theme);
   const set = (k: keyof typeof text) => (v: string) => setText((s) => ({ ...s, [k]: v }));
   const reset = () => {
     setText({
@@ -88,6 +119,7 @@ function OnsiteForm({ d }: { d: ReturnType<typeof useLoaderData<typeof loader>> 
     });
     setNudges(initialNudges());
     setFaqs(d.faqs);
+    setPanelTheme(d.values.panel_theme);
   };
   const nothingShipped = d.embeds.length === 0 && d.blocks.length === 0;
 
@@ -168,6 +200,29 @@ function OnsiteForm({ d }: { d: ReturnType<typeof useLoaderData<typeof loader>> 
                         helpText="One short line under the program name."
                       />
                     </FormLayout>
+                  </BlockStack>
+                </Card>
+
+                <Card>
+                  <BlockStack gap="300">
+                    <Text as="h2" variant="headingMd">Panel style</Text>
+                    <Text as="p" tone="subdued">
+                      Colours of the rewards panel that opens from the launcher. The launcher button keeps its gold look, and the points lines on product and cart pages keep your theme&apos;s look.
+                    </Text>
+                    <InlineStack gap="600" wrap>
+                      {PANEL_THEMES.map((t) => (
+                        <BlockStack gap="200" key={t}>
+                          <PanelSwatch theme={t} />
+                          <RadioButton
+                            id={`panel_theme_${t}`} name="panel_theme" value={t}
+                            label={PANEL_STYLES[t].label} helpText={PANEL_STYLES[t].help}
+                            checked={panelTheme === t} onChange={(on) => { if (on) setPanelTheme(t); }}
+                          />
+                        </BlockStack>
+                      ))}
+                    </InlineStack>
+                    {fieldError(result, "panel_theme") ? <Banner tone="critical"><p>{fieldError(result, "panel_theme")}</p></Banner> : null}
+                    <Text as="p" tone="subdued" variant="bodySm">Press Save to publish it. Shoppers see the new style the next time they open the panel.</Text>
                   </BlockStack>
                 </Card>
 

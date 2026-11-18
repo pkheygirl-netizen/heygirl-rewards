@@ -261,7 +261,6 @@ export default function ImportPage() {
                 )}
                 <p>
                   The app cannot see the theme's app-embed switch itself; check it under Online Store → Themes → Customize → App embeds.
-                  {launch.programEnabled ? "" : " The program is currently paused in Settings, so no welcome bonus is given while it stays paused."}
                 </p>
               </BlockStack>
             </Banner>

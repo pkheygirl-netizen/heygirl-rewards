@@ -156,10 +156,18 @@ describe("GET /proxy/customer", () => {
     expect(await json(res)).toMatchObject({ member: { firstName: "Aisha" } });
   });
 
-  it("returns clear states for a paused program and a customer with no member row", async () => {
-    h.getSettings.mockResolvedValueOnce({ program_enabled: false });
-    expect(await json(await customerLoader(args(signedRequest("customer", { customerId: "42" }))))).toEqual({ enabled: false, member: null, state: "paused" });
-    expect(h.enrolFromSignin).not.toHaveBeenCalled();
+  it("rule 20: with the program switched off the customer is still enrolled and gets her payload", async () => {
+    h.getSettings.mockResolvedValue({ ...SETTINGS, program_enabled: false });
+    h.getCustomerPayload.mockResolvedValue(PAYLOAD);
+    h.enrolFromSignin.mockResolvedValue({ memberId: "m1", welcomeQueued: true });
+    const res = await customerLoader(args(signedRequest("customer", { customerId: "42" })));
+    expect(h.enrolFromSignin).toHaveBeenCalledWith({ shopifyCustomerId: "42", shop: TEST_SHOP, ip: "203.0.113.7" });
+    const body = await json(res);
+    expect(body).toMatchObject({ enabled: true, member: { firstName: "Aisha" }, welcomeQueued: true });
+    expect(body).not.toHaveProperty("state");
+  });
+
+  it("returns a clear state for a customer with no member row", async () => {
     h.getMemberByCustomerId.mockResolvedValueOnce(null);
     expect(await json(await customerLoader(args(signedRequest("customer", { customerId: "42" }))))).toEqual({ enabled: true, member: null, state: "not_enrolled" });
   });
@@ -328,6 +336,41 @@ describe("/proxy/referral", () => {
   });
 });
 
+describe("rule 20: with the program switched off only redeeming is refused", () => {
+  beforeEach(() => h.getSettings.mockResolvedValue({ ...SETTINGS, program_enabled: false }));
+
+  it("social claims still go through", async () => {
+    expect(await json(await socialAction(args(signedRequest("social", { customerId: "42", body: { platform: "instagram" } }))))).toEqual({ ok: true, status: "awarded", points: 1000 });
+    expect(h.queueAdd).toHaveBeenCalledTimes(1);
+  });
+
+  it("review claims still go through", async () => {
+    h.claimReview.mockResolvedValueOnce({ ok: true, releaseAt: "2026-11-19T10:00:00Z" });
+    expect(await json(await reviewAction(args(signedRequest("review", { customerId: "42", body: {} }))))).toEqual({ ok: true, releaseAt: "2026-11-19T10:00:00Z" });
+    expect(h.claimReview).toHaveBeenCalledWith("m1");
+  });
+
+  it("the birthday can still be saved", async () => {
+    h.setBirthday.mockResolvedValueOnce({ ok: true });
+    expect(await json(await birthdayAction(args(signedRequest("birthday", { customerId: "42", body: { month: 3, day: 12 } }))))).toEqual({ ok: true });
+    expect(h.setBirthday).toHaveBeenCalledTimes(1);
+  });
+
+  it("a referral is still recorded", async () => {
+    h.recordReferralVisit.mockResolvedValueOnce({ ok: true, recorded: true, blocked: false, status: "pending" });
+    expect(await json(await referralAction(args(signedRequest("referral", { customerId: "42", body: { slug: "sara-9999" } }))))).toEqual({ ok: true, status: "recorded" });
+    expect(h.recordReferralVisit).toHaveBeenCalledTimes(1);
+  });
+
+  it("redeeming is refused with program_disabled, before the member lookup and the engine", async () => {
+    const res = await redeemAction(args(signedRequest("redeem", { customerId: "42", body: { points: 3000 } })));
+    expect(res.status).toBe(200);
+    expect(await json(res)).toEqual({ ok: false, error: "program_disabled" });
+    expect(h.redeemPoints).not.toHaveBeenCalled();
+    expect(h.getMemberByCustomerId).not.toHaveBeenCalled();
+  });
+});
+
 describe("review fixes: routes", () => {
   const posts: Array<[string, (r: Request) => Promise<Response>]> = [
     ["redeem", (r) => redeemAction(args(r))],
@@ -363,11 +406,7 @@ describe("review fixes: routes", () => {
     expect(h.getCustomerPayload).toHaveBeenLastCalledWith(expect.anything(), expect.any(Date), 0);
   });
 
-  it("item 4: paused and not-enrolled are explicit states with HTTP 200", async () => {
-    h.getSettings.mockResolvedValueOnce({ program_enabled: false });
-    const paused = await customerLoader(args(signedRequest("customer", { customerId: "42" })));
-    expect(paused.status).toBe(200);
-    expect(await json(paused)).toEqual({ enabled: false, member: null, state: "paused" });
+  it("item 4: not-enrolled is an explicit state with HTTP 200", async () => {
     h.getMemberByCustomerId.mockResolvedValueOnce(null);
     const none = await customerLoader(args(signedRequest("customer", { customerId: "42" })));
     expect(none.status).toBe(200);

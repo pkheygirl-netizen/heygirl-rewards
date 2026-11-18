@@ -1,4 +1,4 @@
-// app/routes/app.settings.tsx — Settings: program switch, notifications, exports, health, privacy requests
+// app/routes/app.settings.tsx — Settings: redeeming switch (program_enabled), notifications, exports, health, privacy requests
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import { useFetcher, useLoaderData } from "@remix-run/react";
@@ -42,7 +42,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       const enabled = form.get("enabled") === "true";
       await updateSettings({ program_enabled: enabled });
       const { warning } = await publishSettings(admin);
-      return json({ ok: true as const, message: enabled ? "Program switched on" : "Program switched off", warning });
+      return json({ ok: true as const, message: enabled ? "Redeeming allowed again" : "Redeeming paused", warning });
     }
     if (intent === "set_whatsapp") {
       const enabled = form.get("enabled") === "true";
@@ -93,20 +93,20 @@ export default function Settings() {
               <BlockStack gap="300">
                 <InlineStack align="space-between" blockAlign="center">
                   <InlineStack gap="200" blockAlign="center">
-                    <Text as="h2" variant="headingMd">Program</Text>
-                    {d.programEnabled ? <Badge tone="success">On</Badge> : <Badge tone="critical">Off</Badge>}
+                    <Text as="h2" variant="headingMd">Redeeming</Text>
+                    {d.programEnabled ? <Badge tone="success">Allowed</Badge> : <Badge tone="warning">Paused</Badge>}
                   </InlineStack>
                   {d.programEnabled
-                    ? <Button tone="critical" onClick={() => setConfirm({ kind: "program_off" })}>Switch off</Button>
-                    : <Button variant="primary" loading={busy} onClick={() => post({ intent: "set_program", enabled: "true" })}>Switch on</Button>}
+                    ? <Button tone="critical" onClick={() => setConfirm({ kind: "program_off" })}>Pause redeeming</Button>
+                    : <Button variant="primary" loading={busy} onClick={() => post({ intent: "set_program", enabled: "true" })}>Allow redeeming</Button>}
                 </InlineStack>
                 <Text as="p" tone="subdued">
                   {d.programEnabled
-                    ? "Customers can earn and redeem, and the rewards panel shows on the storefront."
-                    : "The program is off."}
+                    ? "Allow customers to redeem points. Pause it during a sale so reward codes are not used on top of sale prices; customers keep earning either way."
+                    : "Customers cannot redeem points right now. They are still earning as normal."}
                 </Text>
                 <BlockStack gap="100">
-                  <Text as="p" fontWeight="semibold">{d.programEnabled ? "If you switch it off:" : "While it is off:"}</Text>
+                  <Text as="p" fontWeight="semibold">{d.programEnabled ? "If you pause redeeming:" : "While redeeming is paused:"}</Text>
                   <List type="bullet">
                     {PROGRAM_OFF_EFFECTS.map((t) => <List.Item key={t}>{t}</List.Item>)}
                   </List>
@@ -265,8 +265,8 @@ export default function Settings() {
         open={confirm !== null}
         loading={busy}
         destructive={confirm?.kind === "program_off"}
-        title={confirm?.kind === "program_off" ? "Switch the program off?" : "Mark this request as answered?"}
-        confirmLabel={confirm?.kind === "program_off" ? "Switch off" : "Mark as answered"}
+        title={confirm?.kind === "program_off" ? "Pause redeeming?" : "Mark this request as answered?"}
+        confirmLabel={confirm?.kind === "program_off" ? "Pause redeeming" : "Mark as answered"}
         onClose={() => setConfirm(null)}
         onConfirm={() => {
           if (!confirm) return;
@@ -275,11 +275,16 @@ export default function Settings() {
           setConfirm(null);
         }}
       >
-        <Text as="p">
-          {confirm?.kind === "program_off"
-            ? "Customers stop earning and redeeming straight away and the rewards panel is hidden on the storefront. Reward codes already issued still work. Orders placed while the program is off never earn points."
-            : "Only do this after you have sent the customer her data, or completed the erasure. This page records that it was handled."}
-        </Text>
+        {confirm?.kind === "program_off" ? (
+          <BlockStack gap="200">
+            <Text as="p">This takes effect straight away:</Text>
+            <List type="bullet">
+              {PROGRAM_OFF_EFFECTS.map((t) => <List.Item key={t}>{t}</List.Item>)}
+            </List>
+          </BlockStack>
+        ) : (
+          <Text as="p">Only do this after you have sent the customer her data, or completed the erasure. This page records that it was handled.</Text>
+        )}
       </ConfirmModal>
     </Page>
   );

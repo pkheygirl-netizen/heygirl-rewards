@@ -4,6 +4,8 @@ import type { Config, MemberData } from "./shared";
 export function makeConfig(over: Partial<Config> = {}): Config {
   return {
     enabled: true,
+    redeemPaused: false,
+    panelTheme: "light",
     programName: "HeyGirl Rewards",
     tagline: "Earn points. Unlock perks.",
     pointsRate: 1,
@@ -11,9 +13,9 @@ export function makeConfig(over: Partial<Config> = {}): Config {
     referralPoints: 6000,
     reviewPoints: 3000,
     social: {
-      instagram: { points: 1000, url: "https://instagram.com/heygirl.pk", enabled: true },
-      facebook: { points: 1000, url: "https://facebook.com/heygirl.pk", enabled: true },
-      youtube: { points: 1000, url: "https://www.youtube.com/c/heygirlpk", enabled: true },
+      instagram: { points: 500, url: "https://instagram.com/heygirl.pk", enabled: true },
+      facebook: { points: 500, url: "https://facebook.com/heygirl.pk", enabled: true },
+      youtube: { points: 500, url: "https://www.youtube.com/c/heygirlpk", enabled: true },
     },
     earnRules: {
       purchase: { enabled: true },

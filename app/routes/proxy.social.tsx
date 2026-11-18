@@ -30,7 +30,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   try {
     const settings = (await getSettings()) as unknown as Record<string, unknown>;
-    if (settings.program_enabled === false) return proxyJson({ ok: false, error: "program_disabled" });
+    // No program-switch check: it only pauses redeeming (rule 20). The platform's own switch still applies.
     if (!ruleOn(settings.earn_rules, platform)) return proxyJson({ ok: false, error: "disabled" });
     // No profile link in settings means there is nothing to follow: never award.
     const profileUrl = settings[`social_url_${platform}`];

@@ -2,13 +2,15 @@
   HeyGirl Rewards: app embed (target body).
   Prints the launcher and a small JSON config, then loads one deferred script.
   Settings come from the app-data metafield written by the admin on save.
-  Renders nothing when the config is missing or the program is switched off.
+  Renders nothing only when the config is missing (not yet published). The
+  program switch does not hide anything: it only pauses redeeming (contract
+  rule 20, `redeemPaused`).
   The cart line's CSS is printed once per page: by the product or cart app
   block when present, otherwise by hg-core.js (never twice).
   Guests cause no request to the app server.
 {%- endcomment -%}
 {%- assign cfg = app.metafields.hg_loyalty.config.value -%}
-{%- if cfg and cfg.enabled -%}
+{%- if cfg -%}
   <style>
     .hg-launcher{position:fixed;z-index:2147483000;bottom:20px;{{ block.settings.position }}:16px;display:inline-flex;align-items:center;gap:8px;min-height:52px;padding:4px 16px 4px 4px;border:2px solid #7a5c00;border-radius:999px;background:#e8ad00;color:#1a1a1a;font:inherit;font-size:15px;font-weight:700;line-height:1;letter-spacing:normal;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.22)}
     .hg-launcher:focus-visible{outline:3px solid #1a1a1a;outline-offset:3px}
@@ -46,6 +48,8 @@
     {
       "config": {
         "enabled": true,
+        "redeemPaused": {% if cfg.redeemPaused == true %}true{% else %}false{% endif %},
+        "panelTheme": {% if cfg.panelTheme == 'dark' %}"dark"{% else %}"light"{% endif %},
         "programName": {{ cfg.programName | json }},
         "tagline": {{ cfg.tagline | json }},
         "pointsRate": {{ cfg.pointsRate | default: 0 | json }},

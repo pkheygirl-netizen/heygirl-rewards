@@ -4,7 +4,6 @@ import type { ActionFunctionArgs } from "@remix-run/node";
 import { guardProxy, proxyJson, readJsonBody } from "../lib/proxy-auth.server";
 import { getMemberByCustomerId, isValidBirthday } from "../lib/widget-data.server";
 import { setBirthday } from "../lib/points.service";
-import { getSettings } from "../lib/settings.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   // HMAC first: an unsigned request learns nothing, not even the allowed method.
@@ -18,9 +17,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (!body || !isValidBirthday(month, day)) return proxyJson({ ok: false, error: "invalid_date" }, 400);
 
   try {
-    const settings = (await getSettings()) as unknown as { program_enabled?: boolean };
-    if (settings.program_enabled === false) return proxyJson({ ok: false, error: "program_disabled" });
-
+    // No program-switch check: it only pauses redeeming (rule 20).
     const member = await getMemberByCustomerId(g.ctx.customerId);
     if (!member) return proxyJson({ ok: false, error: "not_a_member" });
     if (member.opted_out) return proxyJson({ ok: false, error: "opted_out" });

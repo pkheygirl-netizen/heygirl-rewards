@@ -6,7 +6,7 @@
 // what core.ts touches. It checks requests, storage and the wiring between
 // elements; it does not check layout or real browser parsing.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { CACHE_TTL_MS, type BootData, type LoyaltyApi } from "./shared";
+import { CACHE_TTL_MS, type BootData, type Config, type LoyaltyApi } from "./shared";
 import { makeConfig, makeMember } from "./test-fixtures";
 
 type Listener = (e: unknown) => void;
@@ -78,10 +78,10 @@ const session = new FakeStorage();
 const local = new FakeStorage();
 
 /** Builds the page the embed prints, then runs core.ts in it. */
-async function boot(opts: { customerId?: string | null; search?: string; replies?: Record<string, Reply | (() => Reply)>; readyState?: string } = {}): Promise<Page> {
+async function boot(opts: { customerId?: string | null; search?: string; replies?: Record<string, Reply | (() => Reply)>; readyState?: string; config?: Partial<Config> | Record<string, unknown>; earnPrice?: number } = {}): Promise<Page> {
   const data: BootData = {
     // Nudges off: these tests are about requests, not toasts.
-    config: makeConfig({ nudges: { accountCreation: false, pointsSpending: true, rewardUsage: true, tierProgress: false, goldWithin: 5000, diamondWithin: 10000 } }),
+    config: makeConfig({ nudges: { accountCreation: false, pointsSpending: true, rewardUsage: true, tierProgress: false, goldWithin: 5000, diamondWithin: 10000 }, ...(opts.config as Partial<Config>) }),
     customer: opts.customerId ? { id: opts.customerId } : null,
     page: "index",
     urls: { login: "/customer_authentication/login", hub: HUB_URL, rewards: "/pages/rewards", shop: "/collections/all" },
@@ -96,6 +96,17 @@ async function boot(opts: { customerId?: string | null; search?: string; replies
   launcher.appendChild(label);
   body.appendChild(dataNode);
   body.appendChild(launcher);
+  if (opts.earnPrice !== undefined) {
+    // The product block's "Earn N points" line (product-points.liquid).
+    const earn = new FakeEl("div");
+    earn.setAttribute("data-hg-earn", "");
+    earn.setAttribute("data-price", String(opts.earnPrice));
+    earn.hidden = true;
+    const pts = new FakeEl("span");
+    pts.setAttribute("data-hg-earn-pts", "");
+    earn.appendChild(pts);
+    body.appendChild(earn);
+  }
 
   const docListeners: Record<string, Listener[]> = {};
   const winListeners: Record<string, Listener[]> = {};
@@ -360,7 +371,7 @@ describe("core.ts wiring: referral slug", () => {
     ["a 429 rate limit", { status: 429, body: { ok: false, error: "rate_limited" } }],
     ["a network failure", { fail: true }],
     ["try_again", { body: { ok: false, status: "try_again" } }],
-    ["a paused program", { body: { ok: false, error: "program_disabled" } }],
+    ["an older server's program_disabled", { body: { ok: false, error: "program_disabled" } }],
     ["an unreadable reply", { body: null }],
   ] as Array<[string, Reply]>)("is kept after a temporary error: %s", async (_name, reply) => {
     const p = await boot(withRef(reply));
@@ -407,5 +418,36 @@ describe("core.ts wiring: referral slug", () => {
     await settle();
     expect(p.proxyCalls()).toEqual(["GET /customer"]);
     expect(storedRef()).toMatchObject({ s: "sana-5678", n: 0 });
+  });
+});
+
+describe("rule 20: redeeming paused keeps the storefront on", () => {
+  it("the launcher, member data and product line work with redeemPaused, even from a config an older admin published with enabled false", async () => {
+    const p = await boot({ customerId: "42", replies: { "/customer": { body: MEMBER } }, config: { enabled: false, redeemPaused: true }, earnPrice: 300000 });
+    expect(p.api()).toBeDefined();
+    const earn = p.body.querySelector("[data-hg-earn]")!;
+    expect(earn.hidden).toBe(false);
+    expect(earn.querySelector("[data-hg-earn-pts]")!.textContent).toBe("3,000");
+    p.fireLoad();
+    await settle();
+    expect(p.proxyCalls()).toEqual(["GET /customer"]);
+    expect(p.label.textContent).toBe("4,500 pts");
+  });
+
+  it("a cached 'paused' answer from before the change is not used: the member is asked for again", async () => {
+    session.setItem("hg_m:42", JSON.stringify({ t: Date.now(), d: { member: null, state: "paused" } }));
+    const p = await boot({ customerId: "42", replies: { "/customer": { body: MEMBER } } });
+    p.fireLoad();
+    await settle();
+    expect(p.proxyCalls()).toEqual(["GET /customer"]);
+    expect(p.api()!.state()).toBe("");
+    expect(p.label.textContent).toBe("4,500 pts");
+  });
+
+  it("guests still make no request while redeeming is paused", async () => {
+    const p = await boot({ customerId: null, config: { redeemPaused: true } });
+    p.fireLoad();
+    await settle(60000);
+    expect(p.fetch).not.toHaveBeenCalled();
   });
 });

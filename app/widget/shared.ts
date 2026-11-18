@@ -7,8 +7,12 @@ import type { CustomerPayload } from "../lib/widget-data.server";
 // The embed prints every config key except the long page texts.
 export type Config = Omit<StorefrontConfig, "terms" | "faqs" | "reviewReleaseHours" | "codeExpiryDays">;
 export type MemberData = CustomerPayload & { enabled?: boolean; welcomeQueued?: boolean };
-/** Why there is no member payload: "" while unknown or when there is one. */
-export type MemberState = "" | "paused" | "not_enrolled" | "error";
+/**
+ * Why there is no member payload: "" while unknown or when there is one. The
+ * program switch never hides the member's rewards (rule 20: it only pauses
+ * redeeming, published as `redeemPaused` in the config).
+ */
+export type MemberState = "" | "not_enrolled" | "error";
 /** What the five-minute cache holds: the payload, or a remembered negative answer. */
 export type CacheEntry = MemberData | { member: null; state: MemberState };
 export type Tier = "silver" | "gold" | "diamond";
@@ -30,7 +34,7 @@ export type LoyaltyApi = {
   /** Member payload: cached for five minutes per customer, null for guests. */
   member: (force?: boolean) => Promise<MemberData | null>;
   invalidate: () => void;
-  /** Set after `member()` resolves null: paused program, no member row, or a failed request. */
+  /** Set after `member()` resolves null: no member row, or a failed request. */
   state: () => MemberState;
   open: (screen?: string, opener?: HTMLElement | null) => void;
   _hub?: HubApi;
@@ -152,7 +156,8 @@ const REF_FINAL = ["recorded", "duplicate", "self_referral", "invalid_slug", "no
 /**
  * True only when the server's answer can never change, so the slug may be
  * forgotten. Temporary answers (try_again, not_a_member, 401/403/429/5xx,
- * a paused program, a network error) keep it for a later page.
+ * a network error, or an unknown error such as an older server's
+ * program_disabled) keep it for a later page.
  */
 export function isFinalReferralReply(httpStatus: number, body: { ok?: boolean; status?: string; error?: string } | null | undefined): boolean {
   if (!body || httpStatus === 401 || httpStatus === 403 || httpStatus === 429 || httpStatus >= 500) return false;

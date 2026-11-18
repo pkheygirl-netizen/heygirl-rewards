@@ -675,13 +675,14 @@ describe("I6: welcome bonus order", () => {
   });
 
   it("reports whether customers are already signing in", async () => {
-    expect(await getLaunchState()).toEqual({ programEnabled: true, welcomeBonusesGiven: 0, signedInMembers: 0 });
+    expect(await getLaunchState()).toEqual({ welcomeBonusesGiven: 0, signedInMembers: 0 });
     const m = seedMember(h.db, { consent_source: "signin" });
     seedMember(h.db, { consent_source: "order" });
     h.db.seed("points_ledger", { member_id: m.id, action_type: "signup", reference_id: "x", points: 1000, balance_after: 1000 });
+    // Redeeming paused (rule 20) changes nothing here.
     h.db.table("app_settings")[0].program_enabled = false;
     bustSettingsCache();
-    expect(await getLaunchState()).toEqual({ programEnabled: false, welcomeBonusesGiven: 1, signedInMembers: 1 });
+    expect(await getLaunchState()).toEqual({ welcomeBonusesGiven: 1, signedInMembers: 1 });
   });
 });
 

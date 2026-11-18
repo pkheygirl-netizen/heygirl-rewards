@@ -50,9 +50,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (!SLUG_RE.test(slug)) return proxyJson({ ok: false, error: "invalid_slug" }, 400);
 
   try {
-    const settings = (await getSettings()) as unknown as { program_enabled?: boolean };
-    if (settings.program_enabled === false) return proxyJson({ ok: false, error: "program_disabled" });
-
+    // No program-switch check: it only pauses redeeming (rule 20).
     const member = await getMemberByCustomerId(customerId);
     if (!member) return proxyJson({ ok: false, error: "not_a_member" });
     if (member.referral_slug && member.referral_slug.toLowerCase() === slug.toLowerCase()) {

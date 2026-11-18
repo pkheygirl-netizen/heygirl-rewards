@@ -141,20 +141,18 @@ describe("review fixes: shared helpers", () => {
 });
 
 describe("review fixes: cache", () => {
-  it("item 4: remembers a paused program / missing member for the cache lifetime", () => {
+  it("item 4: remembers a missing member for the cache lifetime", () => {
     const s = fakeStorage();
     writeCache(s, "42", { member: null, state: "not_enrolled" }, T0);
     expect(readCache(s, "42", T0 + 60_000)).toEqual({ member: null, state: "not_enrolled" });
     expect(readCache(s, "42", T0 + 5 * 60_000 + 1)).toBeNull();
-    writeCache(s, "42", { member: null, state: "paused" }, T0);
-    expect(readCache(s, "42", T0)).toEqual({ member: null, state: "paused" });
   });
 
   it("item 6: opted-out and blocked members are flagged as earning nothing, per customer", () => {
     expect(earnsNothing(makeMember({ optedOut: true }))).toBe(true);
     expect(earnsNothing(makeMember({ blocked: true }))).toBe(true);
     expect(earnsNothing(makeMember())).toBe(false);
-    expect(earnsNothing({ member: null, state: "paused" })).toBe(false);
+    expect(earnsNothing({ member: null, state: "not_enrolled" })).toBe(false);
     expect(earnsNothing(null)).toBe(false);
     const s = fakeStorage();
     writeNoEarn(s, "42", true);

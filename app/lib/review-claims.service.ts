@@ -3,7 +3,7 @@
 // for `review_release_hours`, then paid automatically unless an admin rejects it.
 import { db } from "../db.server";
 import { notificationQueue } from "./queue.server";
-import { getSettings, isEarnRuleEnabled, isEarnRuleSwitchedOn } from "./settings.server";
+import { getSettings, isEarnRuleEnabled } from "./settings.server";
 import { expiresAtForTier } from "./points.service";
 import { isFullyRefunded } from "./orders.server";
 
@@ -27,8 +27,6 @@ export async function claimReview(
     .eq("shopify_customer_id", member.shopify_customer_id)
     .eq("points_awarded", true)
     .is("cancelled_at", null)
-    // Rule 20: an order placed while the program was off earns nothing, review points included.
-    .eq("program_on_at_placement", true)
     .order("created_at", { ascending: true })
     .limit(500);
   if (ordersErr) throw new Error(`order lookup failed: ${ordersErr.message}`);
@@ -87,11 +85,9 @@ export async function releaseDueReviewClaims(
   batchSize = 200,
 ): Promise<{ released: number; rejected: number; reason?: string }> {
   // Checked again at release time: while the rule is switched off nothing is
-  // paid, and the claims simply wait. The program switch is not checked: a
-  // claim can only be made while the program is on, so it is paid when due
-  // even during a pause (rule 20).
+  // paid, and the claims simply wait.
   const settingsNow = await getSettings();
-  if (!isEarnRuleSwitchedOn(settingsNow, "review")) return { released: 0, rejected: 0, reason: "disabled" };
+  if (!isEarnRuleEnabled(settingsNow, "review")) return { released: 0, rejected: 0, reason: "disabled" };
 
   const { data: due, error } = await db
     .from("review_claims")

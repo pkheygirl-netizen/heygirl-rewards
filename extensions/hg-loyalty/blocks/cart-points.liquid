@@ -5,7 +5,8 @@
   no block support, so hg-core.js inserts the same line there by itself.
 {%- endcomment -%}
 {%- assign cfg = app.metafields.hg_loyalty.config.value -%}
-{%- if cfg and cfg.enabled -%}
+{%- comment -%} Shown while redeeming is paused too (rule 20). {%- endcomment -%}
+{%- if cfg -%}
   {%- liquid
     capture hg_mult
       render 'hg-mult', cfg: cfg

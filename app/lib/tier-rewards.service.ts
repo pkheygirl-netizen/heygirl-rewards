@@ -17,9 +17,7 @@ export async function issueTierRewards(input: {
   toTier: string;
   shop?: string | null;
 }): Promise<{ issued: TierRewardCode[]; reason?: string }> {
-  // No program-switch check here (rule 20): ensureTierFollowUps queues this only
-  // for an upgrade reached with an order placed while the program was on, and
-  // that code is owed even if the program has been switched off since.
+  // No program-switch check: it only pauses redeeming points (rule 20).
   const settings = await getSettings();
 
   const { data: member, error } = await db

@@ -159,11 +159,28 @@ describe("cartLineHtml", () => {
     expect(cartLineHtml(cfg, cart, makeMember({ pointsBalance: 2999 }), true, "/cart")).not.toContain("data-hg-open");
   });
 
-  it("is empty for an empty cart, a paused program, and opted-out or blocked members", () => {
+  it("is empty for an empty cart, and opted-out or blocked members", () => {
     expect(cartLineHtml(cfg, { total: 0, count: 0, codes: [] }, null, false, "/")).toBe("");
-    expect(cartLineHtml(makeConfig({ enabled: false }), cart, null, false, "/")).toBe("");
     expect(cartLineHtml(cfg, cart, makeMember({ optedOut: true }), true, "/")).toBe("");
     expect(cartLineHtml(cfg, cart, makeMember({ blocked: true }), true, "/")).toBe("");
+  });
+
+  it("rule 20: while redeeming is paused the earn line stays, the 'points to spend' nudge goes, issued codes are untouched", () => {
+    const paused = makeConfig({ redeemPaused: true });
+    // A config an older admin published with enabled false is not hidden either.
+    const old = { ...paused, enabled: false } as unknown as typeof paused;
+    for (const c of [paused, old]) {
+      const guest = cartLineHtml(c, cart, null, false, "/cart");
+      expect(guest).toContain("You'll earn");
+      expect(guest).toContain("enrols you");
+      const rich = cartLineHtml(c, cart, makeMember({ pointsBalance: 9000 }), true, "/cart");
+      expect(rich).toContain("You'll earn");
+      expect(rich).not.toContain("data-hg-open");
+      expect(rich).not.toContain("Redeem");
+    }
+    // The member's own code still works at checkout, so its Apply link is kept.
+    expect(cartLineHtml(paused, cart, makeMember({}, { codes: [code] }), true, "/cart")).toContain("Apply reward: Rs. 250 off");
+    expect(cartLineHtml(paused, { ...cart, codes: ["reward-ab12"] }, makeMember({}, { codes: [code] }), true, "/cart")).toContain("is applied");
   });
 });
 

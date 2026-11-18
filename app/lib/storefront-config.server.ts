@@ -20,8 +20,18 @@ export type EarnRuleKey = "purchase" | "signup" | "referral" | "instagram" | "fa
 
 export type PublicCampaign = { name: string; multiplier: number; startsAt: string; endsAt: string };
 
+export type PanelTheme = "light" | "dark";
+
 export type StorefrontConfig = {
-  enabled: boolean;
+  /**
+   * Always true: the storefront shows whenever this config exists. The program
+   * switch no longer hides anything (rule 20); see `redeemPaused`.
+   */
+  enabled: true;
+  /** Rule 20: `app_settings.program_enabled = false` pauses redeeming, and only redeeming. */
+  redeemPaused: boolean;
+  /** Colour scheme of the rewards panel (`app_settings.panel_theme`). */
+  panelTheme: PanelTheme;
   programName: string;
   tagline: string;
   pointsRate: number;
@@ -83,6 +93,11 @@ function bool(v: unknown, fallback: boolean): boolean {
 function safeUrl(v: unknown): string {
   const s = str(v);
   return /^https?:\/\/[^\s"'<>]+$/i.test(s) ? s : "";
+}
+
+/** Only the two known values are published; anything else is the default light look. */
+export function panelTheme(v: unknown): PanelTheme {
+  return v === "dark" ? "dark" : "light";
 }
 
 function ruleEnabled(rules: unknown, key: EarnRuleKey): boolean {
@@ -152,7 +167,9 @@ export function buildStorefrontConfig(settings: Loose, campaign: CampaignRow | n
   const first = publicCampaign(campaign);
   const second = publicCampaign(next);
   return {
-    enabled: bool(s.program_enabled, true),
+    enabled: true,
+    redeemPaused: bool(s.program_enabled, true) === false,
+    panelTheme: panelTheme(s.panel_theme),
     programName: str(s.program_name) || "Rewards",
     tagline: str(s.tagline),
     pointsRate: num(s.purchase_points_rate, 1),

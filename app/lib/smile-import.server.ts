@@ -17,7 +17,6 @@ import { generateSlug } from "./points.service";
 import { getAdminForShop } from "./worker-admin.server";
 import type { AdminGraphqlClient } from "./shopify-graphql.server";
 import { enqueueImportJob, importJobBusy } from "./smile-import-queue.server";
-import { getSettings } from "./settings.server";
 import { fetchAllPages, toCsv } from "./csv.server";
 import {
   FilePlanner, REPORT_COLUMNS, computeTotals, importReference, mapVipTier, parseCsvStream, toReportLine,
@@ -793,14 +792,14 @@ export async function purgeExpiredRows(now: Date = new Date()): Promise<number> 
  * does not store whether the theme's app embed (the launcher) is switched on;
  * that lives in the theme. These are the facts the database does hold.
  */
-export async function getLaunchState(): Promise<{ programEnabled: boolean; welcomeBonusesGiven: number; signedInMembers: number }> {
-  const settings = await getSettings();
+export async function getLaunchState(): Promise<{ welcomeBonusesGiven: number; signedInMembers: number }> {
+  // The program switch is not reported: it only pauses redeeming, so the
+  // welcome bonus is given at first sign-in either way (rule 20).
   const welcome = await db.from("points_ledger").select("id", { count: "exact", head: true }).eq("action_type", "signup");
   if (welcome.error) throw new Error(`ledger count failed: ${welcome.error.message}`);
   const signedIn = await db.from("members").select("id", { count: "exact", head: true }).eq("consent_source", "signin");
   if (signedIn.error) throw new Error(`member count failed: ${signedIn.error.message}`);
   return {
-    programEnabled: settings.program_enabled !== false,
     welcomeBonusesGiven: Number(welcome.count ?? 0),
     signedInMembers: Number(signedIn.count ?? 0),
   };

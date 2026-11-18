@@ -124,7 +124,7 @@ export default function Home() {
   return (
     <Page
       title="Home"
-      titleMetadata={d.programEnabled ? <Badge tone="success">Program live</Badge> : <Badge tone="critical">Program switched off</Badge>}
+      titleMetadata={d.programEnabled ? <Badge tone="success">Program live</Badge> : <Badge tone="warning">Redeeming paused</Badge>}
       subtitle={`${d.period.label}, Pakistan time`}
     >
       <Layout>
@@ -145,7 +145,7 @@ export default function Home() {
 
         {!d.programEnabled ? (
           <Layout.Section>
-            <Banner tone="warning" title="The program is switched off" action={{ content: "Open Settings", url: "/app/settings" }}>
+            <Banner tone="warning" title="Redeeming is paused" action={{ content: "Open Settings", url: "/app/settings" }}>
               <List type="bullet">
                 {PROGRAM_OFF_EFFECTS.map((t) => <List.Item key={t}>{t}</List.Item>)}
               </List>

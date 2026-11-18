@@ -68,17 +68,20 @@ export function previewBalance(balance: number, direction: "add" | "remove", poi
 }
 
 /**
- * What switching the program off does (rule 20), word for word on the
- * Settings page, its confirmation and the Home banner.
+ * What pausing redeeming does (rule 20, `app_settings.program_enabled = false`,
+ * owner decision 17 Nov 2026 evening), word for word on the Settings page, its
+ * confirmation and the Home banner.
  */
 export const PROGRAM_OFF_EFFECTS = [
-  "Customers earn no new points: nothing for orders placed, sign-ups, referrals, reviews, social follows or birthdays while it is off.",
-  "Customers cannot redeem points, and the rewards panel, launcher and points lines are hidden on the storefront.",
-  "Reward codes already issued still work at checkout until they expire.",
-  "An order placed while the program is off never earns points, even if it is delivered and paid after you switch it back on.",
-  "Orders placed before you switched off still earn when they are delivered and paid, and rewards already earned before the switch (a referral, review or social claim) are still paid when due.",
-  "Balances are kept, but Silver points keep their expiry dates.",
+  "Customers cannot redeem points for new reward codes. The rewards panel tells them redeeming is paused.",
+  "Customers still earn points as normal: orders, the welcome bonus, referrals, influencer codes, reviews, social follows, birthdays, tier rewards and bonus campaigns.",
+  "Reward codes already issued still work at checkout until they expire. If reward codes should not stack with your sale, run the sale as an automatic discount: reward codes do not combine with other discounts, so Shopify applies only the one discount that is best for the customer. A sale made by lowering product prices is not a discount, so reward codes still apply on top of it.",
+  "Everything else continues: the rewards panel, launcher, points lines, rewards page, balances, points expiry and emails.",
 ] as const;
+
+/** Colour schemes of the storefront rewards panel (`app_settings.panel_theme`, migration 014). */
+export const PANEL_THEMES = ["light", "dark"] as const;
+export type PanelThemeChoice = (typeof PANEL_THEMES)[number];
 
 /**
  * FAQ entries the owner approved as defaults. Migration 014 writes them to a

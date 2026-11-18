@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { EARN_ICON, earnList, earnTab, errorText, guestHome, historyRows, influencerBox, instagramHandle, redeemList, referralReward, referTab, rewardsTab, stateMessage, tiersView, type Ctx } from "./views";
+import { EARN_ICON, earnList, earnTab, errorText, guestHome, guestSub, historyRows, influencerBox, instagramHandle, REDEEM_PAUSED_TEXT, redeemList, referralReward, referTab, rewardsTab, stateMessage, tiersView, type Ctx } from "./views";
 import { makeConfig, makeMember } from "./test-fixtures";
 import { HUB_CSS, HUB_ICONS } from "./hub-css";
 
@@ -167,10 +167,7 @@ describe("review fixes: views", () => {
     expect(referralReward(ctx())).toBe(6000);
   });
 
-  it("item 4: paused and not-enrolled are their own states, not a connection error", () => {
-    const paused = stateMessage(ctx(), "paused");
-    expect(paused).toContain("Rewards are paused");
-    expect(paused).not.toContain("connection");
+  it("item 4: not-enrolled is its own state, not a connection error", () => {
     const none = stateMessage(ctx(), "not_enrolled");
     expect(none).toContain("being set up");
     expect(none).not.toContain("connection");
@@ -226,7 +223,7 @@ describe("ways to earn: icons, tap targets and states (owner request)", () => {
       const icon = (t: string) => /<span class="hg-row__ic"><svg class="hg-ic" aria-hidden="true" focusable="false"><use href="#hg-i-([a-z]+)"\/><\/svg><\/span>/.exec(r[t])![1];
       expect(TITLES.map(icon)).toEqual(["join", "bag", "cam", "like", "play", "star", "cake", "friends"]);
     }
-    expect(HUB_CSS).toMatch(/\.hg-row__ic\{width:40px;height:40px;flex:none;border-radius:50%;background:#fbf1cf;color:var\(--gd\)/);
+    expect(HUB_CSS).toMatch(/\.hg-row__ic\{width:40px;height:40px;flex:none;border-radius:50%;background:var\(--tint\);color:var\(--gd\)/);
     expect(contrast("#7a5c00", "#fbf1cf")).toBeGreaterThanOrEqual(4.5);
   });
 
@@ -295,9 +292,12 @@ describe("ways to earn: icons, tap targets and states (owner request)", () => {
   });
 
   it("state label colours reach 4.5:1 on their own background", () => {
-    expect(HUB_CSS).toMatch(/\.hg-st\{[^}]*background:#fbf1cf;color:var\(--gd\)/);
-    expect(HUB_CSS).toMatch(/\.hg-st--claimed,\.hg-st--saved\{background:#e7f4e8;color:#14491b\}/);
-    expect(HUB_CSS).toMatch(/\.hg-st--pending\{background:#eee;color:#595959\}/);
+    // Colours are tokens (light values below; the dark set is checked in extension.test.ts).
+    expect(HUB_CSS).toMatch(/\.hg-st\{[^}]*background:var\(--tint\);color:var\(--gd\)/);
+    expect(HUB_CSS).toMatch(/\.hg-st--claimed,\.hg-st--saved\{background:var\(--okb\);color:var\(--ok\)\}/);
+    expect(HUB_CSS).toMatch(/\.hg-st--pending\{background:var\(--pend\);color:var\(--mute\)\}/);
+    expect(HUB_CSS).toContain("--tint:#fbf1cf;--ok:#14491b;--okb:#e7f4e8;");
+    expect(HUB_CSS).toContain("--pend:#eee;");
     expect(contrast("#7a5c00", "#fbf1cf")).toBeGreaterThanOrEqual(4.5);
     expect(contrast("#14491b", "#e7f4e8")).toBeGreaterThanOrEqual(4.5);
     expect(contrast("#595959", "#eee")).toBeGreaterThanOrEqual(4.5);
@@ -346,5 +346,56 @@ describe("owner notes (coding changes.txt) 1-3", () => {
     expect(Number(chev[1])).toBeGreaterThan(Number(base[1]));
     expect(Number(chev[3])).toBeGreaterThan(1.8);
     expect(embed).toContain('"shop": {{ routes.all_products_collection_url | json }}');
+  });
+});
+
+describe("rule 20: redeeming paused (the program switch)", () => {
+  const paused = () => makeConfig({ redeemPaused: true });
+  const CODE = { id: "c1", code: "REWARD-AB12", kind: "reward", discountPkr: 250, expiresAt: "2026-12-16T00:00:00Z" };
+
+  it("the member panel stays: balance, codes with Copy and Apply, and a notice instead of the Redeem buttons", () => {
+    const m = makeMember({ pointsBalance: 9000 }, { codes: [CODE] });
+    const h = rewardsTab(ctx({ cfg: paused(), member: m }));
+    expect(h).toContain("9,000 <span>points</span>");
+    expect(h).toContain('<h3 class="hg-h">Redeem points</h3>');
+    expect(h).toContain(REDEEM_PAUSED_TEXT);
+    expect(REDEEM_PAUSED_TEXT).toContain("You are still earning points");
+    expect(REDEEM_PAUSED_TEXT).not.toMatch(/code/i); // it does not claim issued codes are blocked
+    expect(h).not.toContain('data-act="redeem"');
+    expect(h).not.toContain(">Redeem<");
+    expect(h).not.toContain("more</span>"); // no "N more" either
+    // Issued codes keep working at checkout: unchanged.
+    expect(h).toContain('data-copy="REWARD-AB12"');
+    expect(h).toContain('href="/discount/REWARD-AB12?redirect=%2F"');
+    // The same member with redeeming on gets the buttons.
+    expect(rewardsTab(ctx({ member: m }))).toContain('data-act="redeem"');
+    expect(rewardsTab(ctx({ member: m }))).not.toContain(REDEEM_PAUSED_TEXT);
+  });
+
+  it("no code yet: the empty line does not point to the paused Redeem section", () => {
+    const h = rewardsTab(ctx({ cfg: paused(), member: makeMember() }));
+    expect(h).toContain("No rewards yet.</p>");
+    expect(h).not.toContain("Redeem your points below");
+  });
+
+  it("the guest 'ways to redeem' preview says redeeming is paused and still shows what points are worth", () => {
+    const h = guestSub(ctx({ cfg: paused() }), "redeem");
+    expect(h).toContain(REDEEM_PAUSED_TEXT);
+    expect(h).toContain("Rs. 100 off");
+    expect(h).not.toContain("<button");
+    expect(guestSub(ctx(), "redeem")).not.toContain(REDEEM_PAUSED_TEXT);
+    expect(redeemList(ctx({ cfg: makeConfig({ redeemPaused: true, redemptionTiers: [] }) }))).toContain(REDEEM_PAUSED_TEXT);
+  });
+
+  it("everything about earning is unchanged while paused", () => {
+    const m = makeMember({}, { review: { eligible: true, pending: 0 } });
+    expect(earnTab(ctx({ cfg: paused(), member: m }))).toBe(earnTab(ctx({ member: m })));
+    expect(guestHome(ctx({ cfg: paused() }))).toBe(guestHome(ctx()));
+    expect(tiersView(ctx({ cfg: paused(), member: m }))).toBe(tiersView(ctx({ member: m })));
+    expect(referTab(ctx({ cfg: paused(), member: m }), null)).toBe(referTab(ctx({ member: m }), null));
+  });
+
+  it("a redeem refused by the server explains the pause", () => {
+    expect(errorText("program_disabled")).toBe(REDEEM_PAUSED_TEXT);
   });
 });

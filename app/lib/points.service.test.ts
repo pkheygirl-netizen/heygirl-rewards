@@ -502,49 +502,54 @@ describe("H3a: tier follow-ups are atomic and state-driven", () => {
   });
 });
 
-describe("rule 20: program switched off", () => {
-  const setProgram = (on: boolean) => {
-    h.db.table("app_settings")[0].program_enabled = on;
+describe("rule 20: the program switch only pauses redeeming", () => {
+  const switchOff = () => {
+    h.db.table("app_settings")[0].program_enabled = false;
     bustSettingsCache();
   };
 
-  it("a social claim made while the program was on is paid when its hold ends during a pause (not voided)", async () => {
+  it("welcome bonus: signing in while the program is off enrols and queues it, and the job awards it", async () => {
+    const m = seedMember(h.db, { shopify_customer_id: "801", consent_given: false });
+    switchOff();
+    expect(await enrolFromSignin({ shopifyCustomerId: "801", shop: "s" })).toMatchObject({ welcomeQueued: true });
+    expect(m).toMatchObject({ consent_given: true, consent_source: "signin" });
+    expect(await awardSignup(String(m.id))).toEqual({ awarded: true });
+    expect(m.points_balance).toBe(1000);
+    expect(h.notifications.named("welcome")).toHaveLength(1);
+  });
+
+  it("welcome bonus: the signup rule's own switch still stops it (rule 17)", async () => {
+    const m = seedMember(h.db, { shopify_customer_id: "802" });
+    switchOff();
+    h.db.table("app_settings")[0].earn_rules = { signup: { enabled: false } };
+    bustSettingsCache();
+    expect(await enrolFromSignin({ shopifyCustomerId: "802", shop: "s" })).toMatchObject({ welcomeQueued: false, reason: "signup_rule_off" });
+    expect(await awardSignup(String(m.id))).toMatchObject({ awarded: false, reason: "signup_rule_off" });
+  });
+
+  it("social: a claim is awarded while the program is off", async () => {
     const m = seedMember(h.db);
     const a = h.db.seed("social_actions", { member_id: m.id, action_type: "instagram", pending_until: new Date().toISOString() });
-    setProgram(false);
+    switchOff();
     expect(await awardSocial(String(a.id))).toEqual({ awarded: true });
     expect(a.status).toBe("awarded");
-    expect(m.points_balance).toBe(1000);
+    expect(m.points_balance).toBe(500); // default social points (owner decision 17 Nov 2026)
   });
 
-  it("welcome bonus: nothing while off; given once at the first sign-in after the program is back on", async () => {
-    const m = seedMember(h.db, { shopify_customer_id: "801", consent_given: false });
-    setProgram(false);
-    // the storefront does not even call enrolFromSignin while off (proxy.customer answers "paused");
-    // a bonus job already queued before the switch is refused, not paid
-    expect(await awardSignup(String(m.id))).toMatchObject({ awarded: false, reason: "signup_rule_off" });
-    expect(await enrolFromSignin({ shopifyCustomerId: "801", shop: "s" })).toMatchObject({ welcomeQueued: false, reason: "signup_rule_off" });
-
-    setProgram(true);
-    expect(await enrolFromSignin({ shopifyCustomerId: "801", shop: "s" })).toMatchObject({ welcomeQueued: true });
-    expect(await awardSignup(String(m.id))).toEqual({ awarded: true });
-    expect(await enrolFromSignin({ shopifyCustomerId: "801", shop: "s" })).toMatchObject({ welcomeQueued: false });
-    expect(await awardSignup(String(m.id))).toMatchObject({ awarded: false, reason: "already_awarded" });
-    expect(m.points_balance).toBe(1000);
+  it("tier: an upgrade while the program is off queues the tier code", async () => {
+    const m = seedMember(h.db);
+    switchOff();
+    h.db.table("app_settings")[0].tier_gold_threshold_pkr = 2500;
+    bustSettingsCache();
+    expect(await checkAndUpgradeTier(String(m.id), 3000, "silver")).toBe("gold");
+    expect(h.points.named("issue_tier_reward").map((j) => j.data.memberId)).toEqual([m.id]);
   });
 
-  it("tier follow-ups: a code owed for an upgrade reached with an order placed while on is queued during a pause; none for one placed while off", async () => {
-    const on = seedMember(h.db, { tier: "gold" });
-    h.db.seed("tier_history", { member_id: on.id, from_tier: "silver", to_tier: "gold", shopify_order_id: "O-ON" });
-    h.db.seed("order_webhook_state", { shopify_order_id: "O-ON", shopify_customer_id: on.shopify_customer_id, program_on_at_placement: true });
-    const off = seedMember(h.db, { tier: "gold" });
-    h.db.seed("tier_history", { member_id: off.id, from_tier: "silver", to_tier: "gold", shopify_order_id: "O-OFF" });
-    h.db.seed("order_webhook_state", { shopify_order_id: "O-OFF", shopify_customer_id: off.shopify_customer_id, program_on_at_placement: false });
-    setProgram(false);
-    expect(await checkAndUpgradeTier(String(on.id), 0, "gold")).toBe("gold");
-    expect(h.points.named("issue_tier_reward").map((j) => j.data.memberId)).toEqual([on.id]);
-    setProgram(true);
-    await checkAndUpgradeTier(String(off.id), 0, "gold");
-    expect(h.points.named("issue_tier_reward").map((j) => j.data.memberId)).toEqual([on.id]);
+  it("expiry still runs while the program is off", async () => {
+    const m = seedMember(h.db, { points_balance: 1000 });
+    h.db.seed("points_ledger", { member_id: m.id, action_type: "signup", reference_id: "a", points: 1000, points_remaining: 1000, balance_after: 1000, expires_at: "2026-11-01T00:00:00Z" });
+    switchOff();
+    expect(await expireSilverPoints(new Date("2026-11-16T00:00:00Z"))).toMatchObject({ membersAffected: 1, pointsExpired: 1000 });
+    expect(m.points_balance).toBe(0);
   });
 });

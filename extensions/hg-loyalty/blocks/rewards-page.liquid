@@ -2,9 +2,10 @@
   HeyGirl Rewards: landing page block for a `page.rewards` JSON template
   (add it to the template's Apps section). Rendered fully in Liquid from the
   settings metafield; every number and text comes from the admin.
+  Shown while redeeming is paused too (rule 20): the redeem section then says so.
 {%- endcomment -%}
 {%- assign cfg = app.metafields.hg_loyalty.config.value -%}
-{%- if cfg and cfg.enabled -%}
+{%- if cfg -%}
   {%- liquid
     assign r = cfg.earnRules
     assign hg_ig = cfg.social.instagram.url | split: 'instagram.com/' | last | split: '/' | first | split: '?' | first
@@ -43,6 +44,7 @@
     .hg-lp summary{min-height:48px;padding:12px 14px;font-weight:700;cursor:pointer}
     .hg-lp details>div{padding:0 14px 14px;color:#595959}
     .hg-lp__terms{color:#595959;font-size:14px}
+    .hg-lp__paused{margin:0 0 12px;padding:12px 14px;border:1px solid #f0cf8a;border-radius:12px;background:#fff4e0;color:#1a1a1a;font-size:15px;text-align:center}
     @media (min-width:750px){.hg-lp__grid{grid-template-columns:repeat(3,1fr)}.hg-lp__title{font-size:38px}}
   </style>
   <div class="hg-lp" {{ block.shopify_attributes }}>
@@ -105,6 +107,9 @@
     {%- if cfg.redemptionTiers.size > 0 -%}
       <section class="hg-lp__sec" aria-labelledby="hg-lp-redeem">
         <h2 id="hg-lp-redeem">Ways to redeem</h2>
+        {%- if cfg.redeemPaused -%}
+          <p class="hg-lp__paused" data-hg-redeem-paused>Redeeming points is paused for now. You are still earning points, and your balance is safe.</p>
+        {%- endif -%}
         <table class="hg-lp__tbl">
           <thead><tr><th scope="col">Points</th><th scope="col">Your discount</th></tr></thead>
           <tbody>

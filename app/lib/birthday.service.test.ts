@@ -101,3 +101,13 @@ describe("listBirthdayMemberIds", () => {
     expect(await listBirthdayMemberIds(new Date("2026-10-31T18:30:00Z"))).toEqual([]);
   });
 });
+
+describe("rule 20: the program switch only pauses redeeming", () => {
+  it("a birthday code is issued while the program is off", async () => {
+    const m = born();
+    h.db.table("app_settings")[0].program_enabled = false;
+    bustSettingsCache();
+    expect(await issueBirthdayReward(String(m.id), { now: NOW })).toMatchObject({ issued: true, discountPkr: 250 });
+    expect(h.db.table("loyalty_codes")).toHaveLength(1);
+  });
+});

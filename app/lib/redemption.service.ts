@@ -11,7 +11,7 @@ import {
   findDiscountIdByCode,
   finishPendingCode,
 } from "./discounts.server";
-import { getSettings, type RedemptionTier } from "./settings.server";
+import { getSettings, isRedeemPaused, type RedemptionTier } from "./settings.server";
 import { expiresAtForTier } from "./points.service";
 
 export type { RedemptionTier };
@@ -85,7 +85,8 @@ export async function redeemPoints(input: {
 }): Promise<{ ok: true; code: string; discountPkr: number; expiresAt: string } | { ok: false; reason: string }> {
   const requested = Number(input.points);
   const settings = await getSettings();
-  if (!settings.program_enabled) return { ok: false, reason: "program_disabled" };
+  // Rule 20: the program switch pauses redeeming (and only redeeming).
+  if (isRedeemPaused(settings)) return { ok: false, reason: "program_disabled" };
 
   const { data: member, error: memberErr } = await db
     .from("members")
