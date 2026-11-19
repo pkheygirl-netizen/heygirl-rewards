@@ -687,6 +687,60 @@ describe("referral order-time check runs before the referrer can be paid (rule 1
     expect(checks()).toHaveLength(1);
   });
 
+  it("review 9 item 1: a matched order WITHOUT a code whose tag was throttled is tagged by the next order event", async () => {
+    const { referrer, referral } = setupReferral();
+    referrer.phone = null;
+    let throttled = true;
+    h.graphql = (q) => {
+      if (opName(q) === "HgCustomerOrderCount") return { customer: { numberOfOrders: "1" } };
+      if (opName(q) === "HgReferralOrderCheck") {
+        return {
+          order: { shippingAddress: { address1: "House 12, Street 5", city: "Karachi", phone: "03117654321" } },
+          customer: { defaultPhoneNumber: null, defaultAddress: { address1: "H 12 St 5", city: "Karachi", phone: null }, addressesV2: { nodes: [] }, orders: { nodes: [] } },
+        };
+      }
+      if (opName(q) === "HgTagReferralOrder") {
+        if (throttled) throw new ShopifyRateLimitError();
+        return { tagsAdd: { node: { id: "gid://shopify/Order/O1" }, userErrors: [] } };
+      }
+      return {};
+    };
+    const paid = order({ discountCodes: [], fulfillmentStatus: "fulfilled", financialStatus: "paid" });
+    await processOrderEvent(paid, "s");
+    expect(referral).toMatchObject({ status: "flagged", order_check: "same_address", order_checked_order_id: "O1", order_tag: null });
+    const tagTries = tags().length;
+    // an event for another customer's order never looks at Shopify for this tag
+    seedMember(h.db, { shopify_customer_id: "C9" });
+    await processOrderEvent(order({ id: "O9", customer: { id: "C9", email: "c9@example.com" } }), "s");
+    expect(tags()).toHaveLength(tagTries);
+    throttled = false;
+    await processOrderEvent({ ...paid, updatedAt: at(7) }, "s"); // a later orders/updated, still no code
+    expect(referral.order_tag).toBe("tagged");
+    expect(tags()).toHaveLength(tagTries + 1);
+    await processOrderEvent({ ...paid, updatedAt: at(8) }, "s"); // tagged: Shopify is not asked again
+    expect(tags()).toHaveLength(tagTries + 1);
+    expect(checks()).toHaveLength(1);
+    expect(referrer.points_balance).toBe(0);
+  });
+
+  it("review 9 item 1: the tag is retried on a cancellation of the matched order too", async () => {
+    const { referral } = setupReferral();
+    let throttled = true;
+    const base = h.graphql;
+    h.graphql = (q, v) => {
+      if (opName(q) === "HgTagReferralOrder") {
+        if (throttled) throw new ShopifyRateLimitError();
+        return { tagsAdd: { node: { id: "gid://shopify/Order/O1" }, userErrors: [] } };
+      }
+      return base(q, v);
+    };
+    await processOrderEvent(order({ discountCodes: [], fulfillmentStatus: "fulfilled", financialStatus: "paid" }), "s");
+    expect(referral).toMatchObject({ status: "blocked", order_check: "same_phone", order_tag: null });
+    throttled = false;
+    await processOrderCancelled(order({ discountCodes: [], fulfillmentStatus: "fulfilled", financialStatus: "paid", cancelledAt: at(9) }), "s");
+    expect(referral.order_tag).toBe("tagged");
+  });
+
   it("no code and Shopify cannot answer when the order qualifies: nothing paid, the job retries; on the final attempt the referral is held", async () => {
     const { referrer, referral } = setupReferral();
     const ok = h.graphql;

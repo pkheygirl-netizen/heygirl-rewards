@@ -70,9 +70,12 @@ export async function digestCounts(now: Date = new Date()): Promise<DigestCounts
   // A held referral whose order delivers to the referrer's address is both an
   // open alert and held; one whose order could not be checked is both held and
   // not checked. Each is counted once, under the more specific line.
-  const [notChecked, heldAndAlert, heldAndNotChecked] = await Promise.all([
+  // A held "same_phone" is the gift case (a phone from her earlier orders):
+  // also an open alert.
+  const [notChecked, heldAndAlert, heldAndGiftPhone, heldAndNotChecked] = await Promise.all([
     countOpenChecks({ orderCheck: "not_checked" }),
     countOpenChecks({ status: "flagged", orderCheck: "same_address" }),
+    countOpenChecks({ status: "flagged", orderCheck: "same_phone" }),
     countOpenChecks({ status: "flagged", orderCheck: "not_checked" }),
   ]);
 
@@ -95,7 +98,7 @@ export async function digestCounts(now: Date = new Date()): Promise<DigestCounts
 
   return {
     referralOrderAlerts: n(a.referral_order_alerts),
-    referralsHeld: Math.max(0, n(a.referrals_flagged) - heldAndAlert - heldAndNotChecked),
+    referralsHeld: Math.max(0, n(a.referrals_flagged) - heldAndAlert - heldAndGiftPhone - heldAndNotChecked),
     referralsNotChecked: notChecked,
     reviewClaims: n(a.review_claims_pending),
     failedJobs,
@@ -113,7 +116,7 @@ const plural = (count: number, one: string, many: string) => `${count.toLocaleSt
 export function digestLines(c: DigestCounts): string[] {
   const lines: string[] = [];
   if (c.referralOrderAlerts > 0) {
-    lines.push(`${plural(c.referralOrderAlerts, "referral order uses", "referral orders use")} the referrer's own phone number or address (self-referral check). The orders are tagged "Rewards: check referral" in Shopify when the app is allowed to.`);
+    lines.push(`${plural(c.referralOrderAlerts, "referral order uses", "referral orders use")} the referrer's phone number (her own, or one from her earlier orders) or her address (self-referral check). The orders are tagged "Rewards: check referral" in Shopify when the app is allowed to.`);
   }
   if (c.referralsHeld > 0) lines.push(`${plural(c.referralsHeld, "referral is", "referrals are")} held for your approval.`);
   if (c.referralsNotChecked > 0) {

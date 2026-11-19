@@ -23,7 +23,7 @@ import { issueReferralFriendCode } from "./referral-bonus.service";
 import { expiresAtForTier } from "./points.service";
 import {
   ORDER_CHECK_FAILED_FLAG, ORDER_CHECK_FAILED_REASON, ORDER_FLAGS, orderVerdict, REFERRAL_ORDER_TAG, signInVerdict,
-  type AddressLike, type OrderCheckResult,
+  type AddressLike, type OrderCheckResult, type SIGNIN_FLAGS,
 } from "./referral-checks.server";
 
 type ReferralRow = Database["public"]["Tables"]["referrals"]["Row"];
@@ -211,6 +211,9 @@ export async function recordReferralVisit(input: {
 
 // ── Order-time check (her first qualifying order; earlier when it used her code) ──
 
+/** What referrals.order_check can hold (016's check constraint). */
+type StoredCheck = Exclude<OrderCheckResult, "same_order_phone">;
+
 type ShippingLite = { address1?: string | null; address2?: string | null; city?: string | null; phone?: string | null } | null;
 
 const REFERRAL_ORDER_CHECK = `#graphql
@@ -386,13 +389,64 @@ async function retryOrderTag(shopifyOrderId: string, shopifyCustomerId: string, 
   if (updErr) throw new Error(`referral tag update failed: ${updErr.message}`);
 }
 
+/**
+ * retryOrderTag for any event of a referred friend's order (review 9, item 1):
+ * a qualifying order without a discount code never reaches checkReferralOrder
+ * again once it has been checked, so the tag retry must not depend on it.
+ * One indexed database read; Shopify is called only when this order matched
+ * and its tag is still missing. Never throws.
+ */
+export async function retryReferralOrderTag(shopifyOrderId: string, shopifyCustomerId: string, shop?: string | null): Promise<void> {
+  const orderId = String(shopifyOrderId);
+  await retryOrderTag(orderId, String(shopifyCustomerId), shop).catch((err) =>
+    console.error(`[referral-check] tag retry for order ${orderId} failed:`, err instanceof Error ? err.message : err),
+  );
+}
+
 /** Test hook. */
 export function resetTagScopeLog(): void {
   missingScopeLogged = false;
 }
 
+/**
+ * A HELD referral whose check on an order ended without recording that order
+ * (Shopify did not answer, the referral was held at sign-in, or an earlier
+ * match on another order is kept): every later event for the order would ask
+ * Shopify again. So the check is tried at most once an hour per referral and
+ * order (review 9, item 4). Kept in memory (no database column): a restart
+ * only allows one extra try. A pending referral is never throttled (it is
+ * paid only after the check), so Approve (which makes it pending) always
+ * checks.
+ */
+export const HELD_CHECK_RETRY_MS = 60 * 60 * 1000;
+const heldCheckAttempts = new Map<string, number>();
+const attemptKey = (referralId: unknown, orderId: string) => `${String(referralId)}:${orderId}`;
+
+function triedRecently(referralId: unknown, orderId: string): boolean {
+  const at = heldCheckAttempts.get(attemptKey(referralId, orderId));
+  return at !== undefined && Date.now() - at < HELD_CHECK_RETRY_MS;
+}
+
+function noteHeldAttempt(referralId: unknown, orderId: string): void {
+  const now = Date.now();
+  if (heldCheckAttempts.size > 1000) {
+    for (const [k, at] of heldCheckAttempts) if (now - at >= HELD_CHECK_RETRY_MS) heldCheckAttempts.delete(k);
+  }
+  heldCheckAttempts.set(attemptKey(referralId, orderId), now);
+}
+
+/** Test hook. */
+export function resetHeldCheckAttempts(): void {
+  heldCheckAttempts.clear();
+}
+
+/** Sign-in reasons that hold a referral (rule 10: similar email, same full name). */
+const SIGNIN_HOLD_FLAGS: ReadonlyArray<keyof typeof SIGNIN_FLAGS> = ["similar_email", "same_name"];
+const heldAtSignIn = (r: { status?: unknown; fraud_flags?: unknown }): boolean =>
+  r.status === "flagged" && Array.isArray(r.fraud_flags) && r.fraud_flags.some((f) => SIGNIN_HOLD_FLAGS.includes(String(f) as keyof typeof SIGNIN_FLAGS));
+
 export type ReferralOrderCheck =
-  | { checked: false; reason: "no_open_referral" | "no_friend_code" | "code_not_used" | "already_checked" | "referrer_not_found" }
+  | { checked: false; reason: "no_open_referral" | "no_friend_code" | "code_not_used" | "already_checked" | "referrer_not_found" | "tried_recently" }
   | { checked: true; result: OrderCheckResult; referralId: string };
 
 const appendUnique = (list: unknown, item: string): string[] => {
@@ -441,8 +495,12 @@ export type ReferralCheckOptions = { finalAttempt?: boolean };
  * The order's shipping phone and address are compared with the referrer's
  * (her phone, default and saved addresses, and the shipping details of her
  * last 5 orders):
- *   same phone   -> referral blocked (flag same_phone_on_order); the referrer
+ *   her own phone (members.phone, Shopify default phone)
+ *                -> referral blocked (flag same_phone_on_order); the referrer
  *                   gets nothing; her right to refer is NOT removed (staff can)
+ *   a phone only on her saved addresses or recent orders (could be a gift)
+ *                -> referral held (flag same_order_phone_on_order; stored as
+ *                   order_check same_phone with status flagged)
  *   same address -> referral held (flag same_address_on_order) for staff
  *   either way the order gets the tag "Rewards: check referral" in Shopify
  *   (tagsAdd; the only change ever made to an order) and a Home alert is
@@ -468,9 +526,7 @@ export async function checkReferralOrder(input: {
   qualifyingOrder?: boolean;
 }): Promise<ReferralOrderCheck> {
   const orderId = String(input.shopifyOrderId);
-  await retryOrderTag(orderId, String(input.shopifyCustomerId), input.shop).catch((err) =>
-    console.error(`[referral-check] tag retry for order ${orderId} failed:`, err instanceof Error ? err.message : err),
-  );
+  await retryReferralOrderTag(orderId, String(input.shopifyCustomerId), input.shop);
   const { data: open, error } = await db
     .from("referrals")
     .select("id, referrer_member_id, status, friend_code_id, fraud_flags, block_reason, order_check, order_checked_order_id")
@@ -481,6 +537,8 @@ export async function checkReferralOrder(input: {
   const referral = open?.[0];
   if (!referral) return { checked: false, reason: "no_open_referral" };
   if (referral.order_checked_order_id === orderId) return { checked: false, reason: "already_checked" };
+  const held = referral.status === "flagged";
+  if (held && triedRecently(referral.id, orderId)) return { checked: false, reason: "tried_recently" };
 
   if (!input.qualifyingOrder) {
     // Early check at orders/create: only for the order that used her code.
@@ -510,7 +568,10 @@ export async function checkReferralOrder(input: {
       ? await fetchOrderCheckData(orderId, String(referrer.shopify_customer_id), input.shop)
       : { data: null, note: "referrer has no Shopify customer id" };
   } catch (err) {
-    if (!input.finalAttempt) throw err;
+    if (!input.finalAttempt) {
+      if (held) noteHeldAttempt(referral.id, orderId); // nothing recorded on the row: at most one try an hour
+      throw err;
+    }
     return holdUncheckedReferral(referral, orderId, err);
   }
   const d = fetched.data;
@@ -521,18 +582,27 @@ export async function checkReferralOrder(input: {
     ...(c?.addressesV2?.nodes ?? []),
     ...(c?.orders?.nodes ?? []).map((o) => o?.shippingAddress ?? null),
   ];
-  const result = orderVerdict(
+  const verdict = orderVerdict(
     ship ? { phone: ship.phone, address: ship as AddressLike } : null,
     {
-      phones: [referrer.phone, c?.defaultPhoneNumber?.phoneNumber, ...theirAddresses.map((a) => a?.phone)],
+      // her own account phones block; a phone only on a saved address or a
+      // recent order may be a gift she sent the friend: held (owner, 19 Nov 2026)
+      ownPhones: [referrer.phone, c?.defaultPhoneNumber?.phoneNumber],
+      otherPhones: theirAddresses.map((a) => a?.phone),
       addresses: theirAddresses,
     },
   );
+  const giftPhone = verdict === "same_order_phone";
+  // Stored as "same_phone" (016's constraint); status flagged + flag tell it from a block.
+  const result: StoredCheck = giftPhone ? "same_phone" : verdict;
 
   if (keepsEarlierMatch(referral, orderId, result)) {
     // Nothing written (the earlier finding stays on the row); a pending
-    // (approved) referral is then paid, a held one keeps waiting for staff.
-    return { checked: true, result, referralId: String(referral.id) };
+    // (approved) referral is then paid, a held one keeps waiting for staff
+    // and is not checked again on every event (at most once an hour; Approve
+    // checks again anyway).
+    if (held) noteHeldAttempt(referral.id, orderId);
+    return { checked: true, result: verdict, referralId: String(referral.id) };
   }
 
   // A match tags the order for staff BEFORE the referral row is written: if the
@@ -542,7 +612,16 @@ export async function checkReferralOrder(input: {
   const now = new Date().toISOString();
   const base = { order_check: result, order_checked_order_id: orderId, order_checked_at: now, ...(orderTag ? { order_tag: orderTag } : {}) };
   let patch: Database["public"]["Tables"]["referrals"]["Update"] = base;
-  if (result === "same_phone") {
+  if (giftPhone) {
+    const earlier = referral.status === "flagged" && referral.block_reason ? `${referral.block_reason}; ` : "";
+    patch = {
+      ...base,
+      status: "flagged",
+      fraud_flags: appendUnique(referral.fraud_flags, "same_order_phone_on_order"),
+      block_reason: `${earlier}${ORDER_FLAGS.same_order_phone_on_order}`,
+      alert_resolved_at: null,
+    };
+  } else if (result === "same_phone") {
     patch = {
       ...base,
       status: "blocked",
@@ -576,7 +655,7 @@ export async function checkReferralOrder(input: {
     .eq("id", referral.id)
     .in("status", ["pending", "flagged"]);
   if (updErr) throw new Error(`referral check update failed: ${updErr.message}`);
-  return { checked: true, result, referralId: String(referral.id) };
+  return { checked: true, result: verdict, referralId: String(referral.id) };
 }
 
 /**
@@ -584,6 +663,10 @@ export async function checkReferralOrder(input: {
  * staff (safest: the referrer is paid only if someone approves) and record
  * why. order_check = not_checked, so Home counts it; the order id is recorded,
  * so approval pays without asking Shopify again. No tag (nothing matched).
+ * Exception (review 9, item 3): a referral already held at sign-in (similar
+ * email, same name) does NOT get the order id, because staff approving it
+ * would be judging the sign-in reason, not this order: Approve (or a later
+ * event, at most once an hour) then runs the check before anything is paid.
  */
 async function holdUncheckedReferral(
   referral: { id: unknown; status: unknown; fraud_flags: unknown; block_reason: unknown; order_check?: unknown; order_checked_order_id?: unknown },
@@ -597,18 +680,22 @@ async function holdUncheckedReferral(
   // Already held because another order of hers matched the referrer: it stays
   // held with that finding (and its alert); nothing to add.
   if (referral.status === "flagged" && keepsEarlierMatch(referral, orderId, "not_checked")) {
+    noteHeldAttempt(referral.id, orderId);
     return { checked: true, result: "not_checked", referralId: String(referral.id) };
   }
-  const earlier = referral.status === "flagged" && referral.block_reason ? `${String(referral.block_reason)}; ` : "";
+  const signInHold = heldAtSignIn(referral);
+  if (signInHold) noteHeldAttempt(referral.id, orderId);
+  const before = referral.status === "flagged" && referral.block_reason ? String(referral.block_reason) : "";
+  const blockReason = before.includes(ORDER_CHECK_FAILED_REASON) ? before : before ? `${before}; ${ORDER_CHECK_FAILED_REASON}` : ORDER_CHECK_FAILED_REASON;
   const { error } = await db
     .from("referrals")
     .update({
       status: "flagged",
       order_check: "not_checked",
-      order_checked_order_id: orderId,
+      ...(signInHold ? {} : { order_checked_order_id: orderId }),
       order_checked_at: new Date().toISOString(),
       fraud_flags: appendUnique(referral.fraud_flags, ORDER_CHECK_FAILED_FLAG),
-      block_reason: `${earlier}${ORDER_CHECK_FAILED_REASON}`,
+      block_reason: blockReason,
       alert_resolved_at: null,
     })
     .eq("id", String(referral.id))
@@ -618,6 +705,9 @@ async function holdUncheckedReferral(
 }
 
 // ── Completion ────────────────────────────────────────────────────────────
+
+const ORDER_LITE_COLUMNS =
+  "shopify_order_id, points_awarded, cancelled_at, placed_at, created_at, earning_basis_pkr, refunded_basis_pkr, refund_basis_at_award_pkr, points_awarded_amount, points_reversed_amount, discount_codes";
 
 type OrderLite = {
   shopify_order_id: string;
@@ -641,7 +731,7 @@ type OrderLite = {
 export async function firstQualifyingOrder(shopifyCustomerId: string): Promise<OrderLite | null> {
   const { data, error } = await db
     .from("order_webhook_state")
-    .select("shopify_order_id, points_awarded, cancelled_at, placed_at, created_at, earning_basis_pkr, refunded_basis_pkr, refund_basis_at_award_pkr, points_awarded_amount, points_reversed_amount, discount_codes")
+    .select(ORDER_LITE_COLUMNS)
     .eq("shopify_customer_id", shopifyCustomerId)
     .is("cancelled_at", null)
     .order("created_at", { ascending: true })
@@ -732,20 +822,54 @@ async function finishReferralPayment(
   const awarded = data?.[0]?.awarded ?? false;
 
   // Written on a replay too, so a crash after the award cannot leave it open.
-  const { error: updErr } = await db
-    .from("referrals")
-    .update({ points_awarded: true })
-    .eq("id", referral.id)
-    .eq("status", "completed");
-  if (updErr) throw new Error(`referral update failed: ${updErr.message}`);
-
-  if (awarded) {
-    await notificationQueue
-      .add("referral_completed", { memberId: r.id, points })
-      .catch((err) => console.error("[payReferral] notification enqueue failed:", err));
-  }
-  return { paid: awarded, points, reason: awarded ? undefined : "already_paid" };
+  // The call that sets it sends the "referral completed" email, so the email
+  // goes out once even when an earlier call added the points and then stopped.
+  const finished = await markReferralAwarded(referral.id);
+  if (finished) await queueReferralCompletedEmail(r.id, points);
+  const paid = awarded || finished;
+  return { paid, points, reason: paid ? undefined : "already_paid" };
 }
+
+/**
+ * points_awarded false -> true on a claimed (completed) referral, optionally
+ * with the amount found in the ledger. True when this call made the change.
+ */
+async function markReferralAwarded(referralId: string, points?: number): Promise<boolean> {
+  const { data, error } = await db
+    .from("referrals")
+    .update({ points_awarded: true, ...(points && points > 0 ? { reward_points: points } : {}) })
+    .eq("id", referralId)
+    .eq("status", "completed")
+    .eq("points_awarded", false)
+    .select("id");
+  if (error) throw new Error(`referral update failed: ${error.message}`);
+  return !!data && data.length > 0;
+}
+
+async function queueReferralCompletedEmail(memberId: string, points: number): Promise<void> {
+  await notificationQueue
+    .add("referral_completed", { memberId, points })
+    .catch((err) => console.error("[payReferral] notification enqueue failed:", err));
+}
+
+/**
+ * The referrer's `referral_earned` ledger row for this referral (the key
+ * award_points is idempotent on: member / referral_earned / referral id), or
+ * null when the points were never added. The ledger, not points_awarded, says
+ * whether she was paid: the process can stop between the two (review 9, item 2).
+ */
+async function earnedReferralPoints(referral: Pick<ReferralRow, "id" | "referrer_member_id">): Promise<number | null> {
+  const { data, error } = await db
+    .from("points_ledger")
+    .select("points")
+    .eq("member_id", referral.referrer_member_id)
+    .eq("action_type", "referral_earned")
+    .eq("reference_id", String(referral.id))
+    .maybeSingle();
+  if (error) throw new Error(`referral ledger lookup failed: ${error.message}`);
+  return data ? Number(data.points ?? 0) : null;
+}
+
 
 /**
  * A referral claimed for payment (completed, points_awarded=false,
@@ -767,23 +891,56 @@ async function claimedUnpaidReferralFor(customerId: string): Promise<ReferralRow
 }
 
 /**
- * Finish a claimed payment if the claimed order still qualifies; otherwise
- * (cancelled or refunded in the meantime, referrer gone) put the referral
- * back to pending, so the normal rules decide again (a later order may be
- * her first now).
+ * Finish a claimed payment if the claimed order still qualifies and the
+ * referrer may still be paid; otherwise (cancelled or refunded in the
+ * meantime, referrer gone, blocked or opted out, rule switched off) put the
+ * referral back to pending, so the normal rules decide again (a later order
+ * may be her first now). If the ledger shows the points were in fact added,
+ * the payment is recorded instead (and reversed if the order is gone).
  */
 async function resumeClaimedReferral(
   referral: ReferralRow,
   customerId: string,
 ): Promise<{ paid: boolean; points?: number; reason?: string; orderId?: string } | null> {
+  const claimedOrderId = referral.shopify_order_id ? String(referral.shopify_order_id) : null;
+
+  // The points were already added (the process stopped before points_awarded
+  // was set): record that, then keep them, or take them back if the claimed
+  // order was cancelled or refunded in full since, as for any paid referral.
+  const earned = await earnedReferralPoints(referral);
+  if (earned !== null) {
+    if (claimedOrderId) {
+      const { data: claimed, error } = await db
+        .from("order_webhook_state")
+        .select(ORDER_LITE_COLUMNS)
+        .eq("shopify_order_id", claimedOrderId)
+        .maybeSingle();
+      if (error) throw new Error(`order lookup failed: ${error.message}`);
+      const o = claimed as OrderLite | null;
+      const gone = o?.cancelled_at ? "cancelled" as const : o && fullyRefunded(o) ? "refunded" as const : null;
+      if (gone) {
+        await reverseReferralForOrder(claimedOrderId, gone);
+        return { paid: false, reason: `qualifying_order_${gone}`, orderId: claimedOrderId };
+      }
+    }
+    const finished = await markReferralAwarded(referral.id, earned);
+    if (finished) await queueReferralCompletedEmail(referral.referrer_member_id, earned);
+    return { paid: finished, points: earned, reason: finished ? undefined : "already_paid", orderId: claimedOrderId ?? undefined };
+  }
+
   const order = await firstQualifyingOrder(customerId);
   const points = Number(referral.reward_points ?? 0);
+  const settings = await getSettings();
   const { data: referrer } = await db.from("members").select("*").eq("id", referral.referrer_member_id).maybeSingle();
+  const r = referrer as MemberRow | null;
+  // The same eligibility payReferral checked before the claim (review 9, item 5):
+  // a referrer blocked or opted out since, or the rule switched off, is not paid.
+  const eligible = !!r && !r.is_blocked && !r.opted_out && !r.referrals_blocked && isEarnRuleEnabled(settings, "referral");
   if (
-    order && referrer && points > 0 &&
+    order && r && eligible && points > 0 &&
     order.shopify_order_id === referral.shopify_order_id && order.points_awarded && !fullyRefunded(order)
   ) {
-    const result = await finishReferralPayment(referral, referrer as MemberRow, points, order.shopify_order_id, await getSettings());
+    const result = await finishReferralPayment(referral, r, points, order.shopify_order_id, settings);
     return { ...result, orderId: order.shopify_order_id };
   }
   const { error } = await db
@@ -969,19 +1126,20 @@ export async function reverseReferralForOrder(
     .limit(1);
   if (error) throw new Error(`referral lookup failed: ${error.message}`);
   const referral = data?.[0] as ReferralRow | undefined;
-  if (!referral || !referral.points_awarded) return { reversed: false };
+  if (!referral) return { reversed: false };
 
   let points = Number(referral.reward_points ?? 0);
-  if (points <= 0) {
+  if (!referral.points_awarded) {
+    // Claimed for payment, and the points may have been added before the
+    // process stopped (review 9, item 2): the ledger decides. Not added ->
+    // nothing to reverse (resumeClaimedReferral puts it back to pending).
+    const earned = await earnedReferralPoints(referral);
+    if (earned === null) return { reversed: false };
+    await markReferralAwarded(referral.id, earned);
+    points = earned;
+  } else if (points <= 0) {
     // Completed before reward_points was stored: read it from the ledger.
-    const { data: row } = await db
-      .from("points_ledger")
-      .select("points")
-      .eq("member_id", referral.referrer_member_id)
-      .eq("action_type", "referral_earned")
-      .eq("reference_id", String(referral.id))
-      .maybeSingle();
-    points = Number(row?.points ?? 0);
+    points = (await earnedReferralPoints(referral)) ?? 0;
   }
   if (points > 0) {
     const { error: rpcErr } = await db.rpc("award_points", {

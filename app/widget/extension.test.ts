@@ -179,6 +179,24 @@ describe("panel style: Light and Dark token sets", () => {
     ]) expect(HUB_CSS).toMatch(rule);
   });
 
+  it("review 9 item 7: the balance-card Redeem button has its own hover (beats .hg-hub .hg-bal__go) in both styles, text still 4.5:1, chevron centred", () => {
+    expect(HUB_CSS).toMatch(/\.hg-hub \.hg-bal__go:hover\{background:linear-gradient\(var\(--hov\),var\(--hov\)\) var\(--baln\)\}/);
+    expect(HUB_CSS.indexOf(".hg-hub .hg-bal__go:hover")).toBeGreaterThan(HUB_CSS.indexOf(".hg-hub .hg-bal__go{"));
+    expect(HUB_CSS).toMatch(/\.hg-hub \.hg-bal__go \.hg-ic\{margin:0 0 0 4px\}/);
+    const rgba = (v: string) => v.match(/rgba\((\d+),(\d+),(\d+),([\d.]+)\)/)!.slice(1).map(Number);
+    const over = (base: string, layer: string) => {
+      const [r, g, b, a] = rgba(layer);
+      const c = [1, 3, 5].map((i) => parseInt(hex(base).slice(i, i + 2), 16));
+      return "#" + c.map((x, i) => Math.round(x * (1 - a) + [r, g, b][i] * a).toString(16).padStart(2, "0")).join("");
+    };
+    const lightHover = over(light.baln, light.hov);
+    const darkHover = over(resolve(dark, "baln"), dark.hov);
+    expect(lightHover).not.toBe(hex(light.baln));
+    expect(darkHover).not.toBe(hex(resolve(dark, "baln")));
+    expect(contrast(resolve(light, "balb"), lightHover)).toBeGreaterThanOrEqual(4.5); // Light: near-black text
+    expect(contrast(resolve(dark, "ht"), darkHover)).toBeGreaterThanOrEqual(4.5); // Dark: yellow text
+  });
+
   it("no colour is hard-coded outside the two token sets, except the tier badges and button hover (same in both styles)", () => {
     const rules = HUB_CSS.replace(HUB_LIGHT, "").replace(HUB_DARK, "");
     const found = new Set((rules.match(/#[0-9a-f]{3,6}\b/gi) || []).map((c) => c.toLowerCase()));

@@ -79,6 +79,8 @@
 .hg-bal__now strong{color:var(--baln)}
 .hg-hub .hg-bal__go{background:var(--baln);color:var(--balb)!important}
 .hg-hub--dark .hg-bal__go{color:var(--ht)!important}
+.hg-hub .hg-bal__go:hover{background:linear-gradient(var(--hov),var(--hov)) var(--baln)}
+.hg-hub .hg-bal__go .hg-ic{margin:0 0 0 4px}
 .hg-tier{display:inline-block;padding:3px 12px;border-radius:999px;font-size:13px;font-weight:700;background:#e4e4e4;color:#1a1a1a}
 .hg-tier{border:1px solid #595959}
 .hg-tier--gold{background:#f3bd1c;border-color:var(--gd)}

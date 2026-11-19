@@ -19,7 +19,9 @@ import {
   selectMultiplier,
   type CustomerInput,
 } from "./points.service";
-import { checkReferralOrder, completeReferralForCustomer, reverseReferralForOrder, shopifyOrderCount, type ReferralCheckOptions } from "./referrals.service";
+import {
+  checkReferralOrder, completeReferralForCustomer, retryReferralOrderTag, reverseReferralForOrder, shopifyOrderCount, type ReferralCheckOptions,
+} from "./referrals.service";
 import { effectiveReferralPoints, findInfluencerByCodes } from "./influencer.service";
 import { returnRedemptionsForCancelledOrder } from "./redemption.service";
 
@@ -463,14 +465,20 @@ export async function processOrderEvent(ev: OrderEvent, shop?: string | null, op
   // and skips it when it already ran here. Once per order; the tag is the only
   // write to Shopify. A failure here never stops the order:
   // completeReferralForCustomer refuses to pay without the check.
-  if (member.referred_by_member_id && !ev.cancelledAt && !state.cancelled_at) {
+  // Every event for a referred friend's order also retries a tag that could
+  // not be added yet (throttled): checkReferralOrder does it first, and the
+  // other events (no code, cancelled) call the retry directly (review 9,
+  // item 1). One database read; Shopify only when a matched order has no tag.
+  if (member.referred_by_member_id) {
     const codes = [...new Set([...ev.discountCodes, ...(state.discount_codes ?? [])])];
-    if (codes.length > 0) {
+    if (!ev.cancelledAt && !state.cancelled_at && codes.length > 0) {
       try {
         await checkReferralOrder({ shopifyOrderId: ev.id, shopifyCustomerId: customerId, discountCodes: codes, shop, finalAttempt: opts.finalAttempt });
       } catch (err) {
         console.error(`[processOrderEvent] referral check for order ${ev.id} not done yet:`, err instanceof Error ? err.message : err);
       }
+    } else {
+      await retryReferralOrderTag(ev.id, customerId, shop);
     }
   }
 
@@ -695,6 +703,8 @@ export async function processOrderCancelled(
   }
   if (!state) return { reversed: 0, redemptionReturned: 0, reason: "no_order_row" };
   const wasAwarded = state.points_awarded;
+  // orders/cancelled straight from its webhook (processOrderEvent already did it otherwise).
+  if (!opts.stateSynced && state.shopify_customer_id) await retryReferralOrderTag(ev.id, state.shopify_customer_id, shop);
 
   const { data, error } = await db.rpc("reverse_order_points", {
     p_shopify_order_id: ev.id,

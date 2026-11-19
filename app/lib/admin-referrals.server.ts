@@ -80,6 +80,30 @@ export async function countReferralsNotChecked(): Promise<number> {
   return num(count);
 }
 
+/**
+ * Held referrals that Home already shows on another line: held because her
+ * order delivers to the referrer's address or to a phone from the referrer's
+ * earlier orders (open order alerts; a held "same_phone" is the gift case) or because
+ * the order could not be checked (the "not checked" line). Home subtracts
+ * this from the held count so each referral is counted once, exactly as the
+ * staff morning email does (staff-digest.server.ts digestCounts).
+ */
+export async function countHeldCountedElsewhere(): Promise<number> {
+  const { count, error } = await adb()
+    .from("referrals")
+    .select("id", { count: "exact", head: true })
+    .eq("status", "flagged")
+    .in("order_check", ["same_phone", "same_address", "not_checked"])
+    .is("alert_resolved_at", null);
+  if (error) throw new Error(`could not count held referrals: ${error.message}`);
+  return num(count);
+}
+
+/** Held referrals for the Home "held for review" line, not counting those on the alert or not-checked lines. */
+export function heldOnlyCount(flaggedTotal: number, countedElsewhere: number): number {
+  return Math.max(0, num(flaggedTotal) - num(countedElsewhere));
+}
+
 export type ReferralListRow = {
   id: string;
   referrerId: string;
@@ -161,7 +185,8 @@ export type ReferralOrderAlert = {
   referrerReferralsBlocked: boolean;
   orderId: string;
   orderName: string | null;
-  kind: "phone" | "address";
+  /** "order_phone": a phone from the referrer's earlier orders or saved addresses (held, could be a gift). */
+  kind: "phone" | "order_phone" | "address";
   status: string;
   /** "Order #1007 from a referred friend delivers to the referrer's phone number" */
   title: string;
@@ -174,10 +199,12 @@ export function shopifyOrderUrl(shop: string, orderId: string): string | null {
   return id && /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/i.test(shop) ? `https://${shop}/admin/orders/${id}` : null;
 }
 
-export function alertTitle(orderName: string | null, kind: "phone" | "address"): string {
+export function alertTitle(orderName: string | null, kind: "phone" | "order_phone" | "address"): string {
   // Not "used a referral code": the order checked is also her first delivered
   // and paid order when she left the code out (owner decision, 19 Nov 2026).
-  return `${orderName ? `Order ${orderName}` : "An order"} from a referred friend delivers to the referrer's ${kind === "phone" ? "phone number" : "address"}`;
+  const order = orderName ? `Order ${orderName}` : "An order";
+  if (kind === "order_phone") return `${order} from a referred friend goes to a phone number the referrer used on an earlier order or saved address`;
+  return `${order} from a referred friend delivers to the referrer's ${kind === "phone" ? "phone number" : "address"}`;
 }
 
 /**
@@ -188,7 +215,7 @@ export async function listReferralOrderAlerts(limit = 10): Promise<ReferralOrder
   const { data, error } = await adb()
     .from("referrals")
     .select(
-      "id, referrer_member_id, status, order_check, order_checked_order_id, order_tag, " +
+      "id, referrer_member_id, status, order_check, order_checked_order_id, order_tag, fraud_flags, " +
         "members:referrer_member_id(first_name,last_name,email,phone,referrals_blocked)",
     )
     .in("order_check", ALERT_CHECKS)
@@ -209,7 +236,10 @@ export async function listReferralOrderAlerts(limit = 10): Promise<ReferralOrder
   }
   return rows.map((r) => {
     const m = r.members as Row | null;
-    const kind = str(r.order_check) === "same_phone" ? "phone" as const : "address" as const;
+    const flags = Array.isArray(r.fraud_flags) ? r.fraud_flags.map(str) : [];
+    const kind = str(r.order_check) !== "same_phone"
+      ? "address" as const
+      : flags.includes("same_order_phone_on_order") && !flags.includes("same_phone_on_order") ? "order_phone" as const : "phone" as const;
     const orderId = str(r.order_checked_order_id);
     const orderName = names.get(orderId) ?? null;
     const status = str(r.status);
@@ -233,6 +263,8 @@ export async function listReferralOrderAlerts(limit = 10): Promise<ReferralOrder
         tagText,
         kind === "phone"
           ? "The referral was blocked and the referrer gets no points for it. Her link still works for other friends unless you block it."
+          : kind === "order_phone" && status === "flagged"
+            ? "It may be a gift she once sent this friend. The referral is held: the referrer is paid only if you approve it; block her if it is a self-referral."
           : status === "flagged"
             ? "The referral is held: the referrer is paid only if you approve it."
             : `The referral is now ${(STATUS_LABELS[status] ?? status).toLowerCase()}.`,

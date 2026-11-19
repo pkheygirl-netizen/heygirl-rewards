@@ -229,6 +229,26 @@ describe("pages render with data", () => {
     expect(html).toContain('href="/app/referrals?check=not_checked"');
   });
 
+  it("review 9 item 6: a held referral whose order was not checked is counted once on Home (under 'not checked'), as in the staff email", async () => {
+    mockAll({
+      rpc: (name, args) => (name === "admin_attention"
+        ? { data: { referrals_flagged: 2, review_claims_pending: 0, expiring_members: 0, expiring_points: 0, expiring_overdue_members: 0, gdpr_open: 0, referral_order_alerts: 0 } }
+        : full.rpc!(name, args)),
+      from: (table, chain) => {
+        if (table !== "referrals") return full.from!(table, chain);
+        const head = chain.some(([m, a]) => m === "select" && (a[1] as { head?: boolean } | undefined)?.head);
+        if (head && chain.some(([m, a]) => m === "eq" && a[0] === "status" && a[1] === "flagged")) return { count: 1, data: null }; // held AND not checked
+        if (head) return { count: 1, data: null }; // not checked (the same referral)
+        if (chain.some(([m, a]) => m === "in" && a[0] === "order_check")) return { data: [] }; // no order alerts
+        return full.from!(table, chain);
+      },
+    });
+    const html = await renderRoute("app._index.tsx", "/app");
+    expect(html).toContain("1 referral held for review"); // 2 held, 1 of them is on the "not checked" line
+    expect(html).toContain("1 referral order was not checked");
+    expect(html).not.toContain("2 referrals held for review");
+  });
+
   it("Referrals filtered to orders that were not checked", async () => {
     const html = await renderRoute("app.referrals.tsx", "/app/referrals?check=not_checked");
     expect(html).toContain("Showing referrals whose order was not checked");

@@ -201,6 +201,20 @@ describe("one referral, and Home alerts from the order-time check (016)", () => 
     expect(fake.tableCalls("order_webhook_state")[0].chain).toContainEqual(["in", ["shopify_order_id", ["5", "6"]]]);
   });
 
+  it("gift-phone hold (held same_phone, flag same_order_phone_on_order): its own title and detail, and plain-word reason", async () => {
+    const { mod } = await load({
+      from: (table) => table === "referrals"
+        ? { data: [{ id: ID, referrer_member_id: "m1", status: "flagged", order_check: "same_phone", order_checked_order_id: "5", order_tag: "tagged", fraud_flags: ["same_order_phone_on_order"], members: null }] }
+        : { data: [{ shopify_order_id: "5", order_name: "#1007" }] },
+    });
+    const [a] = await mod.listReferralOrderAlerts(10);
+    expect(a).toMatchObject({ kind: "order_phone", title: "Order #1007 from a referred friend goes to a phone number the referrer used on an earlier order or saved address" });
+    expect(a.detail).toContain("may be a gift");
+    expect(a.detail).toContain("held");
+    expect(mod.referralReason({ status: "flagged", fraud_flags: ["same_order_phone_on_order"] }))
+      .toBe("The friend's order goes to a phone number the referrer used on one of her earlier orders or saved addresses (could be a gift)");
+  });
+
   it("order link in Shopify admin", async () => {
     const { mod } = await load();
     expect(mod.shopifyOrderUrl("heygirl-pk.myshopify.com", "5550001")).toBe("https://heygirl-pk.myshopify.com/admin/orders/5550001");
@@ -222,6 +236,18 @@ describe("one referral, and Home alerts from the order-time check (016)", () => 
     expect(await mod.blockReferrer(ID, "Ayesha")).toEqual({ ok: true, message: "Referrer blocked. Her referral link no longer earns" });
     expect(setReferralsBlocked).toHaveBeenCalledWith("m1", true, "Ayesha");
     expect(fake.firstArg("referrals", "update")).toHaveProperty("alert_resolved_at");
+  });
+
+  it("review 9 item 6: held referrals already on the alert or not-checked line are counted for Home's subtraction", async () => {
+    const { fake, mod } = await load({ from: () => ({ count: 2, data: null }) });
+    expect(await mod.countHeldCountedElsewhere()).toBe(2);
+    const chain = fake.tableCalls("referrals")[0].chain;
+    expect(chain).toContainEqual(["select", ["id", { count: "exact", head: true }]]);
+    expect(chain).toContainEqual(["eq", ["status", "flagged"]]);
+    expect(chain).toContainEqual(["in", ["order_check", ["same_phone", "same_address", "not_checked"]]]); // held same_phone = gift-phone hold
+    expect(chain).toContainEqual(["is", ["alert_resolved_at", null]]);
+    expect(mod.heldOnlyCount(3, 2)).toBe(1);
+    expect(mod.heldOnlyCount(1, 2)).toBe(0);
   });
 
   it("orders not checked: counted for Home (count only), listed with ?check=not_checked, can be dismissed", async () => {

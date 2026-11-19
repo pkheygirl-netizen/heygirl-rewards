@@ -45,7 +45,7 @@ describe("staff morning email", () => {
     const msg = mail.sendEmail.mock.calls[0][0] as { to: string; subject: string; html: string; text: string };
     expect(msg.to).toBe("staff@heygirl.pk");
     expect(msg.subject).toBe("HeyGirl.pk Rewards: 2 things need your attention");
-    expect(msg.text).toContain("1 referral order uses the referrer's own phone number or address");
+    expect(msg.text).toContain("1 referral order uses the referrer's phone number (her own, or one from her earlier orders) or her address");
     expect(msg.text).toContain("2 referrals are held for your approval.");
     expect(msg.text).toContain("https://test-shop.myshopify.com/admin/apps/abc123");
     expect(msg.html).toContain("staff alert email");
@@ -138,6 +138,13 @@ describe("staff morning email", () => {
     const text = (mail.sendEmail.mock.calls[0][0] as { text: string }).text;
     expect(text).toContain("2 referrals are held for your approval.");
     expect(text).toContain("2 referral orders were not checked against the referrer's phone and address.");
+  });
+
+  it("a gift-phone hold (held, order_check same_phone) is an order alert and counted once", async () => {
+    attention = { referral_order_alerts: 1, referrals_flagged: 2, review_claims_pending: 0 };
+    h.db.seed("referrals", { status: "flagged", order_check: "same_phone", fraud_flags: ["same_order_phone_on_order"], alert_resolved_at: null });
+    h.db.seed("referrals", { status: "flagged", order_check: null });
+    expect(await runStaffDigest(NINE)).toMatchObject({ sent: true, counts: { referralOrderAlerts: 1, referralsHeld: 1 } });
   });
 
   it("not-checked referrals alone are worth an email", async () => {

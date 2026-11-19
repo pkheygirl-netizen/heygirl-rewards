@@ -7,7 +7,9 @@
 //                             similar email / same name    -> held (flagged)
 //   on the friend's first qualifying order (fulfilled + paid), code or no
 //   code, and earlier on an order that used her free-shipping code
-//                             same shipping phone          -> blocked
+//                             the referrer's own phone     -> blocked
+//                             a phone from her past orders
+//                             or saved addresses (gift?)   -> held (flagged)
 //                             same shipping address        -> held (flagged)
 
 // ── email ──────────────────────────────────────────────────────────────────
@@ -94,85 +96,140 @@ export function sameFullName(
 
 export type AddressLike = { address1?: string | null; address2?: string | null; city?: string | null };
 
-/** Common abbreviations written the same way, and filler words dropped, before tokens are compared. */
-const TOKEN_CANON: Record<string, string> = {
-  h: "house", hno: "house", hse: "house",
-  st: "street", str: "street",
-  rd: "road",
-  blk: "block",
-  ph: "phase",
-  apt: "flat", apartment: "flat",
-  sec: "sector",
-  no: "", number: "",
+/*
+ * Address comparison (owner decisions 19 Nov 2026, round 9). An address only
+ * ever HOLDS a referral, never blocks it, so the rule leans towards "no match"
+ * when the evidence is thin. Each address is read into:
+ *   - labelled numbers: house, street, road, block, phase, sector, flat, plot,
+ *     lane, floor, building, town -> "house:12", "street:5", "block:a",
+ *     "phase:6" ("Phase VI" = 6), "flat:4b" ("Flat B-4" = "4-B" = "4B")
+ *   - sector codes without a label: "G-9/1" = "G 9/1" = "G9/1" = "G-9-1",
+ *     "F-7", "I-8" -> "sector:g9/1"
+ *   - unlabelled numbers ("Askari 11", "Gulberg III" -> 3), compared as a set
+ *   - locality words: what is left after dropping the city names, "Pakistan",
+ *     provinces, filler ("near", "opposite", "behind") and generic words
+ *     ("town", "colony", "road" ...)
+ * Two addresses match when: same city AND the same labelled numbers (a label
+ * on one side only = no match) AND the same unlabelled numbers AND
+ * (at least one locality word in common, OR the same sector code, OR nothing
+ * else at all on either side, e.g. "H# 12 St 5" = "House No 12 Street 5").
+ * Order does not matter: "G-9/1, House 12" = "House 12, G-9/1", and
+ * "Street 12, House 5" is not "House 12, Street 5".
+ *
+ * "H-12" (also "H 12", "H12"): Islamabad has a sector H-12, and "H" is also
+ * the usual short form of "House". Read as:
+ *   - a sector when the address already has a house number written another way;
+ *   - house 12 when another sector code is present, or "street"/"st" follows;
+ *   - otherwise BOTH readings are tried, and either may match (an address
+ *     result only holds the referral for staff, so a possible match is shown).
+ * "H#12", "H no 12", "H.No.12", "House No. 12" are always house 12.
+ */
+
+/** Words that label the number (or single letter / Roman numeral) after them. */
+const LABELS: Record<string, string> = {
+  house: "house", hno: "house", hse: "house", home: "house",
+  street: "street", st: "street", str: "street", gali: "street", galli: "street",
+  road: "road", rd: "road",
+  block: "block", blk: "block",
+  phase: "phase", ph: "phase",
+  sector: "sector", sec: "sector",
+  flat: "flat", apt: "flat", apartment: "flat", unit: "flat", suite: "flat", portion: "flat",
+  plot: "plot",
+  lane: "lane",
+  floor: "floor",
+  building: "building", bldg: "building", tower: "building",
+  town: "town",
+};
+/** Labels whose letter goes after the number ("Flat B-4" = "4b"); the others keep a code's letter first. */
+const DWELLING = new Set(["house", "flat", "plot", "building"]);
+/** Between a label and its number: "House No. 12", "St # 5". */
+const FILLER_AFTER_LABEL = new Set(["no", "number", "num", "nmbr"]);
+
+/** City field forms read as the same city. */
+const CITY_ALIASES: Record<string, string> = {
+  pindi: "rawalpindi", rwp: "rawalpindi", isb: "islamabad", isl: "islamabad", khi: "karachi", lhr: "lahore", fsd: "faisalabad",
+};
+const PROVINCES = new Set(["pakistan", "pk", "sindh", "punjab", "kpk", "kp", "khyber", "pakhtunkhwa", "balochistan", "baluchistan", "ict", "ajk"]);
+/** City names dropped from the address line (the order's own city is dropped too). */
+const CITY_WORDS = new Set([
+  "karachi", "lahore", "islamabad", "rawalpindi", "pindi", "faisalabad", "multan", "peshawar", "quetta", "sialkot", "gujranwala",
+  "hyderabad", "abbottabad", "bahawalpur", "sargodha", "sukkur", "larkana", "sheikhupura", "gujrat", "mardan", "kasur", "sahiwal",
+  "okara", "jhelum", "taxila", "wah", "mirpur", "muzaffarabad",
+]);
+/** Words that never tell two places apart. */
+const GENERIC = new Set([
+  "near", "opp", "opposite", "behind", "beside", "nearby", "adjacent", "front", "back", "side", "the", "of", "and", "in", "at", "to", "on",
+  "town", "colony", "society", "scheme", "housing", "city", "cantt", "cantonment", "extension", "ext", "main", "road", "street",
+  "avenue", "boulevard", "lane", "mohalla", "gali", "area", "sector", "block", "phase", "plot", "house", "flat", "floor", "building",
+  "tower", "apartment", "apartments", "portion", "upper", "lower", "ground", "first", "second", "third", "no", "number", "pakistan",
+]);
+const ROMAN: Record<string, number> = {
+  ii: 2, iii: 3, iv: 4, vi: 6, vii: 7, viii: 8, ix: 9, xi: 11, xii: 12, xiii: 13, xiv: 14, xv: 15, xvi: 16, xvii: 17, xviii: 18, xix: 19, xx: 20,
 };
 
-/**
- * Words that only say what kind of number follows ("House 12", "Phase 6") or
- * join words together. They do not tell two places apart, so they do not count
- * towards the 3 meaningful words the similarity rule needs.
- */
-const STRUCTURE_WORDS = new Set([
-  "house", "flat", "street", "road", "block", "phase", "sector", "plot", "lane", "floor", "unit", "suite", "gali",
-  "near", "opp", "opposite", "behind", "the", "of", "and",
-]);
-
-/** Line text as compared: lowercase, "#" and other marks as spaces; "-" and "/" kept for the number codes. */
-function lineText(v: string): string {
-  return v.normalize("NFKC").toLowerCase();
+/** Arabic-Indic (٠-٩) and Urdu/Persian (۰-۹) digits as 0-9. */
+function asciiDigits(v: string): string {
+  return v.replace(/[٠-٩۰-۹]/g, (d) => String((d.charCodeAt(0) & 0xf) % 10));
 }
 
-/** A single letter written straight after a number ("12A", "4-B"), not one that starts a word or a code ("4-Block", "12 G-9/1"). */
-const SUFFIX = String.raw`(?:\s*[-/]?\s*([a-z])(?![a-z]|\s*[-/]?\s*\d))?`;
-const JOIN_SUFFIX = new RegExp(String.raw`(\d+)${SUFFIX}`, "g");
-const JOIN_CODE = /(?<![\p{L}\p{N}])([a-z])-(?=\d)/gu;
-
-/**
- * Words of an address line. A flat letter is joined to its number first
- * ("4-B" = "4 B" = "4B" -> "4b") and a sector letter to its code ("G-9/1" =
- * "G9/1"), so the same address written two ways gives the same words.
- */
-function words(v: string): string[] {
-  return lineText(v)
-    .replace(JOIN_SUFFIX, (_m, n: string, l?: string) => `${n}${l ?? ""}`)
-    .replace(JOIN_CODE, "$1")
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
-    .trim()
-    .split(" ")
-    .filter(Boolean);
+/** Lowercase text with phone numbers, postcodes and punctuation removed; "-" and "/" kept for codes. */
+function cleanLine(v: string): string {
+  let s = asciiDigits(v.normalize("NFKC")).toLowerCase();
+  // Phone-like digit runs (10-13 digits, spaces/dashes allowed: +92 300 1234567, 0300-1234567).
+  s = s.replace(/\+?\d[\d\s-]{8,18}\d/g, (m) => {
+    const n = m.replace(/\D/g, "").length;
+    return n >= 10 && n <= 13 ? " " : m;
+  });
+  s = s.replace(/(?<!\d)\d{5}(?![\d/-])/g, " "); // 5-digit postcode
+  // "H#12", "H # 12", "H no 12", "H.No.12", "h. no. 12": always the house number.
+  s = s.replace(/(?<![\p{L}\p{N}])h\s*(?:#|\.?\s*no\b\.?)/gu, " house ");
+  return s.replace(/[^\p{L}\p{N}/\-\s]+/gu, " ");
 }
 
-/**
- * First number in address1 with a single letter straight after it:
- * "House 12" -> "12", "H# 12" -> "12", "Flat 4-B" -> "4b", "12A Street 3" -> "12a".
- * A letter that starts a word ("4-Block") or a sector code ("12 G-9/1") is not taken.
- */
-export function houseNumber(address1: string | null | undefined): string | null {
-  const m = lineText(address1 ?? "").match(new RegExp(String.raw`(\d+)${SUFFIX}`));
-  return m ? `${m[1]}${m[2] ?? ""}` : null;
-}
+type Tok =
+  | { t: "code"; l: string; n: string } // letter(s) + number with a sub-number: g9/1
+  | { t: "ln"; l: string; n: string } // single letter + number: h12, b4, f7
+  | { t: "nl"; n: string; l: string } // number + single letter: 12a, 4b
+  | { t: "num"; n: string; ord?: boolean }
+  | { t: "word"; w: string };
 
-/**
- * Every number in the address, each with what is written straight onto it:
- * "House 12, Street 5, G-9/1" -> {12, 5, g9/1}; "Flat 4-B, Block 7" -> {4b, 7};
- * "DHA Phase 6" -> {6}. A single letter joined to the number by a hyphen or
- * nothing ("G-9/1", "F7") is a sector code and kept with it; a letter word
- * before a space ("H 12", "H# 12") is not ("H" is the house abbreviation).
- */
-export function numberTokens(line: string | null | undefined): Set<string> {
-  const re = new RegExp(String.raw`(?:(?<![\p{L}\p{N}])([a-z])-?)?(?<!\d)(\d+(?:[-/]\d+)*)${SUFFIX}`, "gu");
-  const out = new Set<string>();
-  for (const m of lineText(line ?? "").matchAll(re)) out.add(`${m[1] ?? ""}${m[2].replace(/-/g, "/")}${m[3] ?? ""}`);
+const LEX = new RegExp(
+  [
+    String.raw`(?<![\p{L}\p{N}])(?<cl>(?!(?:st|ph|rd|no|h)\b)[a-z]{1,2})[ -]?(?<cn>\d+(?:\s*[/-]\s*\d+)+)(?![\p{L}\p{N}])`,
+    String.raw`(?<![\p{L}\p{N}])(?<ord>\d+)(?:st|nd|rd|th)(?![\p{L}\p{N}])`,
+    String.raw`(?<![\p{L}\p{N}])(?<ll>[a-z])[ -]?(?<ln>\d+)(?![\p{L}\p{N}/])`,
+    // not a letter that starts a code: "Street 5 G 9/1", "Street 3 H-12"
+    String.raw`(?<![\p{L}\p{N}])(?<nn>\d+)[ -]?(?<nl>[a-z])(?![\p{L}\p{N}])(?!\s*-?\s*\d)`,
+    String.raw`(?<num>\d+(?:/\d+)*)`,
+    String.raw`(?<w>\p{L}+)`,
+  ].join("|"),
+  "gu",
+);
+
+function lex(line: string): Tok[] {
+  const out: Tok[] = [];
+  for (const m of line.matchAll(LEX)) {
+    const g = m.groups ?? {};
+    if (g.cl) out.push({ t: "code", l: g.cl, n: g.cn.replace(/\s+/g, "").replace(/-/g, "/") });
+    else if (g.ord) out.push({ t: "num", n: g.ord, ord: true });
+    else if (g.ll) out.push({ t: "ln", l: g.ll, n: g.ln });
+    else if (g.nn) out.push({ t: "nl", n: g.nn, l: g.nl });
+    else if (g.num) out.push({ t: "num", n: g.num });
+    else if (g.w) out.push(ROMAN[g.w] ? { t: "num", n: String(ROMAN[g.w]) } : { t: "word", w: g.w });
+  }
   return out;
 }
 
-export type AddressKey = {
+/** One reading of an address (an ambiguous "H-12" gives two). */
+export type AddressReading = {
   city: string;
-  house: string;
-  line: string;
-  tokens: Set<string>;
+  /** "house:12", "street:5", "sector:g9/1", ... */
+  labelled: Set<string>;
+  /** Numbers without a label ("Askari 11" -> "11"). */
   numbers: Set<string>;
-  /** Words that are neither numbers nor structure words ("house", "street", ...). */
-  meaningful: number;
+  /** Locality words (city, filler and generic words removed). */
+  words: Set<string>;
+  sectors: Set<string>;
 };
 
 /** address1 and address2 as one line (address2 is often the flat, street or area). */
@@ -180,45 +237,131 @@ function fullLine(a: AddressLike): string {
   return [a.address1, a.address2].map((v) => (typeof v === "string" ? v.trim() : "")).filter(Boolean).join(" ");
 }
 
-/** What is compared of an address. Null when the city, address1 or the house number is missing. */
-export function addressKey(a: AddressLike | null | undefined): AddressKey | null {
-  if (!a) return null;
-  const city = words(a.city ?? "").join("");
-  const house = houseNumber(a.address1);
-  const line = fullLine(a);
-  const tokens = words(line).map((t) => TOKEN_CANON[t] ?? t).filter(Boolean);
-  if (!city || !house || tokens.length === 0) return null;
-  const meaningful = tokens.filter((t) => !/\d/.test(t) && t.length > 1 && !STRUCTURE_WORDS.has(t)).length;
-  return { city, house, line: tokens.join(" "), tokens: new Set(tokens), numbers: numberTokens(line), meaningful };
+/** The city as compared: lowercase words without province/country, aliases applied. */
+export function cityKey(city: string | null | undefined): string {
+  return lex(cleanLine(city ?? ""))
+    .flatMap((t) => (t.t === "word" ? [CITY_ALIASES[t.w] ?? t.w] : []))
+    .filter((w) => !PROVINCES.has(w))
+    .join("");
 }
 
-/** Minimum meaningful words in the shorter address before "mostly the same words" can count as a match. */
-export const MIN_MEANINGFUL_WORDS = 3;
+/**
+ * The readings of an address, or [] when it cannot be compared: no city, or
+ * nothing that identifies a home (no house, flat or plot number, no
+ * unlabelled number, no letter-number code such as "A-12").
+ */
+export function addressReadings(a: AddressLike | null | undefined): AddressReading[] {
+  if (!a) return [];
+  const city = cityKey(a.city);
+  if (!city) return [];
+  const ownCity = new Set(lex(cleanLine(a.city ?? "")).flatMap((t) => (t.t === "word" ? [t.w] : [])));
+  const toks = lex(cleanLine(fullLine(a)));
+  if (toks.length === 0) return [];
+
+  const labelled = new Set<string>();
+  const numbers = new Set<string>();
+  const words = new Set<string>();
+  const sectors = new Set<string>();
+  const hCodes: Array<{ n: string; streetNext: boolean }> = [];
+  let home = false;
+  const addLabel = (label: string, value: string) => {
+    labelled.add(`${label}:${value}`);
+    if (label === "sector") sectors.add(value);
+    if (DWELLING.has(label)) home = true;
+  };
+
+  for (let i = 0; i < toks.length; i++) {
+    const tok = toks[i];
+    if (tok.t === "word") {
+      const label = LABELS[tok.w];
+      if (label) {
+        // the value: the next token after any "no"/"number"
+        let j = i + 1;
+        while (j < toks.length && toks[j].t === "word" && FILLER_AFTER_LABEL.has((toks[j] as { w: string }).w)) j++;
+        const v = toks[j];
+        let value: string | null = null;
+        if (v?.t === "num" && !v.ord) value = v.n.replace(/-/g, "/");
+        else if (v?.t === "nl") value = DWELLING.has(label) ? `${v.n}${v.l}` : `${v.l}${v.n}`;
+        else if (v?.t === "ln") value = DWELLING.has(label) ? `${v.n}${v.l}` : `${v.l}${v.n}`;
+        else if (v?.t === "code") value = `${v.l}${v.n}`;
+        else if (v?.t === "word" && v.w.length === 1 && v.w !== "e") value = v.w; // "Block A", "Sector C"
+        if (value !== null) {
+          addLabel(label, value);
+          i = j;
+          continue;
+        }
+        if (label === "floor") {
+          // "1st Floor": the number is before the label
+          const p = toks[i - 1];
+          if (p?.t === "num" && p.ord) {
+            numbers.delete(p.n);
+            addLabel("floor", p.n);
+          }
+        }
+        continue; // a label word with no value is generic
+      }
+      if (tok.w.length > 1 && !GENERIC.has(tok.w) && !CITY_WORDS.has(tok.w) && !ownCity.has(tok.w) && !PROVINCES.has(tok.w)
+        && !FILLER_AFTER_LABEL.has(tok.w)) words.add(tok.w);
+      continue;
+    }
+    if (tok.t === "code") addLabel("sector", `${tok.l}${tok.n}`);
+    else if (tok.t === "ln" && tok.l === "h") {
+      const next = toks[i + 1];
+      hCodes.push({ n: tok.n, streetNext: next?.t === "word" && LABELS[next.w] === "street" });
+    } else if (tok.t === "ln") {
+      addLabel("sector", `${tok.l}${tok.n}`); // "F-7", "I-8"; also Karachi's "A-12" (read as a code, not a house)
+      home = true;
+    } else if (tok.t === "nl") {
+      numbers.add(`${tok.n}${tok.l}`);
+      home = true;
+    } else if (tok.t === "num") {
+      // an ordinal straight before "floor" is taken by the floor label above
+      if (!(tok.ord && toks[i + 1]?.t === "word" && LABELS[(toks[i + 1] as { w: string }).w] === "floor")) {
+        numbers.add(tok.n.replace(/-/g, "/"));
+        home = true;
+      }
+    }
+  }
+
+  const base = (): AddressReading => ({ city, labelled: new Set(labelled), numbers: new Set(numbers), words, sectors: new Set(sectors) });
+  const hasHouse = [...labelled].some((l) => l.startsWith("house:"));
+  let readings: AddressReading[] = [base()];
+  for (const h of hCodes) {
+    const asSector = (r: AddressReading) => { r.labelled.add(`sector:h${h.n}`); r.sectors.add(`h${h.n}`); };
+    const asHouse = (r: AddressReading) => { r.labelled.add(`house:${h.n}`); };
+    if (hasHouse) readings.forEach(asSector);
+    else if (sectors.size > 0 || h.streetNext) readings.forEach(asHouse);
+    else {
+      readings = readings.flatMap((r) => {
+        const s = { ...r, labelled: new Set(r.labelled), sectors: new Set(r.sectors) };
+        const hs = { ...r, labelled: new Set(r.labelled), sectors: new Set(r.sectors) };
+        asSector(s);
+        asHouse(hs);
+        return [hs, s];
+      });
+    }
+    home = true;
+  }
+  if (!home) return [];
+  return readings;
+}
 
 const sameSet = (a: Set<string>, b: Set<string>) => a.size === b.size && [...a].every((v) => b.has(v));
+const shares = (a: Set<string>, b: Set<string>) => [...a].some((v) => b.has(v));
 
-/**
- * Strict match (address1 and address2 read as one line):
- *   same city AND same house/flat number AND the same numbers everywhere else
- *   (street, block, phase, sector, flat, "G-9/1" codes: one number different
- *   or missing on one side = a different place) AND
- *   (the line is identical after normalising, abbreviations included, OR the
- *   shorter address has at least 3 meaningful words besides the numbers and
- *   at least 80% of its words appear in the other).
- * "House 12" alone therefore matches only "House 12" in the same city.
- */
+function readingsMatch(x: AddressReading, y: AddressReading): boolean {
+  if (x.city !== y.city) return false;
+  if (!sameSet(x.labelled, y.labelled) || !sameSet(x.numbers, y.numbers)) return false;
+  if (shares(x.words, y.words)) return true;
+  if (shares(x.sectors, y.sectors)) return true;
+  return x.words.size === 0 && y.words.size === 0; // nothing else written on either side
+}
+
+/** Same place (see the rules above). Never stored or logged: a yes/no only. */
 export function sameAddress(a: AddressLike | null | undefined, b: AddressLike | null | undefined): boolean {
-  const x = addressKey(a);
-  const y = addressKey(b);
-  if (!x || !y) return false;
-  if (x.city !== y.city || x.house !== y.house) return false;
-  if (!sameSet(x.numbers, y.numbers)) return false;
-  if (x.line === y.line) return true;
-  const [small, big] = x.tokens.size <= y.tokens.size ? [x, y] : [y, x];
-  if (small.meaningful < MIN_MEANINGFUL_WORDS) return false;
-  let shared = 0;
-  for (const t of small.tokens) if (big.tokens.has(t)) shared++;
-  return shared / small.tokens.size >= 0.8;
+  const xs = addressReadings(a);
+  const ys = addressReadings(b);
+  return xs.some((x) => ys.some((y) => readingsMatch(x, y)));
 }
 
 // ── verdicts ───────────────────────────────────────────────────────────────
@@ -243,6 +386,7 @@ export const REFERRAL_ORDER_TAG = "Rewards: check referral";
 
 export const ORDER_FLAGS = {
   same_phone_on_order: "The friend's order uses the referrer's phone number",
+  same_order_phone_on_order: "The friend's order goes to a phone number the referrer used on one of her earlier orders or saved addresses (could be a gift)",
   same_address_on_order: "The friend's order delivers to the referrer's address",
 } as const;
 
@@ -271,25 +415,43 @@ export function signInVerdict(
 export const ORDER_CHECK_FAILED_FLAG = "order_check_failed";
 export const ORDER_CHECK_FAILED_REASON = "Her order could not be checked against the referrer's phone and address: Shopify did not answer, even after an hour of retries";
 
-export type OrderCheckResult = "clear" | "not_checked" | "same_phone" | "same_address";
+/**
+ * "same_order_phone" (owner decision 19 Nov 2026, gift orders): the order's
+ * phone is not one of the referrer's own account phones but was found on one
+ * of her recent orders or saved addresses, so the friend's order may be a
+ * gift the referrer once sent her: held for staff, not blocked. Stored as
+ * order_check "same_phone" with status flagged and flag
+ * same_order_phone_on_order (016's check constraint allows only the four
+ * stored values).
+ */
+export type OrderCheckResult = "clear" | "not_checked" | "same_phone" | "same_order_phone" | "same_address";
 
 /**
  * Decision on the friend's order: its shipping phone and address against the
- * referrer's phones and addresses. "not_checked" when nothing could be
- * compared (no shipping details on the order, or none for the referrer).
+ * referrer's. `ownPhones` = her account phones (members.phone, Shopify
+ * defaultPhoneNumber): a match blocks. `otherPhones` = phones on her saved
+ * addresses and recent orders: a match only holds. "not_checked" when nothing
+ * could be compared (no shipping details on the order, or none for the referrer).
  */
 export function orderVerdict(
   order: { phone?: string | null; address?: AddressLike | null } | null,
-  referrer: { phones: Array<string | null | undefined>; addresses: Array<AddressLike | null | undefined> },
+  referrer: {
+    ownPhones: Array<string | null | undefined>;
+    otherPhones?: Array<string | null | undefined>;
+    addresses: Array<AddressLike | null | undefined>;
+  },
 ): OrderCheckResult {
   const orderPhone = phoneKey(order?.phone);
-  const orderAddress = addressKey(order?.address);
-  const phones = referrer.phones.map(phoneKey).filter((p): p is string => !!p);
-  const addresses = referrer.addresses.filter((a) => addressKey(a) !== null);
-  const phoneComparable = !!orderPhone && phones.length > 0;
-  const addressComparable = !!orderAddress && addresses.length > 0;
+  const keys = (list: Array<string | null | undefined>) => list.map(phoneKey).filter((p): p is string => !!p);
+  const own = keys(referrer.ownPhones);
+  const other = keys(referrer.otherPhones ?? []);
+  const comparable = addressReadings(order?.address).length > 0;
+  const addresses = referrer.addresses.filter((a) => addressReadings(a).length > 0);
+  const phoneComparable = !!orderPhone && own.length + other.length > 0;
+  const addressComparable = comparable && addresses.length > 0;
   if (!phoneComparable && !addressComparable) return "not_checked";
-  if (phoneComparable && phones.includes(orderPhone)) return "same_phone";
+  if (phoneComparable && own.includes(orderPhone)) return "same_phone";
+  if (phoneComparable && other.includes(orderPhone)) return "same_order_phone";
   if (addressComparable && addresses.some((a) => sameAddress(order?.address, a))) return "same_address";
   return "clear";
 }

@@ -14,7 +14,9 @@ import {
   ORDER_CHECK_FAILED_FLAG,
   orderCheckFailure,
   completeReferralForCustomer,
+  HELD_CHECK_RETRY_MS,
   REFERRAL_ORDER_TAG,
+  resetHeldCheckAttempts,
   resetTagScopeLog,
   recordReferralVisit,
   rejectReferral,
@@ -54,6 +56,7 @@ beforeEach(() => {
   bustSettingsCache();
   orders = 0;
   h.graphql = shopify;
+  resetHeldCheckAttempts();
   vi.spyOn(console, "error").mockImplementation(() => undefined);
 });
 
@@ -517,8 +520,35 @@ describe("order-time check: the friend's order that used her free-shipping code"
         orders: where === "order" ? [{ address1: "x", city: "y", phone: "+92-300-9990000" }] : [],
       };
       ship = { address1: "Flat 3, Gulberg III", city: "Lahore", phone: "03009990000" };
-      expect((await run()).checked && referral().order_check, where).toBe("same_phone");
+      const r = await run();
+      expect(r.checked && referral().order_check, where).toBe("same_phone");
+      // her own account phones block; a phone only on a saved address or a recent order holds (gift orders, owner 19 Nov 2026)
+      const own = where === "member" || where === "default";
+      expect(r.checked && r.result, where).toBe(own ? "same_phone" : "same_order_phone");
+      expect(referral().status, where).toBe(own ? "blocked" : "flagged");
+      expect(referral().fraud_flags, where).toEqual([own ? "same_phone_on_order" : "same_order_phone_on_order"]);
     }
+  });
+
+  it("gift order (owner, 19 Nov 2026): her order goes to a phone the referrer used on an earlier order: held, tagged, Home alert; Approve pays, Block refuses", async () => {
+    const { referrer } = setup();
+    await visit();
+    theirs = { ...theirs, orders: [{ address1: "Flat 9, Clifton", city: "Karachi", phone: "+92 333 7654321" }] };
+    ship = { address1: "Flat 3, Gulberg III", city: "Lahore", phone: "03337654321" };
+    friendOrder({ discount_codes: [] });
+    expect(await completeReferralForCustomer("FR", "s")).toMatchObject({ paid: false, reason: "held_for_review" });
+    expect(referral()).toMatchObject({
+      status: "flagged", order_check: "same_phone", order_checked_order_id: "O1", order_tag: "tagged", alert_resolved_at: null,
+      fraud_flags: ["same_order_phone_on_order"],
+    });
+    expect(String(referral().block_reason)).toContain("could be a gift");
+    expect(referrer.referrals_blocked).toBe(false);
+    expect(tagCalls()).toHaveLength(1);
+    expect(JSON.stringify(h.db.table("referrals"))).not.toMatch(/7654321|Gulberg|Clifton/);
+    const n = checkCalls().length;
+    expect(await approveReferral(String(referral().id), "staff", "s")).toMatchObject({ ok: true, paid: true });
+    expect(checkCalls()).toHaveLength(n); // staff have looked: not asked again
+    expect(referrer.points_balance).toBe(6000);
   });
 
   it("same address (strict) without the phone: held for staff; approve pays when the order qualifies", async () => {
@@ -896,6 +926,83 @@ describe("order-time check: the friend's order that used her free-shipping code"
     expect(referral().order_tag).toBe("tagged");
   });
 
+  // ── review 9 (items 3 and 4) ──
+  it("item 3: held at sign-in, the check fails on the job's last try: the order is NOT recorded as checked, so Approve runs the check (same phone -> not paid)", async () => {
+    const { referrer } = heldSetup();
+    await visit();
+    awardedOrder("O1", { order_name: "#1007", discount_codes: [] });
+    failCheckWith(() => Object.assign(new Error("Bad Request"), { response: { code: 400 } }));
+    expect(await completeReferralForCustomer("FR", "s", { finalAttempt: true })).toMatchObject({ paid: false, reason: "held_for_review" });
+    expect(referral()).toMatchObject({
+      status: "flagged", order_check: "not_checked", order_checked_order_id: null, fraud_flags: ["same_name", ORDER_CHECK_FAILED_FLAG], alert_resolved_at: null,
+    });
+    expect(String(referral().block_reason)).toContain("same first and last name");
+    expect(String(referral().block_reason)).toContain("could not be checked");
+    h.graphql = withCheck; // Shopify answers again
+    ship = { address1: "Flat 3, Gulberg III", city: "Lahore", phone: "03001234567" }; // the referrer's phone
+    const checksBefore = checkCalls().length;
+    expect(await approveReferral(String(referral().id), "staff", "s")).toMatchObject({ ok: true, paid: false, reason: "blocked_by_order_check" });
+    expect(checkCalls()).toHaveLength(checksBefore + 1);
+    expect(referral()).toMatchObject({ status: "blocked", order_check: "same_phone", order_checked_order_id: "O1" });
+    expect(referrer.points_balance).toBe(0);
+  });
+
+  it("item 3: an order-check hold (not a sign-in hold) still records the order, and Approve pays without asking again", async () => {
+    const { referrer } = setup();
+    await visit();
+    friendOrder();
+    failCheckWith(() => Object.assign(new Error("Bad Request"), { response: { code: 400 } }));
+    await completeReferralForCustomer("FR", "s", { finalAttempt: true });
+    expect(referral()).toMatchObject({ status: "flagged", order_checked_order_id: "O1" });
+    const n = checkCalls().length;
+    expect(await approveReferral(String(referral().id), "staff", "s")).toMatchObject({ ok: true, paid: true });
+    expect(checkCalls()).toHaveLength(n);
+    expect(referrer.points_balance).toBe(6000);
+  });
+
+  it("item 4: a held referral whose check threw is tried at most once an hour, not on every event; Approve always checks", async () => {
+    const { referrer } = heldSetup();
+    await visit();
+    awardedOrder("O1", { order_name: "#1007", discount_codes: [] });
+    failCheckWith(() => Object.assign(new Error("Bad Request"), { response: { code: 400 } }));
+    await completeReferralForCustomer("FR", "s");
+    const n = checkCalls().length;
+    expect(n).toBeGreaterThan(0);
+    await completeReferralForCustomer("FR", "s"); // later events within the hour
+    await completeReferralForCustomer("FR", "s", { finalAttempt: true });
+    expect(checkCalls()).toHaveLength(n);
+    expect(referral()).toMatchObject({ status: "flagged", order_check: null, order_checked_order_id: null });
+    const later = Date.now() + HELD_CHECK_RETRY_MS + 1000;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(later);
+    h.graphql = withCheck; // an hour later Shopify answers: clean, recorded, still held for the sign-in reason
+    expect(await completeReferralForCustomer("FR", "s")).toMatchObject({ paid: false, reason: "held_for_review" });
+    expect(checkCalls()).toHaveLength(n + 1);
+    expect(referral()).toMatchObject({ status: "flagged", order_check: "clear", order_checked_order_id: "O1" });
+    clock.mockRestore();
+    expect(await approveReferral(String(referral().id), "staff", "s")).toMatchObject({ ok: true, paid: true });
+    expect(checkCalls()).toHaveLength(n + 1);
+    expect(referrer.points_balance).toBe(6000);
+  });
+
+  it("item 4: after an earlier match on another order is kept, the held referral's clean qualifying order is not re-checked on every event", async () => {
+    const { referrer } = setup();
+    await visit();
+    ship = { address1: "House 12 Street 5 DHA Phase 6", city: "Karachi", phone: "03117654321" };
+    await checkReferralOrder({ shopifyOrderId: "O2", shopifyCustomerId: "FR", discountCodes: [codeText()], shop: "s" });
+    expect(referral()).toMatchObject({ status: "flagged", order_check: "same_address", order_checked_order_id: "O2" });
+    ship = { address1: "Flat 3, Gulberg III", city: "Lahore", phone: "03117654321" };
+    awardedOrder("O1", { discount_codes: [], placed_at: "2026-11-09T00:00:00Z" });
+    await completeReferralForCustomer("FR", "s");
+    const n = checkCalls().length;
+    await completeReferralForCustomer("FR", "s");
+    await completeReferralForCustomer("FR", "s");
+    expect(checkCalls()).toHaveLength(n);
+    expect(referral()).toMatchObject({ status: "flagged", order_check: "same_address", order_checked_order_id: "O2" });
+    expect(await approveReferral(String(referral().id), "staff", "s")).toMatchObject({ ok: true, paid: true }); // Approve checks O1 once more
+    expect(checkCalls()).toHaveLength(n + 1);
+    expect(referrer.points_balance).toBe(6000);
+  });
+
   it("the friend's code matches without regard to case", async () => {
     setup();
     await visit();
@@ -982,6 +1089,94 @@ describe("payment claims the referral first (fix round 8, item 5)", () => {
     expect(referral()).toMatchObject({ status: "pending", points_awarded: false, reward_points: null, shopify_order_id: null });
     expect(referrer.points_balance).toBe(0);
   });
+
+  // ── review 9 (items 2 and 5) ──
+  /** award_points(referral_earned) commits, then the process stops before points_awarded is set. */
+  const stopAfterAward = () => {
+    const realRpc = h.db.rpc.bind(h.db);
+    const spy = vi.spyOn(h.db, "rpc").mockImplementation(async (fn: string, args: Record<string, unknown>) => {
+      const res = await realRpc(fn, args);
+      if (fn === "award_points" && args.p_action_type === "referral_earned") {
+        spy.mockImplementation(realRpc);
+        throw new Error("process stopped");
+      }
+      return res;
+    });
+  };
+  const ledgerOf = (action: string) => h.db.table("points_ledger").filter((l) => l.action_type === action);
+
+  it("item 2: points added, process stopped before points_awarded, then the order is cancelled: the points are taken back", async () => {
+    const { referrer } = setup();
+    await visit();
+    const order = awardedOrder();
+    stopAfterAward();
+    await expect(completeReferralForCustomer("FR")).rejects.toThrow("process stopped");
+    expect(referral()).toMatchObject({ status: "completed", points_awarded: false });
+    expect(referrer.points_balance).toBe(6000);
+    // orders/cancelled: processOrderCancelled reverses, then completes again
+    order.cancelled_at = "2026-11-12T00:00:00Z";
+    expect(await reverseReferralForOrder("O1", "cancelled")).toEqual({ reversed: true, points: 6000 });
+    await completeReferralForCustomer("FR");
+    expect(referrer.points_balance).toBe(0);
+    expect(ledgerOf("referral_reversal")).toHaveLength(1);
+    expect(referral()).toMatchObject({ status: "rejected", points_awarded: false });
+    expect(h.notifications.named("referral_completed")).toHaveLength(0);
+  });
+
+  it("item 2: the same, when only the resume path sees it (refunded in full): taken back, not put back to pending with the points kept", async () => {
+    const { referrer } = setup();
+    await visit();
+    const order = awardedOrder();
+    stopAfterAward();
+    await expect(completeReferralForCustomer("FR")).rejects.toThrow();
+    Object.assign(order, { refunded_basis_pkr: 2000 }); // refunded in full since
+    expect(await completeReferralForCustomer("FR")).toMatchObject({ paid: false, reason: "qualifying_order_refunded", orderId: "O1" });
+    expect(referrer.points_balance).toBe(0);
+    expect(ledgerOf("referral_reversal")).toHaveLength(1);
+    expect(referral()).toMatchObject({ status: "rejected" });
+  });
+
+  it("item 2: points added, process stopped, order still qualifies: the next call records the payment and sends the email once", async () => {
+    const { referrer } = setup();
+    await visit();
+    awardedOrder();
+    stopAfterAward();
+    await expect(completeReferralForCustomer("FR")).rejects.toThrow();
+    expect(h.notifications.named("referral_completed")).toHaveLength(0);
+    expect(await completeReferralForCustomer("FR")).toMatchObject({ paid: true, points: 6000, orderId: "O1" });
+    expect(referral()).toMatchObject({ status: "completed", points_awarded: true, reward_points: 6000 });
+    expect(h.notifications.named("referral_completed")).toHaveLength(1);
+    expect(h.notifications.named("referral_completed")[0].data).toEqual({ memberId: referrer.id, points: 6000 });
+    await completeReferralForCustomer("FR");
+    expect(h.notifications.named("referral_completed")).toHaveLength(1);
+    expect(referrer.points_balance).toBe(6000);
+    expect(ledgerOf("referral_earned")).toHaveLength(1);
+  });
+
+  it("item 2: a normal payment still sends the email once", async () => {
+    setup();
+    await visit();
+    awardedOrder();
+    expect((await completeReferralForCustomer("FR")).paid).toBe(true);
+    await completeReferralForCustomer("FR");
+    expect(h.notifications.named("referral_completed")).toHaveLength(1);
+  });
+
+  it.each([["referrals_blocked"], ["is_blocked"], ["opted_out"]])(
+    "item 5: claimed, award failed, then the referrer was marked %s: the resume does not pay, the referral is pending again",
+    async (field) => {
+      const { referrer } = setup();
+      await visit();
+      awardedOrder();
+      vi.spyOn(h.db, "rpc").mockImplementationOnce(async () => ({ data: null, error: { code: "08006", message: "connection reset" } }));
+      await expect(completeReferralForCustomer("FR")).rejects.toThrow("connection reset");
+      referrer[field] = true;
+      expect(await completeReferralForCustomer("FR")).toMatchObject({ paid: false, reason: "referrer_not_eligible" });
+      expect(referral()).toMatchObject({ status: "pending", points_awarded: false, reward_points: null });
+      expect(referrer.points_balance).toBe(0);
+      expect(ledgerOf("referral_earned")).toHaveLength(0);
+    },
+  );
 
   it("an old row completed without payment by the pre-v3 button (no reward_points) is never paid", async () => {
     const { referrer } = setup();
