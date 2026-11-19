@@ -237,8 +237,47 @@ export const HISTORY_LABELS: Record<string, string> = {
   import: "Points carried over",
 };
 
-export function historyLabel(type: string): string {
+/**
+ * Label for one history row. When the Shopify order name (for example "#1001")
+ * is known, order rows name it; otherwise the plain label above is used.
+ * Purchase points are only given after delivery and payment, so a purchase row
+ * never says "placed" when the order is known.
+ */
+export function historyLabel(type: string, orderName?: string | null): string {
+  const name = typeof orderName === "string" ? orderName.trim() : "";
+  if (name) {
+    switch (type) {
+      case "purchase":
+        return `Order ${name}`;
+      case "refund_deduction":
+        return `Order ${name} refunded`;
+      case "order_cancelled":
+        return `Order ${name} cancelled`;
+      case "redemption_return":
+        return `Reward points returned (${name})`;
+    }
+  }
   return HISTORY_LABELS[type] ?? "Points update";
+}
+
+/** Ledger types whose history label can name the order. */
+// influencer_sale is left out on purpose: the order belongs to another customer,
+// so its number is not shown to the influencer.
+const ORDER_LABEL_TYPES = new Set(["purchase", "refund_deduction", "order_cancelled", "redemption_return"]);
+/**
+ * Types whose reference_id is the Shopify order id itself (award_order_points
+ * and awardInfluencerSale). Refund/cancel rows use the refund or cancel
+ * reference and redemption_return uses the code id, so for those only the
+ * ledger's shopify_order_id column identifies the order.
+ */
+const REFERENCE_IS_ORDER = new Set(["purchase", "influencer_sale"]);
+
+/** The Shopify order id a history row belongs to, or null when unknown. */
+export function historyOrderId(r: { action_type: string; shopify_order_id?: string | null; reference_id?: string | null }): string | null {
+  if (!ORDER_LABEL_TYPES.has(r.action_type)) return null;
+  if (r.shopify_order_id) return String(r.shopify_order_id);
+  if (REFERENCE_IS_ORDER.has(r.action_type) && r.reference_id) return String(r.reference_id);
+  return null;
 }
 
 const REFERRAL_TYPES = ["referral_earned", "referral_bonus", "referral_reversal", "influencer_sale"];
@@ -251,6 +290,30 @@ export function parseHistoryFilter(v: string | null): HistoryFilter {
 
 export const HISTORY_PAGE_SIZE = 20;
 
+/**
+ * Order names for one history page in a single query (no per-row lookups).
+ * Only order ids taken from the member's own ledger rows are looked up. The
+ * names are cosmetic, so a failed lookup falls back to the plain labels
+ * instead of failing the whole history page.
+ */
+async function orderNamesFor(ids: Array<string | null>): Promise<Map<string, string>> {
+  const unique = [...new Set(ids.filter((id): id is string => !!id))];
+  const names = new Map<string, string>();
+  if (unique.length === 0) return names;
+  const { data, error } = await sdb
+    .from("order_webhook_state")
+    .select("shopify_order_id, order_name")
+    .in("shopify_order_id", unique);
+  if (error) {
+    console.error("[history] order name lookup failed:", error.message);
+    return names;
+  }
+  for (const o of (data ?? []) as Array<{ shopify_order_id: string; order_name: string | null }>) {
+    if (o.order_name && o.order_name.trim()) names.set(String(o.shopify_order_id), o.order_name.trim());
+  }
+  return names;
+}
+
 export async function getPointsHistory(
   memberId: string,
   page: number,
@@ -262,7 +325,7 @@ export async function getPointsHistory(
   // `reason_note` is internal and is deliberately not selected.
   let query = sdb
     .from("points_ledger")
-    .select("id, action_type, points, earned_at, customer_note", { count: "exact" })
+    .select("id, action_type, points, earned_at, customer_note, shopify_order_id, reference_id", { count: "exact" })
     .eq("member_id", memberId);
   if (filter === "earned") query = query.gt("points", 0);
   else if (filter === "redeemed") query = query.in("action_type", REDEEMED_TYPES);
@@ -274,15 +337,32 @@ export async function getPointsHistory(
     .range(offset, offset + HISTORY_PAGE_SIZE - 1);
   if (error) throw new Error(`history_failed: ${error.message}`);
 
-  type Row = { id: string; action_type: string; points: number; earned_at: string; customer_note: string | null };
-  const rows = ((data ?? []) as Row[]).map((r) => ({
-    id: r.id,
-    type: r.action_type,
-    label: historyLabel(r.action_type),
-    points: r.points,
-    at: r.earned_at,
-    note: r.customer_note ?? null,
-  }));
+  type Row = {
+    id: string;
+    action_type: string;
+    points: number;
+    earned_at: string;
+    customer_note: string | null;
+    shopify_order_id?: string | null;
+    reference_id?: string | null;
+  };
+  const ledger = (data ?? []) as Row[];
+  const orderNames = await orderNamesFor(ledger.map(historyOrderId));
+  const rows = ledger.map((r) => {
+    const orderId = historyOrderId(r);
+    const orderName = orderId ? orderNames.get(orderId) : null;
+    const label = historyLabel(r.action_type, orderName);
+    // Refund and cancel notes repeat what the label now says ("Order refunded (#1001)").
+    const repeats = Boolean(orderName) && (r.action_type === "refund_deduction" || r.action_type === "order_cancelled");
+    return {
+      id: r.id,
+      type: r.action_type,
+      label,
+      points: r.points,
+      at: r.earned_at,
+      note: repeats ? null : r.customer_note ?? null,
+    };
+  });
   const total = count ?? rows.length;
   return { rows, page: p, total, hasMore: offset + rows.length < total };
 }

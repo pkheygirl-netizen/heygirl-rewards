@@ -101,6 +101,7 @@ declare const __HG_LINE_CSS__: string;
       if (c) return Promise.resolve(take(c));
       if (!ss && (member || state)) return Promise.resolve(member);
     }
+    // One request at a time: a second open (or the idle load) shares it.
     if (inflight) return inflight;
     inflight = fetch(PROXY + "/customer", { credentials: "same-origin", headers: { Accept: "application/json" } })
       .then((r) => (r.ok ? r.json() : null))
@@ -109,23 +110,30 @@ declare const __HG_LINE_CSS__: string;
         let entry: CacheEntry | null = null;
         if (d && d.member) entry = d as MemberData;
         else if (d && d.state === "not_enrolled") entry = { member: null, state: "not_enrolled" };
+        if (!entry) return failed();
         // A customer without a member row is cached too, so she is not asked
-        // about again on every page. A failed request (entry null) is not cached.
-        if (entry && ss) {
+        // about again on every page. A failed request is not cached.
+        if (ss) {
           const queued = !!(entry.member && (entry as MemberData).welcomeQueued);
           // A welcome bonus still in the queue: let the cache lapse within 30 s.
           writeCache(ss, cid, entry, queued ? Date.now() - CACHE_TTL_MS + 30000 : Date.now());
         }
         take(entry);
         onMember();
+        if (api._upd) api._upd(member);
         return member;
       })
       .catch(() => {
         inflight = null;
-        take(null);
-        return null;
+        return failed();
       });
     return inflight;
+  }
+
+  /** A failed request keeps whatever is already shown (cached data), silently. */
+  function failed(): MemberData | null {
+    if (!member) state = "error";
+    return member;
   }
 
   /** A cached answer still worth using: the old "paused" answer is not (rule 20 no longer hides anything). */
@@ -144,6 +152,9 @@ declare const __HG_LINE_CSS__: string;
   const launcher = document.getElementById("hg-launcher");
 
   function open(screen?: string, opener?: HTMLElement | null) {
+    // Opening the panel (not the tap that closes it) always asks a signed-in
+    // member's data afresh; the panel shows what is held meanwhile. Guests: no request.
+    if (cid && !document.querySelector(".hg-hub--open")) void loadMember(true);
     if (!hubLoad) {
       hubLoad = new Promise<void>((resolve, reject) => {
         const s = document.createElement("script");
@@ -180,6 +191,7 @@ declare const __HG_LINE_CSS__: string;
       idle(() => void loadMember(true), 1500);
     },
     open,
+    cached: () => member,
   };
   w.HGLoyalty = api;
 

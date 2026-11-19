@@ -228,19 +228,41 @@ import { earnTab, errorText, REVIEW_PENDING_TEXT, guestHome, guestSub, historyFi
 
   function openMember(target: string) {
     const tab = target === "redeem" ? "rewards" : TABS.some((t) => t.key === target) ? target : "rewards";
-    const had = !!member;
-    if (had) show(tab);
+    // Whatever core holds is shown at once; core has already asked for fresh
+    // data (every open) and hands it to sync() when it arrives.
+    const held = api!.cached();
+    if (held) member = held;
+    // History is read live, so every open shows the latest rows.
+    hist.loaded = false;
+    if (member) show(tab);
     else {
+      screen = tab;
       head("", cfg.programName, false);
       tabs.hidden = true;
       body.innerHTML = `<p class="hg-load">Loading your rewards…</p>`;
     }
-    // Served from the five-minute cache when fresh; otherwise one request.
-    void api!.member().then((d) => {
-      const changed = !!d && d !== member;
-      if (d) member = d;
-      if (isOpen && (!had || changed)) show(had ? screen : tab);
-    });
+    void api!.member().then(sync);
+  }
+
+  /**
+   * Takes member data from core. The open panel is repainted only when it
+   * changed, on the same tab and at the same scroll position.
+   */
+  function sync(d: MemberData | null) {
+    if (!d) {
+      // No data to show (failed request, no member row): say why instead of "Loading".
+      if (!member && isOpen) show(screen);
+      return;
+    }
+    if (d === member) return;
+    const same = !!member && JSON.stringify(d) === JSON.stringify(member);
+    member = d;
+    if (!isOpen || same) return;
+    const top = body.scrollTop;
+    const focused = body.contains(document.activeElement);
+    show(screen);
+    if (focused) hub.focus();
+    body.scrollTop = top;
   }
 
   function renderHistory() {
@@ -433,4 +455,5 @@ import { earnTab, errorText, REVIEW_PENDING_TEXT, guestHome, guestSub, historyFi
   }
 
   api._hub = open;
+  api._upd = sync;
 })();

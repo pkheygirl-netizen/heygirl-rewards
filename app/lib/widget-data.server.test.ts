@@ -207,6 +207,89 @@ describe("getPointsHistory", () => {
     expect(h.calls.find((c) => c.method === "range")!.args).toEqual([20, 39]);
   });
 
+  it("names the Shopify order on order rows with one batched lookup", async () => {
+    const row = (id: string, action_type: string, points: number, extra: Record<string, unknown>) => ({
+      id, action_type, points, earned_at: "2026-11-01T00:00:00Z", customer_note: null, shopify_order_id: null, reference_id: null, ...extra,
+    });
+    h.results.points_ledger = [
+      {
+        data: [
+          // award_order_points: reference = order id and shopify_order_id = order id
+          row("p1", "purchase", 500, { shopify_order_id: "9001", reference_id: "9001" }),
+          // pre-v3 purchase row without shopify_order_id: reference is the order id
+          row("p2", "purchase", 300, { reference_id: "9002" }),
+          // reconcile_order_points: reference = refund / cancel reference, order id in shopify_order_id
+          row("r1", "refund_deduction", -100, { shopify_order_id: "9001", reference_id: "refund-77", customer_note: "Order refunded (#1001)" }),
+          row("c1", "order_cancelled", -200, { shopify_order_id: "9003", reference_id: "cancel-9003", customer_note: "Order cancelled (#1003)" }),
+          row("i1", "influencer_sale", 6000, { shopify_order_id: "9004", reference_id: "9004" }),
+          // redemption_return: reference = code id; order known only when cancelled before fulfilment
+          row("x1", "redemption_return", 1000, { shopify_order_id: "9003", reference_id: "code-uuid" }),
+          row("x2", "redemption_return", 1000, { reference_id: "code-uuid-2" }),
+          // order whose name is not stored: plain label
+          row("p3", "purchase", 50, { shopify_order_id: "9999", reference_id: "9999" }),
+          // refund row never falls back to its reference (a refund id, not an order id)
+          row("r2", "refund_deduction", -10, { reference_id: "9001" }),
+          row("s1", "signup", 1000, { reference_id: "42" }),
+        ],
+        count: 10,
+        error: null,
+      },
+    ];
+    h.results.order_webhook_state = [
+      { data: [
+        { shopify_order_id: "9001", order_name: "#1001" },
+        { shopify_order_id: "9002", order_name: "#1002" },
+        { shopify_order_id: "9003", order_name: "#1003" },
+        { shopify_order_id: "9004", order_name: "#1004" },
+      ], error: null },
+    ];
+    const r = await getPointsHistory("m1", 1, "all");
+    expect(r.rows.map((x) => [x.id, x.label])).toEqual([
+      ["p1", "Order #1001"],
+      ["p2", "Order #1002"],
+      ["r1", "Order #1001 refunded"],
+      ["c1", "Order #1003 cancelled"],
+      ["i1", "Sale with your code"], // another customer's order: number not shown to the influencer
+      ["x1", "Reward points returned (#1003)"],
+      ["x2", "Reward points returned"],
+      ["p3", "Order placed"],
+      ["r2", "Order refunded"],
+      ["s1", "Welcome bonus"],
+    ]);
+    const orderCalls = h.calls.filter((c) => c.table === "order_webhook_state");
+    expect(orderCalls.filter((c) => c.method === "select")).toHaveLength(1);
+    const inCall = orderCalls.find((c) => c.method === "in")!;
+    expect(inCall.args[0]).toBe("shopify_order_id");
+    expect([...(inCall.args[1] as string[])].sort()).toEqual(["9001", "9002", "9003", "9999"]);
+    // A refund/cancel note that only repeats the order is dropped once the label names it.
+    const byId = new Map(r.rows.map((x) => [x.id, x]));
+    expect(byId.get("r1")!.note).toBeNull();
+    expect(byId.get("c1")!.note).toBeNull();
+  });
+
+  it("skips the order lookup when no row is order-related, and survives a failed lookup", async () => {
+    h.results.points_ledger = [
+      { data: [{ id: "s1", action_type: "signup", points: 1000, earned_at: "2026-11-01T00:00:00Z", customer_note: null, reference_id: "42" }], count: 1, error: null },
+      { data: [{ id: "p1", action_type: "purchase", points: 500, earned_at: "2026-11-01T00:00:00Z", customer_note: null, shopify_order_id: "9001" }], count: 1, error: null },
+    ];
+    await getPointsHistory("m1", 1, "all");
+    expect(h.calls.some((c) => c.table === "order_webhook_state")).toBe(false);
+
+    h.results.order_webhook_state = [{ data: null, error: { message: "boom" } }];
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const r = await getPointsHistory("m1", 1, "all");
+    spy.mockRestore();
+    expect(r.rows[0].label).toBe("Order placed");
+  });
+
+  it("historyLabel names the order only for order rows and ignores blank names", () => {
+    expect(historyLabel("purchase", "#1001")).toBe("Order #1001");
+    expect(historyLabel("purchase", "  ")).toBe("Order placed");
+    expect(historyLabel("purchase", null)).toBe("Order placed");
+    expect(historyLabel("signup", "#1001")).toBe("Welcome bonus");
+    expect(historyLabel("referral_earned", "#1001")).toBe("Friend referred");
+  });
+
   it("the referral filter matches the real ledger types", async () => {
     await getPointsHistory("m1", 1, "referral");
     const inCall = h.calls.find((c) => c.method === "in")!;

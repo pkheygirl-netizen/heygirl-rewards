@@ -19,8 +19,8 @@
 // markup gets an explicit colour under `.hg-hub`, and the theme's focus shadow
 // is switched off. hub-css.test.ts checks that every text element type in the
 // hub markup has such a rule.
-export const HUB_LIGHT = "--g:#e8ad00;--gd:#7a5c00;--ink:#1a1a1a;--mute:#595959;--ln:#e9e2cc;--bg:#faf7ee;--card:#fff;--tint:#fbf1cf;--ok:#14491b;--okb:#e7f4e8;--err:#8a1c12;--errb:#fde8e6;--pos:#14611f;--pend:#eee;--fld:#8a8a8a;--trk:#eee4c2;--wrn:#fff4e0;--wrnl:#f0cf8a;--hb:linear-gradient(135deg,#f3bd1c,#e0a400);--ht:#1a1a1a;--hov:rgba(0,0,0,.1);--balb:#1a1a1a;--balln:#1a1a1a;--ong:#1a1a1a";
-export const HUB_DARK = "--gd:#f3bd1c;--ink:#f5f5f5;--mute:#bdbdbd;--ln:#3a3a3a;--bg:#121212;--card:#1e1e1e;--tint:#3d3212;--ok:#93e2a5;--okb:#15341d;--err:#ffaba1;--errb:#401a15;--pos:#86dc99;--pend:#333;--fld:#8a8a8a;--trk:#3a3a3a;--wrn:#33270a;--wrnl:#8a6a1f;--hb:#0b0b0b;--ht:#ffd24a;--hov:rgba(255,255,255,.12);--balb:#2a2a2a;--balln:#7a5c00";
+export const HUB_LIGHT = "--g:#e8ad00;--gd:#7a5c00;--ink:#1a1a1a;--mute:#595959;--ln:#e9e2cc;--bg:#faf7ee;--card:#fff;--tint:#fbf1cf;--ok:#14491b;--okb:#e7f4e8;--err:#8a1c12;--errb:#fde8e6;--pos:#14611f;--pend:#eee;--fld:#8a8a8a;--trk:#eee4c2;--wrn:#fff4e0;--wrnl:#f0cf8a;--hb:linear-gradient(135deg,#f3bd1c,#e0a400);--ht:#1a1a1a;--hov:rgba(0,0,0,.1);--balb:#1a1a1a;--balln:#1a1a1a;--balt:#fff;--ball:#e6e6e6;--baln:#ffd24a;--ong:#1a1a1a";
+export const HUB_DARK = "--gd:#f3bd1c;--ink:#f5f5f5;--mute:#bdbdbd;--ln:#3a3a3a;--bg:#121212;--card:#1e1e1e;--tint:#3d3212;--ok:#93e2a5;--okb:#15341d;--err:#ffaba1;--errb:#401a15;--pos:#86dc99;--pend:#333;--fld:#8a8a8a;--trk:#3a3a3a;--wrn:#33270a;--wrnl:#8a6a1f;--hb:#0b0b0b;--ht:#ffd24a;--hov:rgba(255,255,255,.12);--balb:linear-gradient(135deg,#f3bd1c,#e0a400);--balln:#e0a400;--balt:#1a1a1a;--ball:#1a1a1a;--baln:#111";
 export const HUB_CSS = `
 .hg-hub{${HUB_LIGHT};position:fixed;z-index:2147483001;right:16px;bottom:88px;width:384px;max-width:calc(100vw - 32px);height:min(660px,calc(100vh - 108px));display:flex;flex-direction:column;background:var(--bg);color:var(--ink);border-radius:16px;box-shadow:0 12px 40px rgba(0,0,0,.22);overflow:hidden;font-size:15px;line-height:1.45;letter-spacing:normal;text-align:left;opacity:0;transform:translateY(12px);transition:opacity .18s ease,transform .18s ease}
 .hg-hub--dark{${HUB_DARK};color-scheme:dark;box-shadow:0 12px 40px rgba(0,0,0,.6)}
@@ -89,14 +89,15 @@ export const HUB_CSS = `
 .hg-need{color:var(--mute);font-size:13px;flex:none;text-align:right}
 .hg-chip{display:inline-block;padding:2px 8px;border-radius:999px;background:var(--tint);color:var(--gd);font-size:12px;font-weight:700}
 .hg-empty{color:var(--mute);font-size:14px;padding:8px 0}
-.hg-bal{background:var(--balb);border:1px solid var(--balln);color:#fff;border-radius:14px;padding:16px;margin-bottom:12px}
-.hg-bal__l{font-size:14px;color:#e6e6e6}
-.hg-bal__n{font-size:34px;font-weight:800;line-height:1.15;color:#ffd24a;margin:2px 0 8px!important}
-.hg-bal__n span{font-size:15px;font-weight:600;color:#fff}
+.hg-bal{background:var(--balb);border:1px solid var(--balln);color:var(--balt);border-radius:14px;padding:16px;margin-bottom:12px}
+.hg-bal__l{font-size:14px;color:var(--ball)}
+.hg-bal__n{font-size:34px;font-weight:800;line-height:1.15;color:var(--baln);margin:2px 0 8px!important}
+.hg-bal__n span{font-size:15px;font-weight:600;color:var(--balt)}
 .hg-tier{display:inline-block;padding:3px 12px;border-radius:999px;font-size:13px;font-weight:700;background:#e4e4e4;color:#1a1a1a}
 .hg-tier{border:1px solid #595959}
 .hg-tier--gold{background:#f3bd1c;border-color:var(--gd)}
 .hg-tier--diamond{background:#d9ccff}
+.hg-hub--dark .hg-bal .hg-tier{border-color:var(--baln)}
 .hg-note{display:flex;gap:10px;align-items:flex-start;background:var(--card);border:1px solid var(--ln);border-radius:12px;padding:10px 12px;margin-bottom:12px!important;font-size:14px}
 .hg-note .hg-ic{color:var(--gd);margin-top:1px}
 .hg-note--warn{background:var(--wrn);border-color:var(--wrnl)}

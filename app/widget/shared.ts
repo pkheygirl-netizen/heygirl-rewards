@@ -32,13 +32,21 @@ export type HubApi = (screen: string, opener?: HTMLElement | null) => void;
 
 export type LoyaltyApi = {
   data: BootData;
-  /** Member payload: cached for five minutes per customer, null for guests. */
+  /**
+   * Member payload: cached for five minutes per customer, null for guests.
+   * `force` skips the cache (every panel open). A failed request resolves with
+   * the data already held, if any.
+   */
   member: (force?: boolean) => Promise<MemberData | null>;
   invalidate: () => void;
   /** Set after `member()` resolves null: no member row, or a failed request. */
   state: () => MemberState;
   open: (screen?: string, opener?: HTMLElement | null) => void;
+  /** What core holds right now (painted from the cache or the last answer); never asks the server. */
+  cached: () => MemberData | null;
   _hub?: HubApi;
+  /** Set by the hub: called with every new answer from /customer (null: no member row). */
+  _upd?: (d: MemberData | null) => void;
 };
 
 export const PROXY = "/apps/loyalty";

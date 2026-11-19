@@ -130,9 +130,9 @@ describe("panel style: Light and Dark token sets", () => {
     ["pressed filter chip", "card", "ink"],
     ["gold button text", "ong", "g"],
     ["header text", "ht", "hb"],
-    ["balance card label", "#e6e6e6", "balb"],
-    ["balance card number", "#ffd24a", "balb"],
-    ["balance card 'points'", "#ffffff", "balb"],
+    ["balance card greeting", "ball", "balb"],
+    ["balance card number", "baln", "balb"],
+    ["balance card 'points' word", "balt", "balb"],
   ];
   const resolve = (t: Record<string, string>, k: string) => hex(k.charAt(0) === "#" ? k : t[k]);
   /** The header background is a gradient in Light: both ends must pass. */
@@ -169,17 +169,38 @@ describe("panel style: Light and Dark token sets", () => {
       /\.hg-btn:hover\{background:#f3bd1c;color:var\(--ong\)!important\}/,
       /\.hg-btn--ghost\{background:var\(--card\);color:var\(--ink\)!important\}/,
       /\.hg-hub__head\{[^}]*background:var\(--hb\);color:var\(--ht\)/,
-      /\.hg-bal\{background:var\(--balb\)/,
+      /\.hg-bal\{background:var\(--balb\);border:1px solid var\(--balln\);color:var\(--balt\)/,
+      /\.hg-bal__l\{[^}]*color:var\(--ball\)\}/,
+      /\.hg-bal__n\{[^}]*color:var\(--baln\);/,
+      /\.hg-bal__n span\{[^}]*color:var\(--balt\)\}/,
       /\.hg-ref__i\{[^}]*border:1px solid var\(--fld\);[^}]*background:var\(--card\)/,
       /\.hg-bday select\{[^}]*border:1px solid var\(--fld\);[^}]*background:var\(--card\)/,
       /\.hg-hub :focus-visible\{outline:3px solid var\(--ink\)/,
     ]) expect(HUB_CSS).toMatch(rule);
   });
 
-  it("no colour is hard-coded outside the two token sets, except the balance card text, tier badges and button hover (same in both styles)", () => {
+  it("no colour is hard-coded outside the two token sets, except the tier badges and button hover (same in both styles)", () => {
     const rules = HUB_CSS.replace(HUB_LIGHT, "").replace(HUB_DARK, "");
     const found = new Set((rules.match(/#[0-9a-f]{3,6}\b/gi) || []).map((c) => c.toLowerCase()));
-    expect([...found].sort()).toEqual(["#1a1a1a", "#595959", "#d9ccff", "#e4e4e4", "#e6e6e6", "#f3bd1c", "#fff", "#ffd24a"].sort());
+    expect([...found].sort()).toEqual(["#1a1a1a", "#595959", "#d9ccff", "#e4e4e4", "#f3bd1c"].sort());
+  });
+
+  it("owner request 18 Nov 2026: Light keeps its black balance card; Dark gets a gold one with near-black text", () => {
+    // Light unchanged: black card, light-grey greeting, yellow number, white 'points'.
+    expect([light.balb, light.balln, light.ball, light.baln, light.balt]).toEqual(["#1a1a1a", "#1a1a1a", "#e6e6e6", "#ffd24a", "#fff"]);
+    // Dark: the same gold gradient as the Light header, so it stands out on #121212.
+    expect(dark.balb).toBe(light.hb);
+    expect(dark.balb).toBe("linear-gradient(135deg,#f3bd1c,#e0a400)");
+    for (const k of ["ball", "baln", "balt"]) {
+      for (const b of stops(dark.balb)) expect(contrast(resolve(dark, k), b), k).toBeGreaterThanOrEqual(4.5);
+    }
+    // The card itself is clearly visible on the dark panel (non-text, 3:1).
+    for (const b of stops(dark.balb)) expect(contrast(b, resolve(dark, "bg"))).toBeGreaterThanOrEqual(3);
+    // Tier badge on the gold card: dark ink on its fill, and a near-black outline
+    // so the Gold badge does not melt into the gold card.
+    expect(HUB_CSS).toContain(".hg-hub--dark .hg-bal .hg-tier{border-color:var(--baln)}");
+    for (const b of stops(dark.balb)) expect(contrast(resolve(dark, "baln"), b)).toBeGreaterThanOrEqual(3);
+    for (const fill of ["#e4e4e4", "#f3bd1c", "#d9ccff"]) expect(contrast("#1a1a1a", fill)).toBeGreaterThanOrEqual(4.5);
   });
 
   it("Dark is applied only by a class on the hub root; the toast follows the panel style; the launcher and cart/product lines are not themed", () => {

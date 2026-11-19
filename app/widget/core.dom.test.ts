@@ -354,6 +354,121 @@ describe("core.ts wiring: launcher and hub bundle", () => {
   });
 });
 
+describe("core.ts wiring: opening the panel asks for fresh member data (owner, 18 Nov 2026)", () => {
+  const FRESH = makeMember({ pointsBalance: 5200 });
+  const cachedBalance = () => (JSON.parse(session.getItem("hg_m:42") || "null") as { d: { member: { pointsBalance: number } } } | null)?.d.member.pointsBalance;
+
+  /** First page caches 4,500; the next page, two minutes later, is inside the five-minute window. */
+  async function secondPage(reply: Reply | (() => Reply), extra: { hash?: string } = {}) {
+    const first = await boot({ customerId: "42", replies: { "/customer": { body: MEMBER } } });
+    first.fireLoad();
+    await settle();
+    expect(first.proxyCalls()).toEqual(["GET /customer"]);
+    vi.setSystemTime(Date.now() + 2 * 60000);
+    const p = await boot({ customerId: "42", replies: { "/customer": reply } });
+    if (extra.hash) p.location.hash = extra.hash;
+    expect(p.label.textContent).toBe("4,500 pts"); // painted from the cache
+    return p;
+  }
+
+  it("a page load inside the window still uses the cache; a launcher tap then asks once, afresh, and updates label, cache and panel", async () => {
+    const p = await secondPage({ body: FRESH });
+    p.fireLoad();
+    await settle(30000);
+    expect(p.fetch).not.toHaveBeenCalled(); // store speed: page loads keep the 5-minute cache
+    const upd = vi.fn();
+    p.api()!._upd = upd; // what hg-hub.js registers
+    p.click(p.launcher);
+    expect(p.proxyCalls()).toEqual(["GET /customer"]);
+    expect(p.api()!.cached()!.member.pointsBalance).toBe(4500); // held data is there for the panel meanwhile
+    await settle(0);
+    expect(p.label.textContent).toBe("5,200 pts");
+    expect(p.launcher.getAttribute("aria-label")).toBe("5,200 pts: open HeyGirl Rewards");
+    expect(cachedBalance()).toBe(5200);
+    expect(upd).toHaveBeenCalledTimes(1);
+    expect(upd.mock.calls[0][0].member.pointsBalance).toBe(5200);
+    // Later reads on this page come from the refreshed cache.
+    expect((await p.api()!.member())!.member.pointsBalance).toBe(5200);
+    await settle(30000);
+    expect(p.proxyCalls()).toEqual(["GET /customer"]);
+  });
+
+  it("every open asks again (any [data-hg-open] control and the #hg-rewards deep link too)", async () => {
+    const p = await secondPage({ body: FRESH }, { hash: "#hg-rewards-earn" });
+    p.fireLoad(); // the deep link opens the panel on load
+    expect(p.proxyCalls()).toEqual(["GET /customer"]);
+    await settle(30000);
+    expect(p.proxyCalls()).toEqual(["GET /customer"]); // the idle page load used the fresh cache
+    const other = new FakeEl("a");
+    other.setAttribute("data-hg-open", "tiers");
+    p.body.appendChild(other);
+    p.click(other);
+    await settle(0);
+    expect(p.proxyCalls()).toEqual(["GET /customer", "GET /customer"]);
+    p.click(p.launcher);
+    await settle(0);
+    expect(p.proxyCalls()).toEqual(["GET /customer", "GET /customer", "GET /customer"]);
+  });
+
+  it("opening twice quickly sends one request", async () => {
+    const p = await secondPage({ body: FRESH });
+    p.click(p.launcher);
+    p.click(p.launcher);
+    const other = new FakeEl("button");
+    other.setAttribute("data-hg-open", "earn");
+    p.body.appendChild(other);
+    p.click(other);
+    await settle(0);
+    expect(p.proxyCalls()).toEqual(["GET /customer"]);
+    expect(p.label.textContent).toBe("5,200 pts");
+  });
+
+  it("the tap that closes an open panel asks nothing", async () => {
+    const p = await secondPage({ body: FRESH });
+    const panel = Object.assign(new FakeEl("div"), { className: "hg-hub hg-hub--open" });
+    p.body.appendChild(panel);
+    p.click(p.launcher);
+    await settle(0);
+    expect(p.fetch).not.toHaveBeenCalled();
+    expect(p.label.textContent).toBe("4,500 pts");
+  });
+
+  it.each([
+    ["a 500", { status: 500, body: null }],
+    ["a network failure", { fail: true }],
+    ["an unreadable reply", { body: { nope: 1 } }],
+  ] as Array<[string, Reply]>)("a failed fresh request (%s) keeps the cached data, silently", async (_name, reply) => {
+    const p = await secondPage(reply);
+    const upd = vi.fn();
+    p.api()!._upd = upd;
+    p.click(p.launcher);
+    const got = await p.api()!.member(true); // shares the request the open started
+    await settle(0);
+    expect(p.proxyCalls()).toEqual(["GET /customer"]);
+    expect(got!.member.pointsBalance).toBe(4500);
+    expect(p.api()!.cached()!.member.pointsBalance).toBe(4500);
+    expect(p.api()!.state()).toBe("");
+    expect(p.label.textContent).toBe("4,500 pts");
+    expect(cachedBalance()).toBe(4500); // the cache entry is kept
+    expect(upd).not.toHaveBeenCalled();
+    expect(p.body.querySelector(".hg-toast")).toBeNull();
+  });
+
+  it("guests opening the panel by any route make no request", async () => {
+    const p = await boot({ customerId: null });
+    p.location.hash = "#hg-rewards";
+    p.fireLoad();
+    p.click(p.launcher);
+    const other = new FakeEl("button");
+    other.setAttribute("data-hg-open", "redeem");
+    p.body.appendChild(other);
+    p.click(other);
+    await settle(60000);
+    expect(p.fetch).not.toHaveBeenCalled();
+    expect(p.api()!.cached()).toBeNull();
+  });
+});
+
 describe("core.ts wiring: referral slug", () => {
   const withRef = (referral: Reply | (() => Reply)) => ({ customerId: "42", search: "?ref=sana-5678", replies: { "/customer": { body: MEMBER }, "/referral": referral } });
 
