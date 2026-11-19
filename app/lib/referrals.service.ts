@@ -836,6 +836,20 @@ async function finishReferralPayment(
   shopifyOrderId: string,
   settings: Awaited<ReturnType<typeof getSettings>>,
 ): Promise<{ paid: boolean; points?: number; reason?: string }> {
+  // Review 11, item 9: read the order again after the claim and BEFORE the
+  // award. If it was cancelled (or refunded in full) before the claim, e.g.
+  // the worker's cancellation landed between this call's order read and its
+  // claim (its reversal then found nothing claimed to reverse), nothing is
+  // added and the referral goes back to `pending`, so a later qualifying order
+  // of hers can still pay it. (Once a referral_earned row exists for this
+  // referral it can never be paid again: award_points is idempotent on member
+  // / action / referral id; so the post-award re-read below must reverse.)
+  const before = await orderStillQualifies(shopifyOrderId);
+  if (before !== "ok") {
+    await releaseClaim(referral.id);
+    return { paid: false, reason: `qualifying_order_${before}_before_award` };
+  }
+
   const { data, error } = await db.rpc("award_points", {
     p_member_id: r.id,
     p_action_type: "referral_earned",
@@ -858,15 +872,38 @@ async function finishReferralPayment(
   const gone = await reverseIfOrderGone(shopifyOrderId);
   if (gone) return { paid: false, points, reason: `qualifying_order_${gone}` };
 
-  // Review 10, L4: the "referral completed" email is queued BEFORE
-  // points_awarded is set, under a fixed job id, so a crash in between cannot
-  // lose it (the next call queues it again and the id removes the copy).
-  // points_awarded is written on a replay too, so a crash after the award
-  // cannot leave it open.
-  await queueReferralCompletedEmail(String(referral.id), r.id, points);
+  // Review 11, item 8: points_awarded first, then the "referral completed"
+  // email, and only when THIS call set the flag (a reversal racing us marks
+  // the row and rejects it: no email). Fixed job id, so a second add is
+  // dropped. points_awarded is written on a replay too, so a crash after the
+  // award cannot leave it open (and the cron sweep finishes it).
   const finished = await markReferralAwarded(referral.id);
+  if (finished) await queueReferralCompletedEmail(String(referral.id), r.id, points);
   const paid = awarded || finished;
   return { paid, points, reason: paid ? undefined : "already_paid" };
+}
+
+/** "ok" while the order is there, not cancelled and not refunded in full; null row = "ok" (nothing says otherwise). */
+async function orderStillQualifies(shopifyOrderId: string): Promise<"ok" | "cancelled" | "refunded"> {
+  const { data, error } = await db
+    .from("order_webhook_state")
+    .select(ORDER_LITE_COLUMNS)
+    .eq("shopify_order_id", shopifyOrderId)
+    .maybeSingle();
+  if (error) throw new Error(`order lookup failed: ${error.message}`);
+  const o = data as OrderLite | null;
+  return o?.cancelled_at ? "cancelled" : o && fullyRefunded(o) ? "refunded" : "ok";
+}
+
+/** A claimed, unpaid referral back to `pending` (conditional: never touches a paid or decided row). */
+async function releaseClaim(referralId: string): Promise<void> {
+  const { error } = await db
+    .from("referrals")
+    .update({ status: "pending", completed_at: null, shopify_order_id: null, reward_points: null })
+    .eq("id", referralId)
+    .eq("status", "completed")
+    .eq("points_awarded", false);
+  if (error) throw new Error(`referral release failed: ${error.message}`);
 }
 
 /**
@@ -906,13 +943,17 @@ async function markReferralAwarded(referralId: string, points?: number): Promise
 /**
  * The referrer's "referral completed" email, once per referral: a fixed job id
  * (BullMQ ignores an add whose id is already queued, running or recently
- * finished), queued before points_awarded is set (at least once, de-duplicated).
- * Throws when Redis refuses, so points_awarded stays false and the next call
- * (or the job's retry) queues it again.
+ * finished), queued only after this call set points_awarded (review 11, item
+ * 8). The points are already paid by then, so a Redis failure is logged (the
+ * referral id only) and does not fail the payment.
  */
 export const referralCompletedJobId = (referralId: string) => `referral_completed-${referralId}`;
 async function queueReferralCompletedEmail(referralId: string, memberId: string, points: number): Promise<void> {
-  await notificationQueue.add("referral_completed", { memberId, points }, { jobId: referralCompletedJobId(referralId) });
+  try {
+    await notificationQueue.add("referral_completed", { memberId, points }, { jobId: referralCompletedJobId(referralId) });
+  } catch (err) {
+    console.error(`[referrals] completed email not queued for referral ${referralId}:`, err instanceof Error ? err.message : err);
+  }
 }
 
 /**
@@ -976,9 +1017,9 @@ async function resumeClaimedReferral(
       const gone = await reverseIfOrderGone(claimedOrderId);
       if (gone) return { paid: false, reason: `qualifying_order_${gone}`, orderId: claimedOrderId };
     }
-    // Email first (fixed job id), then the flag: see finishReferralPayment.
-    await queueReferralCompletedEmail(String(referral.id), referral.referrer_member_id, earned);
+    // The flag first, then the email (fixed job id), only if this call set it: see finishReferralPayment.
     const finished = await markReferralAwarded(referral.id, earned);
+    if (finished) await queueReferralCompletedEmail(String(referral.id), referral.referrer_member_id, earned);
     return { paid: finished, points: earned, reason: finished ? undefined : "already_paid", orderId: claimedOrderId ?? undefined };
   }
 
@@ -997,14 +1038,62 @@ async function resumeClaimedReferral(
     const result = await finishReferralPayment(referral, r, points, order.shopify_order_id, settings);
     return { ...result, orderId: order.shopify_order_id };
   }
-  const { error } = await db
-    .from("referrals")
-    .update({ status: "pending", completed_at: null, shopify_order_id: null, reward_points: null })
-    .eq("id", referral.id)
-    .eq("status", "completed")
-    .eq("points_awarded", false);
-  if (error) throw new Error(`referral release failed: ${error.message}`);
+  await releaseClaim(referral.id);
   return null; // decide again from pending
+}
+
+/** Claims older than this are finished by the cron sweep (a payment in flight is left alone). */
+export const CLAIMED_REFERRAL_GRACE_MS = 10 * 60 * 1000;
+
+/**
+ * Review 11, item 10 (cron, every 10 minutes with the pending-code sweep):
+ * finish referrals left `completed` with points_awarded=false (claimed for
+ * payment, reward_points set) for more than 10 minutes, when no later order
+ * event came to do it. Through resumeClaimedReferral: the ledger row present
+ * -> points_awarded set and the email queued (fixed job id), or reversed if
+ * the claimed order was cancelled or refunded in full since; absent -> the
+ * payment is finished if the order still qualifies, otherwise the referral is
+ * put back to `pending` and a complete_referral job decides again (a later
+ * order of hers may qualify).
+ */
+export async function finishClaimedReferrals(now: Date = new Date()): Promise<{
+  recorded: number; paid: number; reversed: number; released: number; failed: number;
+}> {
+  const out = { recorded: 0, paid: 0, reversed: 0, released: 0, failed: 0 };
+  const { data, error } = await db
+    .from("referrals")
+    .select("*")
+    .eq("status", "completed")
+    .eq("points_awarded", false)
+    .not("reward_points", "is", null)
+    .lt("completed_at", new Date(now.getTime() - CLAIMED_REFERRAL_GRACE_MS).toISOString())
+    .order("completed_at", { ascending: true })
+    .limit(100);
+  if (error) throw new Error(`claimed referral query failed: ${error.message}`);
+  for (const row of (data ?? []) as ReferralRow[]) {
+    try {
+      const customerId = row.referred_shopify_customer_id ? String(row.referred_shopify_customer_id) : "";
+      const hadLedgerRow = (await earnedReferralPoints(row)) !== null;
+      if (!customerId && !hadLedgerRow) { out.failed++; continue; } // nothing to resume against
+      const r = await resumeClaimedReferral(row, customerId);
+      if (r === null) {
+        out.released++;
+        await pointsQueue.add("complete_referral", { shopifyCustomerId: customerId, shop: null });
+      } else if (r.reason?.startsWith("qualifying_order_")) {
+        if (r.reason.endsWith("_before_award")) {
+          out.released++;
+          await pointsQueue.add("complete_referral", { shopifyCustomerId: customerId, shop: null });
+        } else out.reversed++;
+      } else if (r.paid) {
+        if (hadLedgerRow) out.recorded++;
+        else out.paid++;
+      }
+    } catch (err) {
+      out.failed++;
+      console.error(`[finishClaimedReferrals] referral ${row.id} failed:`, err instanceof Error ? err.message : err);
+    }
+  }
+  return out;
 }
 
 async function openReferralFor(customerId: string): Promise<ReferralRow | undefined> {

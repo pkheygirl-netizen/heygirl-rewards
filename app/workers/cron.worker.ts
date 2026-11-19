@@ -3,6 +3,7 @@ import { makeRedis, cronQueue, pointsQueue, notificationQueue, failedJobCounts }
 import { awardOverdueSocialActions, expireSilverPoints } from "../lib/points.service";
 import { listBirthdayMemberIds } from "../lib/birthday.service";
 import { sweepPendingCodes } from "../lib/redemption.service";
+import { finishClaimedReferrals } from "../lib/referrals.service";
 import { getAdminForShop } from "../lib/worker-admin.server";
 import { syncStorefrontConfig } from "../lib/storefront-config.server";
 import { recordHeartbeat } from "../lib/heartbeat.server";
@@ -15,7 +16,7 @@ const TZ = "Asia/Karachi";
 // Every schedule is in Pakistan time.
 const SCHEDULE: Array<{ name: string; pattern: string }> = [
   { name: "cron_heartbeat", pattern: "* * * * *" }, // every minute: "the worker is alive"
-  { name: "cron_pending_codes", pattern: "*/10 * * * *" }, // finish or undo codes left half-made
+  { name: "cron_pending_codes", pattern: "*/10 * * * *" }, // finish or undo codes left half-made; finish referral payments left half-done
   { name: "cron_social_sweep", pattern: "7,37 * * * *" }, // award social claims whose delayed job was lost
   { name: "cron_storefront_config", pattern: "5 * * * *" }, // see runStorefrontConfig
   { name: "cron_expiry", pattern: "0 2 * * *" },
@@ -186,6 +187,25 @@ export async function runStorefrontConfig(now: Date = new Date(), force = false)
   return { synced: true };
 }
 
+/**
+ * Every 10 minutes: codes left half-made (sweepPendingCodes) and, review 11
+ * item 10, referral payments left half-done (finishClaimedReferrals: claimed,
+ * points_awarded still false). One failing does not stop the other; a failure
+ * still fails the run (heartbeat cron_failed:pending_codes) after both ran.
+ */
+export async function runPendingSweeps(now: Date = new Date()) {
+  let referrals: Awaited<ReturnType<typeof finishClaimedReferrals>> | null = null;
+  let referralError: unknown = null;
+  try {
+    referrals = await finishClaimedReferrals(now);
+  } catch (err) {
+    referralError = err;
+  }
+  const codes = await sweepPendingCodes(now);
+  if (referralError) throw referralError;
+  return { ...codes, referrals };
+}
+
 export async function runCronJob(name: string): Promise<unknown> {
   switch (name) {
     case "cron_heartbeat":
@@ -202,7 +222,7 @@ export async function runCronJob(name: string): Promise<unknown> {
       // queued before the schedule was removed does nothing.
       return { retired: true };
     case "cron_pending_codes":
-      return sweepPendingCodes();
+      return runPendingSweeps();
     case "cron_social_sweep":
       return awardOverdueSocialActions();
     case "cron_storefront_config":

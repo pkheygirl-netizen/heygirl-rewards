@@ -22,6 +22,8 @@ import {
   rejectReferral,
   resolveReferrer,
   reverseReferralForOrder,
+  CLAIMED_REFERRAL_GRACE_MS,
+  finishClaimedReferrals,
 } from "./referrals.service";
 
 const NODE = "gid://shopify/DiscountCodeNode/9";
@@ -1016,7 +1018,7 @@ describe("order-time check: the friend's order that used her free-shipping code"
     expect(h.notifications.named("referral_completed")).toHaveLength(0);
   });
 
-  it("L4: the completed email is queued with a fixed job id BEFORE points_awarded is set", async () => {
+  it("L4 / review 11 item 8: points_awarded is set FIRST, then the completed email is queued with a fixed job id", async () => {
     setup();
     await visit();
     friendOrder();
@@ -1027,7 +1029,7 @@ describe("order-time check: the friend's order that used her free-shipping code"
       return realAdd(name, data, opts);
     };
     expect((await completeReferralForCustomer("FR", "s")).paid).toBe(true);
-    expect(flagAtQueue).toEqual([false]);
+    expect(flagAtQueue).toEqual([true]);
     const job = h.notifications.named("referral_completed")[0];
     expect(job.opts).toEqual({ jobId: `referral_completed-${referral().id}` });
     expect(String(job.opts?.jobId)).not.toContain(":"); // BullMQ refuses ":" in custom ids
@@ -1251,6 +1253,139 @@ describe("payment claims the referral first (fix round 8, item 5)", () => {
       expect(ledgerOf("referral_earned")).toHaveLength(0);
     },
   );
+
+  // ── review 11 (items 8-10) ──
+  it("item 8: a Redis failure after points_awarded is set does not fail the payment (logged, no retry needed)", async () => {
+    const { referrer } = setup();
+    await visit();
+    awardedOrder();
+    h.notifications.add = async () => { throw new Error("redis down"); };
+    expect(await completeReferralForCustomer("FR")).toMatchObject({ paid: true, points: 6000 });
+    expect(referral()).toMatchObject({ status: "completed", points_awarded: true });
+    expect(referrer.points_balance).toBe(6000);
+  });
+
+  it("item 8: the referral is reversed by another process between the award and the flag: this call does not set the flag, so no email", async () => {
+    setup();
+    await visit();
+    awardedOrder();
+    const realRpc = h.db.rpc.bind(h.db);
+    vi.spyOn(h.db, "rpc").mockImplementation(async (fn: string, args: Record<string, unknown>) => {
+      const res = await realRpc(fn, args);
+      if (fn === "award_points" && args.p_action_type === "referral_earned") {
+        referral().status = "rejected"; // e.g. the worker's reversal finished first
+      }
+      return res;
+    });
+    await completeReferralForCustomer("FR");
+    expect(referral()).toMatchObject({ status: "rejected", points_awarded: false });
+    expect(h.notifications.named("referral_completed")).toHaveLength(0);
+  });
+
+  it("item 9: the order is cancelled after the payer read it but BEFORE the claim: nothing is added, the referral is pending again, and a later qualifying order pays it", async () => {
+    const { referrer } = setup();
+    await visit();
+    const order = awardedOrder();
+    const realFrom = h.db.from.bind(h.db);
+    let done = false;
+    vi.spyOn(h.db, "from").mockImplementation((table: string) => {
+      // the worker's cancellation lands while payReferral reads the referrer (before its claim);
+      // its reverseReferralForOrder finds nothing claimed yet
+      if (table === "members" && !done && new Error().stack?.includes("payReferral")) {
+        done = true;
+        order.cancelled_at = "2026-11-12T00:00:00Z";
+      }
+      return realFrom(table);
+    });
+    expect(await completeReferralForCustomer("FR")).toMatchObject({ paid: false, reason: "qualifying_order_cancelled_before_award" });
+    expect(done).toBe(true);
+    expect(referral()).toMatchObject({ status: "pending", points_awarded: false, reward_points: null, shopify_order_id: null, completed_at: null });
+    expect(ledgerOf("referral_earned")).toHaveLength(0);
+    expect(ledgerOf("referral_reversal")).toHaveLength(0);
+    expect(h.notifications.named("referral_completed")).toHaveLength(0);
+    // her next order is fulfilled and paid: it is now her first qualifying order and pays the referrer
+    awardedOrder("O2", { placed_at: "2026-11-13T00:00:00Z" });
+    expect(await completeReferralForCustomer("FR")).toMatchObject({ paid: true, points: 6000, orderId: "O2" });
+    expect(referrer.points_balance).toBe(6000);
+    expect(h.notifications.named("referral_completed")).toHaveLength(1);
+  });
+
+  describe("item 10: the cron sweep finishes referrals left claimed (completed, points_awarded=false)", () => {
+    const NOW = new Date("2026-11-20T00:00:00Z");
+    const age = (minutes: number) => Object.assign(referral(), { completed_at: new Date(NOW.getTime() - minutes * 60_000).toISOString() });
+    const failAward = () => vi.spyOn(h.db, "rpc").mockImplementationOnce(async () => ({ data: null, error: { code: "08006", message: "connection reset" } }));
+
+    it("ledger row present (process stopped after the award): points_awarded set, the email queued once under the fixed job id", async () => {
+      const { referrer } = setup();
+      await visit();
+      awardedOrder();
+      stopAfterAward();
+      await expect(completeReferralForCustomer("FR")).rejects.toThrow("process stopped");
+      age(11);
+      expect(await finishClaimedReferrals(NOW)).toEqual({ recorded: 1, paid: 0, reversed: 0, released: 0, failed: 0 });
+      expect(referral()).toMatchObject({ status: "completed", points_awarded: true, reward_points: 6000 });
+      expect(h.notifications.named("referral_completed")).toHaveLength(1);
+      expect(h.notifications.named("referral_completed")[0].opts).toEqual({ jobId: `referral_completed-${referral().id}` });
+      expect(await finishClaimedReferrals(NOW)).toEqual({ recorded: 0, paid: 0, reversed: 0, released: 0, failed: 0 });
+      expect(referrer.points_balance).toBe(6000);
+      expect(ledgerOf("referral_earned")).toHaveLength(1);
+    });
+
+    it("ledger row present but the claimed order was cancelled since: reversed, no email", async () => {
+      const { referrer } = setup();
+      await visit();
+      const order = awardedOrder();
+      stopAfterAward();
+      await expect(completeReferralForCustomer("FR")).rejects.toThrow();
+      order.cancelled_at = "2026-11-12T00:00:00Z";
+      age(30);
+      expect(await finishClaimedReferrals(NOW)).toMatchObject({ reversed: 1 });
+      expect(referrer.points_balance).toBe(0);
+      expect(referral()).toMatchObject({ status: "rejected" });
+      expect(h.notifications.named("referral_completed")).toHaveLength(0);
+    });
+
+    it("no ledger row (the award failed), the order still qualifies: paid through the resume path", async () => {
+      const { referrer } = setup();
+      await visit();
+      awardedOrder();
+      failAward();
+      await expect(completeReferralForCustomer("FR")).rejects.toThrow("connection reset");
+      age(11);
+      expect(await finishClaimedReferrals(NOW)).toEqual({ recorded: 0, paid: 1, reversed: 0, released: 0, failed: 0 });
+      expect(referral()).toMatchObject({ status: "completed", points_awarded: true });
+      expect(referrer.points_balance).toBe(6000);
+      expect(h.notifications.named("referral_completed")).toHaveLength(1);
+    });
+
+    it("no ledger row and the order no longer qualifies: back to pending, and a complete_referral job decides again", async () => {
+      const { referrer } = setup();
+      await visit();
+      const order = awardedOrder();
+      failAward();
+      await expect(completeReferralForCustomer("FR")).rejects.toThrow();
+      order.cancelled_at = "2026-11-12T00:00:00Z";
+      age(11);
+      expect(await finishClaimedReferrals(NOW)).toMatchObject({ released: 1, failed: 0 });
+      expect(referral()).toMatchObject({ status: "pending", reward_points: null, shopify_order_id: null });
+      expect(h.points.named("complete_referral")[0].data).toEqual({ shopifyCustomerId: "FR", shop: null });
+      expect(referrer.points_balance).toBe(0);
+    });
+
+    it("a claim younger than 10 minutes is left to the payment in flight; a paid or old pre-v3 row is never touched", async () => {
+      const { referrer } = setup();
+      await visit();
+      awardedOrder();
+      failAward();
+      await expect(completeReferralForCustomer("FR")).rejects.toThrow();
+      age(CLAIMED_REFERRAL_GRACE_MS / 60_000 - 1);
+      expect(await finishClaimedReferrals(NOW)).toEqual({ recorded: 0, paid: 0, reversed: 0, released: 0, failed: 0 });
+      expect(referral()).toMatchObject({ status: "completed", points_awarded: false });
+      h.db.seed("referrals", { referrer_member_id: referrer.id, referred_shopify_customer_id: "OLD", status: "completed", points_awarded: false, reward_points: null, completed_at: "2026-01-01T00:00:00Z" });
+      expect(await finishClaimedReferrals(NOW)).toEqual({ recorded: 0, paid: 0, reversed: 0, released: 0, failed: 0 });
+      expect(referrer.points_balance).toBe(0);
+    });
+  });
 
   it("an old row completed without payment by the pre-v3 button (no reward_points) is never paid", async () => {
     const { referrer } = setup();
