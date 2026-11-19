@@ -6,7 +6,7 @@ Section 12 is the live status. Update it whenever work lands.
 
 ## 0. Start here when resuming (updated 19 Nov 2026)
 
-- **Repo:** `pkheygirl-netizen/heygirl-rewards`, branch `v3-rebuild` (Railway web and worker auto-deploy pushes to this branch; never push to `main`). Last pushed commit `ea2dd6c`. The working tree holds two finished but **uncommitted** rounds: the v6 panel layout and the new referral rules (migration 016, order tag, staff morning email). If a new session starts in a fresh container, these changes exist only if they were committed; check `git log` first.
+- **Repo:** `pkheygirl-netizen/heygirl-rewards`, branch `v3-rebuild` (Railway web and worker auto-deploy pushes to this branch; never push to `main`). Last pushed commit `ea2dd6c`. Two finished but **unreviewed** rounds (the v6 panel layout and the new referral rules: migration 016, order tag, staff morning email) are backed up on GitHub branch `wip/v6-referral-checks` (commit `7f6b4da`), which Railway does NOT deploy. Remote `v3-rebuild` is still at `ea2dd6c`. To resume in a fresh container: `git fetch origin && git checkout -B v3-rebuild origin/wip/v6-referral-checks`; push to `v3-rebuild` only after the review passes and the owner has applied 016.
 - **Where we are:** dev-store acceptance testing (section 10). Passed 1–7. Test 8 (referral) found that the "same network" check never worked, so it was replaced (19 Nov). Next: tests 8 (re-run), 9–16.
 - **Next steps, in order:**
   1. Panel change agreed 19 Nov: the "Other VIP levels" section at the bottom of the Rewards tab shows **every level except her own**, in level order (Silver member → Gold, Diamond; Diamond member → Silver, Gold), so she can compare where she stands. (v6 currently shows only the levels above hers.)
