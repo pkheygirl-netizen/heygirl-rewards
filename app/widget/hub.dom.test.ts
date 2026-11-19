@@ -246,6 +246,69 @@ describe("hub.ts: fresh member data on every open", () => {
   });
 });
 
+describe("hub.ts: History answers from an older request are ignored (fix round 8)", () => {
+  type Answer = { rows: Array<{ id: string; type: string; label: string; points: number; at: string; note: string | null }>; hasMore: boolean };
+  const row = (label: string) => ({ id: label, type: "earned", label, points: 100, at: "2026-11-18T10:00:00Z", note: null });
+  /** fetch whose History answers are released by the test, in any order. */
+  function slowHistory() {
+    const pending: Array<{ url: string; release: (a: Answer) => void }> = [];
+    const fetchMock = vi.fn((url: string) => new Promise((resolve) => {
+      if (String(url).indexOf("/history") < 0) return resolve({ ok: true, json: () => Promise.resolve({}) });
+      pending.push({ url: String(url), release: (a) => resolve({ ok: true, json: () => Promise.resolve(a) }) });
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    return pending;
+  }
+  const count = (html: string, text: string) => html.split(text).length - 1;
+
+  it("a slow page-1 answer from an earlier open is not added to the rows of the new open", async () => {
+    const h = await load();
+    const pending = slowHistory();
+    h.api._hub!("history", null); // first open: request 1
+    h.api._hub!("", document.getElementById("hg-launcher") as unknown as HTMLElement); // close
+    h.api._hub!("history", null); // reopen: request 2
+    expect(pending).toHaveLength(2);
+    pending[1].release({ rows: [row("Order #1001")], hasMore: false });
+    await flush();
+    pending[0].release({ rows: [row("Order #1001")], hasMore: false }); // the old answer arrives late
+    await flush();
+    expect(count(h.body().innerHTML, "Order #1001")).toBe(1);
+  });
+
+  it("an old answer that arrives first is dropped too; the latest answer is shown", async () => {
+    const h = await load();
+    const pending = slowHistory();
+    h.api._hub!("history", null);
+    h.api._hub!("", document.getElementById("hg-launcher") as unknown as HTMLElement);
+    h.api._hub!("history", null);
+    pending[0].release({ rows: [row("Old row")], hasMore: false });
+    await flush();
+    expect(h.body().innerHTML).not.toContain("Old row");
+    expect(h.body().innerHTML).toContain("Loading");
+    pending[1].release({ rows: [row("New row")], hasMore: false });
+    await flush();
+    expect(h.body().innerHTML).toContain("New row");
+    expect(h.body().innerHTML).not.toContain("Old row");
+  });
+
+  it("Show more pressed twice while a page is loading asks once, and pages are added in order", async () => {
+    const h = await load();
+    const pending = slowHistory();
+    h.api._hub!("history", null);
+    pending[0].release({ rows: [row("Page one")], hasMore: true });
+    await flush();
+    h.clickAct("more");
+    h.clickAct("more"); // second press while page 2 is on its way: ignored
+    expect(pending).toHaveLength(2);
+    expect(pending[1].url).toContain("page=2");
+    pending[1].release({ rows: [row("Page two")], hasMore: false });
+    await flush();
+    const html = h.body().innerHTML;
+    expect(html.indexOf("Page one")).toBeLessThan(html.indexOf("Page two"));
+    expect(count(html, "Page two")).toBe(1);
+  });
+});
+
 describe("hub.ts: panel v5 tabs (owner, 19 Nov 2026)", () => {
   /** The tier section inside the body, placed `top` px below the top of the body's content. */
   const tiersAt = (h: Harness, top: number) => {

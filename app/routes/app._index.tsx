@@ -28,7 +28,7 @@ import { getSettingsRow } from "../lib/admin-settings.server";
 import { errorMessage } from "../lib/admin-validate.server";
 import { ACTIVITY_FILTERS, PROGRAM_OFF_EFFECTS } from "../components/admin-constants";
 import { handleReviewClaimIntent } from "../lib/admin-review-claims.server";
-import { blockReferrer, dismissReferralAlert, listReferralOrderAlerts, shopifyOrderUrl } from "../lib/admin-referrals.server";
+import { blockReferrer, countReferralsNotChecked, dismissReferralAlert, listReferralOrderAlerts, shopifyOrderUrl } from "../lib/admin-referrals.server";
 import { ReviewClaimConfirm, type ClaimDecision } from "../components/review-claim-confirm";
 
 const LIST_PAGE = 25;
@@ -48,7 +48,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const view = sp.get("view") === "claims" ? "claims" : sp.get("view") === "expiring" ? "expiring" : null;
   const listPage = pageParam(sp, "page");
 
-  const [stats, previous, series, tiers, attention, health, activity, settings, claims, expiring, referralAlerts] = await Promise.all([
+  const [stats, previous, series, tiers, attention, health, activity, settings, claims, expiring, referralAlerts, referralsNotChecked] = await Promise.all([
     getPeriodStats(period.from, period.to),
     getPeriodStats(period.prevFrom, period.prevTo),
     getPointsSeries(period.from, period.to),
@@ -60,6 +60,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     view === "claims" ? listPendingReviewClaims(listPage, LIST_PAGE) : null,
     view === "expiring" ? listExpiringMembers(30, listPage, LIST_PAGE) : null,
     listReferralOrderAlerts(10),
+    countReferralsNotChecked(),
   ]);
 
   return json({
@@ -67,6 +68,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     activity, filter, activityPage, view, listPage, claims, expiring,
     // Only reason codes are kept: no phone number or address reaches the page.
     referralAlerts: referralAlerts.map((a) => ({ ...a, orderUrl: shopifyOrderUrl(session.shop, a.orderId) })),
+    // A count only: which referrals is shown on the Referrals page.
+    referralsNotChecked,
     programEnabled: settings.program_enabled !== false,
     // rewards customers can choose right now (hidden rewards are not available)
     rewardsShown: visibleRedemptionTiers(readRedemptionTiers(settings.redemption_tiers)).length,
@@ -127,7 +130,7 @@ export default function Home() {
   const nothingToRedeem = d.programEnabled && d.rewardsShown === 0;
   const nothingWaiting =
     !nothingToRedeem && d.attention.referralsFlagged === 0 && d.attention.reviewClaimsPending === 0 &&
-    d.attention.expiringMembers === 0 && d.attention.gdprOpen === 0 && d.referralAlerts.length === 0;
+    d.attention.expiringMembers === 0 && d.attention.gdprOpen === 0 && d.referralAlerts.length === 0 && d.referralsNotChecked === 0;
 
   return (
     <Page
@@ -204,8 +207,15 @@ export default function Home() {
               {d.attention.referralsFlagged > 0 ? (
                 <AttentionRow
                   title={`${fmtInt(d.attention.referralsFlagged)} referral${d.attention.referralsFlagged === 1 ? "" : "s"} held for review`}
-                  detail="The friend looks like the referrer (similar email, same full name, or her order delivers to the referrer's address). Approve or reject each one."
+                  detail="The friend looks like the referrer (similar email, same full name, or her order delivers to the referrer's address), or her order could not be checked. Approve or reject each one."
                   action={<Button url="/app/referrals?status=flagged">Review</Button>}
+                />
+              ) : null}
+              {d.referralsNotChecked > 0 ? (
+                <AttentionRow
+                  title={`${fmtInt(d.referralsNotChecked)} referral order${d.referralsNotChecked === 1 ? " was" : "s were"} not checked`}
+                  detail="The friend's order could not be compared with the referrer's phone number and address, because Shopify did not share the delivery details or did not answer. Those Shopify did not answer are held for you; the others were paid as usual. Look at each one, then dismiss it."
+                  action={<Button url="/app/referrals?check=not_checked">See which</Button>}
                 />
               ) : null}
               {d.attention.reviewClaimsPending > 0 ? (

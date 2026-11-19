@@ -7,9 +7,12 @@ vi.mock("./worker-admin.server", async () => (await import("./testing/harness"))
 import { h, opName, resetHarness, seedMember } from "./testing/harness";
 import { bustSettingsCache } from "./settings.server";
 import { issueReferralFriendCode } from "./referral-bonus.service";
+import { ShopifyRateLimitError } from "./shopify-graphql.server";
 import {
   approveReferral,
   checkReferralOrder,
+  ORDER_CHECK_FAILED_FLAG,
+  orderCheckFailure,
   completeReferralForCustomer,
   REFERRAL_ORDER_TAG,
   resetTagScopeLog,
@@ -480,7 +483,7 @@ describe("order-time check: the friend's order that used her free-shipping code"
     await run();
     const call = checkCalls()[0];
     expect(call.variables).toEqual({ orderId: "gid://shopify/Order/O1", customerId: "gid://shopify/Customer/REF" });
-    for (const f of ["shippingAddress { address1 city phone }", "defaultPhoneNumber { phoneNumber }", "defaultAddress { address1 city phone }",
+    for (const f of ["shippingAddress { address1 address2 city phone }", "defaultPhoneNumber { phoneNumber }", "defaultAddress { address1 address2 city phone }",
       "addressesV2(first: 10)", "orders(first: 5, sortKey: CREATED_AT, reverse: true)"]) {
       expect(call.query).toContain(f);
     }
@@ -619,6 +622,174 @@ describe("order-time check: the friend's order that used her free-shipping code"
     expect(referrer.points_balance).toBe(6000);
   });
 
+  // ── fix round 8: what counts as "Shopify did not answer" ──
+  /** @shopify/shopify-api GraphqlQueryError: HTTP 200 with GraphQL errors, the whole answer in `body`. */
+  const gqlError = (messages: Array<string | { message: string; code?: string }>, data: unknown) =>
+    Object.assign(new Error(typeof messages[0] === "string" ? messages[0] : messages[0].message), {
+      response: { code: 200 },
+      body: {
+        data,
+        errors: { graphQLErrors: messages.map((m) => (typeof m === "string" ? { message: m } : { message: m.message, extensions: { code: m.code } })) },
+      },
+    });
+  const failCheckWith = (make: () => unknown) => {
+    h.graphql = (q) => {
+      if (opName(q) === "HgReferralOrderCheck") throw make();
+      return withCheck(q);
+    };
+  };
+
+  it("orderCheckFailure: retry for everything except 'Shopify answered but withheld fields'", () => {
+    expect(orderCheckFailure(new ShopifyRateLimitError()).retry).toBe(true);
+    expect(orderCheckFailure(Object.assign(new Error("502"), { response: { code: 502 } })).retry).toBe(true);
+    expect(orderCheckFailure(Object.assign(new Error("400"), { response: { code: 400 } })).retry).toBe(true);
+    expect(orderCheckFailure(Object.assign(new Error("401"), { response: { code: 401 } })).retry).toBe(true);
+    expect(orderCheckFailure(new Error("something odd")).retry).toBe(true);
+    expect(orderCheckFailure("a string").retry).toBe(true);
+    expect(orderCheckFailure(new Error("Shopify GraphQL returned no data: {}")).retry).toBe(true);
+    expect(orderCheckFailure(gqlError(["Internal error. Looks like something went wrong on our end."], null)).retry).toBe(true);
+    // one access error beside one other error: not only access, so retry
+    expect(orderCheckFailure(gqlError(["This app is not approved to use the phoneNumber field.", "Field 'x' doesn't exist"], { order: null })).retry).toBe(true);
+    // answered: 403, or only access errors (with or without data)
+    expect(orderCheckFailure(Object.assign(new Error("403"), { response: { code: 403 } }))).toMatchObject({ retry: false, data: null });
+    expect(orderCheckFailure(gqlError([{ message: "Access denied for customer field.", code: "ACCESS_DENIED" }], null))).toMatchObject({ retry: false, data: null });
+    expect(orderCheckFailure(gqlError(["This app is not approved to use the phoneNumber field."], { order: { shippingAddress: null } })))
+      .toMatchObject({ retry: false, data: { order: { shippingAddress: null } } });
+  });
+
+  it("unknown error, GraphQL errors with no data, a 400, or an answer without data: nothing decided, the job retries, nothing paid", async () => {
+    for (const make of [
+      () => new Error("something odd"),
+      () => gqlError(["Internal error. Looks like something went wrong on our end."], null),
+      () => Object.assign(new Error("Bad Request"), { response: { code: 400 } }),
+    ]) {
+      resetHarness(); bustSettingsCache(); h.graphql = withCheck;
+      const { referrer } = setup();
+      await visit();
+      friendOrder();
+      failCheckWith(make);
+      await expect(run()).rejects.toThrow();
+      await expect(completeReferralForCustomer("FR", "s")).rejects.toThrow();
+      expect(referral()).toMatchObject({ status: "pending", order_check: null, order_checked_order_id: null });
+      expect(referrer.points_balance).toBe(0);
+    }
+    // Shopify answers with no data at all ({ data: null } from the client): also retried
+    resetHarness(); bustSettingsCache(); h.graphql = withCheck;
+    setup();
+    await visit();
+    h.graphql = (q) => (opName(q) === "HgReferralOrderCheck" ? null : withCheck(q));
+    await expect(run()).rejects.toThrow(/no data/);
+    expect(referral().order_check).toBeNull();
+  });
+
+  it("Shopify's real error shape for withheld fields: the fields that came back are compared", async () => {
+    const { referrer } = setup({ phone: null });
+    await visit();
+    failCheckWith(() => gqlError(["This app is not approved to use the phoneNumber field."], {
+      order: { shippingAddress: { address1: "House 12 Street 5 DHA Phase 6", city: "Karachi", phone: null } },
+      customer: { defaultPhoneNumber: null, defaultAddress: HOME, addressesV2: { nodes: [] }, orders: { nodes: [] } },
+    }));
+    expect(await run()).toMatchObject({ checked: true, result: "same_address" });
+    expect(referrer.points_balance).toBe(0);
+  });
+
+  it("missing access (ACCESS_DENIED, no data, or HTTP 403): 'not checked' and the referral proceeds, as the contract says", async () => {
+    for (const make of [
+      () => gqlError([{ message: "Access denied for order field.", code: "ACCESS_DENIED" }], null),
+      () => Object.assign(new Error("Forbidden"), { response: { code: 403 } }),
+    ]) {
+      resetHarness(); bustSettingsCache(); h.graphql = withCheck;
+      const { referrer } = setup();
+      await visit();
+      failCheckWith(make);
+      expect(await run()).toMatchObject({ checked: true, result: "not_checked" });
+      expect(referral()).toMatchObject({ status: "pending", order_check: "not_checked", alert_resolved_at: null });
+      friendOrder();
+      expect((await completeReferralForCustomer("FR", "s")).paid).toBe(true);
+      expect(referrer.points_balance).toBe(6000);
+    }
+  });
+
+  it("the job's final attempt: a check Shopify still cannot answer holds the referral (visible, not paid); approval then pays without asking again", async () => {
+    const { referrer } = setup();
+    await visit();
+    friendOrder();
+    failCheckWith(() => Object.assign(new Error("Bad Request"), { response: { code: 400 } }));
+    await expect(completeReferralForCustomer("FR", "s", { finalAttempt: false })).rejects.toThrow();
+    expect(referral().status).toBe("pending");
+    const last = await completeReferralForCustomer("FR", "s", { finalAttempt: true });
+    expect(last).toMatchObject({ paid: false, reason: "held_for_review", orderId: "O1" });
+    expect(referral()).toMatchObject({
+      status: "flagged", order_check: "not_checked", order_checked_order_id: "O1", fraud_flags: [ORDER_CHECK_FAILED_FLAG], alert_resolved_at: null,
+    });
+    expect(String(referral().block_reason)).toContain("could not be checked");
+    expect(referrer.points_balance).toBe(0);
+    expect(tagCalls()).toHaveLength(0); // nothing matched: no tag
+    const checksSoFar = checkCalls().length;
+    expect(await approveReferral(String(referral().id), "staff", "s")).toMatchObject({ ok: true, paid: true });
+    expect(referrer.points_balance).toBe(6000);
+    expect(checkCalls()).toHaveLength(checksSoFar);
+  });
+
+  it("an unknown error on the final attempt also holds (never pays silently)", async () => {
+    const { referrer } = setup();
+    await visit();
+    friendOrder();
+    failCheckWith(() => new Error("something odd"));
+    expect(await completeReferralForCustomer("FR", "s", { finalAttempt: true })).toMatchObject({ paid: false, reason: "held_for_review" });
+    expect(referral()).toMatchObject({ status: "flagged", order_check: "not_checked" });
+    expect(referrer.points_balance).toBe(0);
+  });
+
+  it("approval while Shopify cannot answer the check: the approval stands and a background job finishes it", async () => {
+    const { referrer } = setup({ first_name: "Aisha", last_name: "Khan" }, { first_name: "Aisha", last_name: "Khan" });
+    await visit();
+    expect(referral().status).toBe("flagged");
+    // her code already exists (issued earlier), so approval does not issue another
+    h.db.seed("loyalty_codes", { id: "code-held", code: "HELDCODE", member_id: "x", kind: "referral_friend", status: "active", issue_key: `referral_friend:${String(referral().id)}` });
+    referral().friend_code_id = "code-held";
+    friendOrder({ discount_codes: ["HELDCODE"] });
+    failCheckWith(() => Object.assign(new Error("Bad Request"), { response: { code: 400 } }));
+    const r = await approveReferral(String(referral().id), "staff", "s");
+    expect(r).toMatchObject({ ok: true, paid: false, reason: "queued" });
+    expect(h.points.named("complete_referral")[0].data).toEqual({ shopifyCustomerId: "FR", shop: "s" });
+    expect(referrer.points_balance).toBe(0);
+    h.graphql = withCheck; // the job runs once Shopify is back
+    expect((await completeReferralForCustomer("FR", "s")).paid).toBe(true);
+    expect(referrer.points_balance).toBe(6000);
+  });
+
+  it("tagsAdd throttled: nothing stored (no false 'may not have permission'), the referral is still blocked, the next event tags it", async () => {
+    tagReply = () => { throw new ShopifyRateLimitError(); };
+    setup();
+    await visit();
+    ship = { address1: "Flat 3", city: "Lahore", phone: "03001234567" };
+    expect(await run()).toMatchObject({ checked: true, result: "same_phone" });
+    expect(referral()).toMatchObject({ status: "blocked", order_tag: null });
+    tagReply = () => ({ tagsAdd: { node: { id: "gid://shopify/Order/O1" }, userErrors: [] } });
+    // a later event for the same order (the check itself does not run again)
+    expect(await run()).toEqual({ checked: false, reason: "no_open_referral" });
+    expect(referral().order_tag).toBe("tagged");
+    expect(checkCalls()).toHaveLength(1);
+    await run();
+    expect(tagCalls()).toHaveLength(2); // tagged once successfully, never again
+  });
+
+  it("tagsAdd 5xx is repeated (adding the same tag twice is harmless); a THROTTLED GraphQL error is not 'failed'", async () => {
+    let n = 0;
+    tagReply = () => {
+      n++;
+      if (n === 1) throw Object.assign(new Error("502"), { response: { code: 502 } });
+      return { tagsAdd: { node: { id: "gid://shopify/Order/O1" }, userErrors: [] } };
+    };
+    setup();
+    await visit();
+    ship = { address1: "Flat 3", city: "Lahore", phone: "03001234567" };
+    await run();
+    expect(tagCalls()).toHaveLength(2);
+    expect(referral().order_tag).toBe("tagged");
+  });
+
   it("the friend's code matches without regard to case", async () => {
     setup();
     await visit();
@@ -634,5 +805,83 @@ describe("friend's code while a referral is held (safety net)", () => {
     expect(h.db.table("loyalty_codes")).toHaveLength(0);
     await approveReferral(String(referral().id), "staff", "s");
     expect(h.db.table("loyalty_codes")[0]).toMatchObject({ kind: "referral_friend", status: "active" });
+  });
+});
+
+describe("payment claims the referral first (fix round 8, item 5)", () => {
+  it("a Reject pressed while the points are being added does not leave her paid with the referral rejected", async () => {
+    const { referrer } = setup();
+    await visit();
+    awardedOrder();
+    const realRpc = h.db.rpc.bind(h.db);
+    let rejected: { ok: boolean } | null = null;
+    vi.spyOn(h.db, "rpc").mockImplementation(async (fn: string, args: Record<string, unknown>) => {
+      if (fn === "award_points" && args.p_action_type === "referral_earned" && !rejected) {
+        rejected = await rejectReferral(String(referral().id), "staff"); // staff press Reject in the gap
+      }
+      return realRpc(fn, args);
+    });
+    expect((await completeReferralForCustomer("FR")).paid).toBe(true);
+    expect(rejected).toEqual({ ok: false }); // too late: the referral was already claimed for payment
+    expect(referral()).toMatchObject({ status: "completed", points_awarded: true });
+    expect(referrer.points_balance).toBe(6000);
+  });
+
+  it("a Reject that lands before the claim wins: nothing is paid", async () => {
+    const { referrer } = setup();
+    await visit();
+    awardedOrder();
+    // Reject lands after the referral was read but before the claim (when the referrer row is read)
+    const realFrom = h.db.from.bind(h.db);
+    let done = false;
+    vi.spyOn(h.db, "from").mockImplementation((table: string) => {
+      if (table === "members" && !done && referral().status === "pending" && h.db.table("order_webhook_state").length > 0 && new Error().stack?.includes("payReferral")) {
+        done = true;
+        referral().status = "rejected";
+      }
+      return realFrom(table);
+    });
+    const r = await completeReferralForCustomer("FR");
+    expect(done).toBe(true);
+    expect(r).toMatchObject({ paid: false, reason: "not_pending" });
+    expect(referral().status).toBe("rejected");
+    expect(referrer.points_balance).toBe(0);
+  });
+
+  it("the award fails after the claim: the next call finishes it, once", async () => {
+    const { referrer } = setup();
+    await visit();
+    awardedOrder();
+    const realRpc = h.db.rpc.bind(h.db);
+    const spy = vi.spyOn(h.db, "rpc").mockImplementationOnce(async () => ({ data: null, error: { code: "08006", message: "connection reset" } }));
+    await expect(completeReferralForCustomer("FR")).rejects.toThrow("connection reset");
+    expect(referral()).toMatchObject({ status: "completed", points_awarded: false, reward_points: 6000 });
+    expect(referrer.points_balance).toBe(0);
+    spy.mockImplementation(realRpc);
+    expect(await completeReferralForCustomer("FR")).toMatchObject({ paid: true, points: 6000, orderId: "O1" });
+    expect(referral()).toMatchObject({ status: "completed", points_awarded: true });
+    expect(referrer.points_balance).toBe(6000);
+    expect((await completeReferralForCustomer("FR")).reason).toBe("no_open_referral");
+    expect(referrer.points_balance).toBe(6000);
+  });
+
+  it("claimed but the order was cancelled before the award finished: put back to pending, not paid", async () => {
+    const { referrer } = setup();
+    await visit();
+    const order = awardedOrder();
+    vi.spyOn(h.db, "rpc").mockImplementationOnce(async () => ({ data: null, error: { code: "08006", message: "connection reset" } }));
+    await expect(completeReferralForCustomer("FR")).rejects.toThrow();
+    order.cancelled_at = "2026-11-12T00:00:00Z";
+    expect(await completeReferralForCustomer("FR")).toMatchObject({ paid: false, reason: "no_order" });
+    expect(referral()).toMatchObject({ status: "pending", points_awarded: false, reward_points: null, shopify_order_id: null });
+    expect(referrer.points_balance).toBe(0);
+  });
+
+  it("an old row completed without payment by the pre-v3 button (no reward_points) is never paid", async () => {
+    const { referrer } = setup();
+    h.db.seed("referrals", { referrer_member_id: referrer.id, referred_shopify_customer_id: "FR", status: "completed", points_awarded: false, reward_points: null });
+    awardedOrder();
+    expect(await completeReferralForCustomer("FR")).toMatchObject({ paid: false, reason: "no_open_referral" });
+    expect(referrer.points_balance).toBe(0);
   });
 });

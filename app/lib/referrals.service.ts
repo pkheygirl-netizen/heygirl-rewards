@@ -18,7 +18,10 @@ import { getSettings, isEarnRuleEnabled } from "./settings.server";
 import { effectiveReferralPoints } from "./influencer.service";
 import { issueReferralFriendCode } from "./referral-bonus.service";
 import { expiresAtForTier } from "./points.service";
-import { ORDER_FLAGS, orderVerdict, REFERRAL_ORDER_TAG, signInVerdict, type AddressLike, type OrderCheckResult } from "./referral-checks.server";
+import {
+  ORDER_CHECK_FAILED_FLAG, ORDER_CHECK_FAILED_REASON, ORDER_FLAGS, orderVerdict, REFERRAL_ORDER_TAG, signInVerdict,
+  type AddressLike, type OrderCheckResult,
+} from "./referral-checks.server";
 
 type ReferralRow = Database["public"]["Tables"]["referrals"]["Row"];
 type MemberRow = Database["public"]["Tables"]["members"]["Row"];
@@ -205,18 +208,18 @@ export async function recordReferralVisit(input: {
 
 // ── Order-time check (the friend's order that used her free-shipping code) ──
 
-type ShippingLite = { address1?: string | null; city?: string | null; phone?: string | null } | null;
+type ShippingLite = { address1?: string | null; address2?: string | null; city?: string | null; phone?: string | null } | null;
 
 const REFERRAL_ORDER_CHECK = `#graphql
   query HgReferralOrderCheck($orderId: ID!, $customerId: ID!) {
     order(id: $orderId) {
-      shippingAddress { address1 city phone }
+      shippingAddress { address1 address2 city phone }
     }
     customer(id: $customerId) {
       defaultPhoneNumber { phoneNumber }
-      defaultAddress { address1 city phone }
-      addressesV2(first: 10) { nodes { address1 city phone } }
-      orders(first: 5, sortKey: CREATED_AT, reverse: true) { nodes { shippingAddress { address1 city phone } } }
+      defaultAddress { address1 address2 city phone }
+      addressesV2(first: 10) { nodes { address1 address2 city phone } }
+      orders(first: 5, sortKey: CREATED_AT, reverse: true) { nodes { shippingAddress { address1 address2 city phone } } }
     }
   }`;
 
@@ -230,13 +233,55 @@ type OrderCheckData = {
   } | null;
 };
 
+/** Shopify withheld data the app may not read (protected customer data, a missing scope): asking again will not help. */
+const ACCESS_ERROR_RE = /not approved to (use|access)|access denied|protected customer data|required access/i;
+
+type GraphqlErrorLike = { message?: unknown; extensions?: { code?: unknown } | null } | null | undefined;
+
+/**
+ * What a failed order-check request means (contract rule 10):
+ *   retry        throttled, 5xx, no response, a 4xx other than 403, GraphQL
+ *                errors that are not about access, an answer without data, or
+ *                an error of unknown kind: nothing is decided, the caller
+ *                throws so the job is retried (and nothing is paid meanwhile)
+ *   answered     Shopify answered but withheld fields the app may not read
+ *                (HTTP 200 with "not approved to access/use ..." or
+ *                ACCESS_DENIED errors only), or HTTP 403: whatever data came
+ *                back is used and missing fields are simply missing
+ *                ("not_checked" when nothing comparable is left)
+ */
+export function orderCheckFailure(err: unknown): { retry: true; note: string } | { retry: false; data: unknown; note: string } {
+  const note = err instanceof Error ? err.message.slice(0, 300) : "unknown error";
+  if (err instanceof ShopifyRateLimitError) return { retry: true, note };
+  const kind = classifyShopifyError(err).kind;
+  if (kind === "transient" || kind === "throttled") return { retry: true, note };
+  if (!err || typeof err !== "object") return { retry: true, note };
+  const e = err as {
+    response?: { code?: unknown; status?: unknown } | null;
+    body?: { data?: unknown; errors?: { graphQLErrors?: GraphqlErrorLike[] } | GraphqlErrorLike[] } | null;
+  };
+  const status = typeof Response !== "undefined" && err instanceof Response ? err.status : Number(e.response?.code ?? e.response?.status);
+  if (status === 403) return { retry: false, data: null, note };
+  // @shopify/shopify-api throws GraphqlQueryError for HTTP 200 with GraphQL
+  // errors, carrying the whole answer in `body` (body.data, body.errors.graphQLErrors).
+  const body = e.body;
+  if (body && typeof body === "object") {
+    const raw = Array.isArray(body.errors) ? body.errors : body.errors?.graphQLErrors;
+    const list: GraphqlErrorLike[] = Array.isArray(raw) && raw.length > 0 ? raw : [{ message: note }];
+    const onlyAccess = list.every((g) => g?.extensions?.code === "ACCESS_DENIED" || ACCESS_ERROR_RE.test(String(g?.message ?? "")));
+    if (onlyAccess) return { retry: false, data: body.data && typeof body.data === "object" ? body.data : null, note };
+  }
+  return { retry: true, note };
+}
+
 /**
  * The friend's shipping details and the referrer's phones and addresses, read
  * from Shopify for an in-memory comparison only (never stored or logged).
  * Without protected customer data access Shopify returns null for the
  * address and phone fields with an error beside them: whatever did come back
- * is used, and a field that did not is simply missing. A throttled or failed
- * request (5xx, network) throws so the caller can try again later.
+ * is used, and a field that did not is simply missing. Every other failure
+ * (throttled, 5xx, unknown, an answer without data) throws so the caller can
+ * try again later (orderCheckFailure).
  */
 async function fetchOrderCheckData(
   shopifyOrderId: string,
@@ -251,19 +296,13 @@ async function fetchOrderCheckData(
     });
     return { data };
   } catch (err) {
-    if (err instanceof ShopifyRateLimitError) throw err;
-    const kind = classifyShopifyError(err).kind;
-    if (kind === "transient" || kind === "throttled") throw err;
-    // HTTP 200 with GraphQL errors (for example fields the app may not read):
-    // @shopify/shopify-api throws GraphqlQueryError carrying the whole answer
-    // in `body`, so the fields that were allowed are still in body.data.
-    const partial = (err as { body?: { data?: unknown } } | null)?.body?.data;
-    const note = err instanceof Error ? err.message.slice(0, 300) : "unknown error";
-    return { data: partial && typeof partial === "object" ? (partial as OrderCheckData) : null, note };
+    const failure = orderCheckFailure(err);
+    if (failure.retry) throw err;
+    return { data: failure.data as OrderCheckData | null, note: failure.note };
   }
 }
 
-export { REFERRAL_ORDER_TAG };
+export { ORDER_CHECK_FAILED_FLAG, ORDER_CHECK_FAILED_REASON, REFERRAL_ORDER_TAG };
 
 const TAG_ORDER = `#graphql
   mutation HgTagReferralOrder($id: ID!, $tags: [String!]!) {
@@ -275,37 +314,73 @@ const TAG_ORDER = `#graphql
 
 let missingScopeLogged = false;
 
+const MISSING_SCOPE_RE = /write_orders|access denied|not approved|scope/i;
+
 /**
  * Add REFERRAL_ORDER_TAG to the order (Admin GraphQL tagsAdd; needs the
  * write_orders scope). The only write the app ever makes to an order: no
- * cancel, no edit, no other field. Never throws: a tag that could not be added
- * is reported as "failed" and the Home alert says so.
+ * cancel, no edit, no other field. Adding the same tag twice is harmless, so
+ * a 5xx is repeated (retryTransient). Never throws:
+ *   "tagged"  done
+ *   "failed"  a permission error or userErrors: the Home alert says the app
+ *             may not have permission
+ *   null      throttled, 5xx or anything else: nothing is stored, and the next
+ *             event for the order tries again (retryOrderTag)
  */
-async function tagOrderForReview(shopifyOrderId: string, shop?: string | null): Promise<"tagged" | "failed"> {
+async function tagOrderForReview(shopifyOrderId: string, shop?: string | null): Promise<"tagged" | "failed" | null> {
   try {
     const admin = await getAdminForShop(shop ?? undefined);
     const data = await shopifyGraphqlWithRetry<{
       tagsAdd: { node: { id: string } | null; userErrors: Array<{ field: string[] | null; message: string }> } | null;
-    }>(admin, TAG_ORDER, { id: `gid://shopify/Order/${shopifyOrderId}`, tags: [REFERRAL_ORDER_TAG] });
+    }>(admin, TAG_ORDER, { id: `gid://shopify/Order/${shopifyOrderId}`, tags: [REFERRAL_ORDER_TAG] }, 3, { retryTransient: true });
     const errors = data.tagsAdd?.userErrors ?? [];
-    if (!data.tagsAdd || errors.length > 0) {
-      console.error(`[referral-check] order ${shopifyOrderId} not tagged: ${errors.map((e) => e.message).join("; ") || "no answer"}`);
+    if (errors.length > 0) {
+      console.error(`[referral-check] order ${shopifyOrderId} not tagged: ${errors.map((e) => e.message).join("; ")}`);
       return "failed";
+    }
+    if (!data.tagsAdd) {
+      console.error(`[referral-check] order ${shopifyOrderId} not tagged yet: no answer; will try again`);
+      return null;
     }
     return "tagged";
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (/write_orders|access denied|not approved|scope/i.test(msg)) {
+    const status = Number((err as { response?: { code?: unknown } } | null)?.response?.code);
+    const kind = err instanceof ShopifyRateLimitError ? "throttled" : classifyShopifyError(err).kind;
+    if (kind !== "throttled" && kind !== "transient" && (status === 403 || MISSING_SCOPE_RE.test(msg))) {
       // Logged once per process: every order would hit the same missing permission.
       if (!missingScopeLogged) {
         missingScopeLogged = true;
         console.error(`[referral-check] orders cannot be tagged: the app needs the write_orders permission (${msg.slice(0, 200)})`);
       }
-    } else {
-      console.error(`[referral-check] order ${shopifyOrderId} not tagged:`, msg.slice(0, 300));
+      return "failed";
     }
-    return "failed";
+    console.error(`[referral-check] order ${shopifyOrderId} not tagged yet (${kind}); will try again:`, msg.slice(0, 300));
+    return null;
   }
+}
+
+/**
+ * A matched order whose tag could not be added yet (throttled, 5xx): try
+ * again. Called on every later event for the friend's order, whatever the
+ * referral's status (a same-phone match is already blocked).
+ */
+async function retryOrderTag(shopifyOrderId: string, shopifyCustomerId: string, shop?: string | null): Promise<void> {
+  const { data, error } = await db
+    .from("referrals")
+    .select("id")
+    .eq("referred_shopify_customer_id", shopifyCustomerId)
+    .eq("order_checked_order_id", shopifyOrderId)
+    .in("order_check", ["same_phone", "same_address"])
+    .is("order_tag", null)
+    .limit(1);
+  if (error) throw new Error(`referral lookup failed: ${error.message}`);
+  const row = data?.[0];
+  if (!row) return;
+  const tag = await tagOrderForReview(shopifyOrderId, shop);
+  if (!tag) return;
+  const { error: updErr } = await db.from("referrals").update({ order_tag: tag }).eq("id", row.id).is("order_tag", null);
+  if (updErr) throw new Error(`referral tag update failed: ${updErr.message}`);
 }
 
 /** Test hook. */
@@ -322,6 +397,15 @@ const appendUnique = (list: unknown, item: string): string[] => {
   return arr.includes(item) ? arr : [...arr, item];
 };
 
+
+/**
+ * Options for the order-time check. `finalAttempt` is true on the background
+ * job's last try (points worker: attemptsMade + 1 >= attempts): a check that
+ * still cannot get an answer from Shopify then holds the referral for staff
+ * instead of throwing again.
+ */
+export type ReferralCheckOptions = { finalAttempt?: boolean };
+
 /**
  * Rule 10, order-time check. For an order of a referred friend that USED her
  * referral free-shipping code, compare the order's shipping phone and address
@@ -334,15 +418,23 @@ const appendUnique = (list: unknown, item: string): string[] => {
  *   (tagsAdd; the only change ever made to an order) and a Home alert is
  *   raised (order_check, alert_resolved_at null).
  * Runs once per order (order_checked_order_id), so webhook replays repeat
- * nothing, the tag included.
+ * nothing; only a tag that could not be added yet (throttled) is tried again.
+ * If Shopify cannot answer (throttled, 5xx, unknown error, no data) this
+ * throws and the job is retried; on the job's final attempt the referral is
+ * held instead (order_check not_checked, flag order_check_failed), so it is
+ * never paid without a check and never left waiting unseen.
  */
 export async function checkReferralOrder(input: {
   shopifyOrderId: string;
   shopifyCustomerId: string;
   discountCodes: string[];
   shop?: string | null;
+  finalAttempt?: boolean;
 }): Promise<ReferralOrderCheck> {
   const orderId = String(input.shopifyOrderId);
+  await retryOrderTag(orderId, String(input.shopifyCustomerId), input.shop).catch((err) =>
+    console.error(`[referral-check] tag retry for order ${orderId} failed:`, err instanceof Error ? err.message : err),
+  );
   const { data: open, error } = await db
     .from("referrals")
     .select("id, referrer_member_id, status, friend_code_id, fraud_flags, block_reason, order_checked_order_id")
@@ -373,9 +465,15 @@ export async function checkReferralOrder(input: {
   if (refErr) throw new Error(`referrer lookup failed: ${refErr.message}`);
   if (!referrer) return { checked: false, reason: "referrer_not_found" };
 
-  const fetched = referrer.shopify_customer_id
-    ? await fetchOrderCheckData(orderId, String(referrer.shopify_customer_id), input.shop)
-    : { data: null, note: "referrer has no Shopify customer id" };
+  let fetched: { data: OrderCheckData | null; note?: string };
+  try {
+    fetched = referrer.shopify_customer_id
+      ? await fetchOrderCheckData(orderId, String(referrer.shopify_customer_id), input.shop)
+      : { data: null, note: "referrer has no Shopify customer id" };
+  } catch (err) {
+    if (!input.finalAttempt) throw err;
+    return holdUncheckedReferral(referral, orderId, err);
+  }
   const d = fetched.data;
   const ship = d?.order?.shippingAddress ?? null;
   const c = d?.customer ?? null;
@@ -417,6 +515,10 @@ export async function checkReferralOrder(input: {
       alert_resolved_at: null,
     };
   } else if (result === "not_checked") {
+    // Shopify answered but gave nothing comparable (fields withheld, no
+    // shipping line): the referral proceeds (rule 10), and Home counts it
+    // until staff dismiss it.
+    patch = { ...base, alert_resolved_at: null };
     // Logged once: the order id is recorded, so later events for it skip the check.
     console.warn(
       `[referral-check] order ${orderId}, referral ${referral.id}: delivery details not available, not checked` +
@@ -430,6 +532,39 @@ export async function checkReferralOrder(input: {
     .in("status", ["pending", "flagged"]);
   if (updErr) throw new Error(`referral check update failed: ${updErr.message}`);
   return { checked: true, result, referralId: String(referral.id) };
+}
+
+/**
+ * The job's last try and Shopify still has not answered: hold the referral for
+ * staff (safest: the referrer is paid only if someone approves) and record
+ * why. order_check = not_checked, so Home counts it; the order id is recorded,
+ * so approval pays without asking Shopify again. No tag (nothing matched).
+ */
+async function holdUncheckedReferral(
+  referral: { id: unknown; status: unknown; fraud_flags: unknown; block_reason: unknown },
+  orderId: string,
+  err: unknown,
+): Promise<ReferralOrderCheck> {
+  console.error(
+    `[referral-check] order ${orderId}, referral ${String(referral.id)}: Shopify did not answer on the last try; referral held for staff:`,
+    err instanceof Error ? err.message.slice(0, 300) : String(err).slice(0, 300),
+  );
+  const earlier = referral.status === "flagged" && referral.block_reason ? `${String(referral.block_reason)}; ` : "";
+  const { error } = await db
+    .from("referrals")
+    .update({
+      status: "flagged",
+      order_check: "not_checked",
+      order_checked_order_id: orderId,
+      order_checked_at: new Date().toISOString(),
+      fraud_flags: appendUnique(referral.fraud_flags, ORDER_CHECK_FAILED_FLAG),
+      block_reason: `${earlier}${ORDER_CHECK_FAILED_REASON}`,
+      alert_resolved_at: null,
+    })
+    .eq("id", String(referral.id))
+    .in("status", ["pending", "flagged"]);
+  if (error) throw new Error(`referral check update failed: ${error.message}`);
+  return { checked: true, result: "not_checked", referralId: String(referral.id) };
 }
 
 // ── Completion ────────────────────────────────────────────────────────────
@@ -482,6 +617,15 @@ const fullyRefunded = (o: OrderLite): boolean => {
   return basis - since < 0.01;
 };
 
+/**
+ * Pay the referrer. The referral is CLAIMED first (pending -> completed with
+ * points_awarded=false, in one conditional update), then the points are added
+ * through award_points (idempotent on member / referral_earned / referral id),
+ * then points_awarded is set. So a Reject (or a block) that lands first wins
+ * and nothing is paid; once the claim is made, Reject no longer applies
+ * (it acts on pending/flagged only). If the award fails or the process stops
+ * after the claim, the next call finishes it (resumeClaimedReferral).
+ */
 async function payReferral(
   referral: ReferralRow,
   shopifyOrderId: string,
@@ -497,6 +641,33 @@ async function payReferral(
   const points = effectiveReferralPoints(r, settings.referral_points);
   if (points <= 0) return { paid: false, reason: "zero_points" };
 
+  const { data: claimed, error: claimErr } = await db
+    .from("referrals")
+    .update({
+      status: "completed",
+      points_awarded: false,
+      completed_at: new Date().toISOString(),
+      shopify_order_id: shopifyOrderId,
+      reward_points: points,
+    })
+    .eq("id", referral.id)
+    .eq("status", "pending")
+    .select("id");
+  if (claimErr) throw new Error(`referral claim failed: ${claimErr.message}`);
+  // Rejected, blocked, held or claimed by another call in the meantime: not paid here.
+  if (!claimed || claimed.length === 0) return { paid: false, reason: "not_pending" };
+
+  return finishReferralPayment(referral, r, points, shopifyOrderId, settings);
+}
+
+/** Second half of payReferral: the award (idempotent) and points_awarded. */
+async function finishReferralPayment(
+  referral: Pick<ReferralRow, "id" | "referred_shopify_customer_id">,
+  r: MemberRow,
+  points: number,
+  shopifyOrderId: string,
+  settings: Awaited<ReturnType<typeof getSettings>>,
+): Promise<{ paid: boolean; points?: number; reason?: string }> {
   const { data, error } = await db.rpc("award_points", {
     p_member_id: r.id,
     p_action_type: "referral_earned",
@@ -513,15 +684,9 @@ async function payReferral(
   // Written on a replay too, so a crash after the award cannot leave it open.
   const { error: updErr } = await db
     .from("referrals")
-    .update({
-      status: "completed",
-      points_awarded: true,
-      completed_at: new Date().toISOString(),
-      shopify_order_id: shopifyOrderId,
-      reward_points: points,
-    })
+    .update({ points_awarded: true })
     .eq("id", referral.id)
-    .eq("status", "pending");
+    .eq("status", "completed");
   if (updErr) throw new Error(`referral update failed: ${updErr.message}`);
 
   if (awarded) {
@@ -530,6 +695,55 @@ async function payReferral(
       .catch((err) => console.error("[payReferral] notification enqueue failed:", err));
   }
   return { paid: awarded, points, reason: awarded ? undefined : "already_paid" };
+}
+
+/**
+ * A referral claimed for payment (completed, points_awarded=false,
+ * reward_points set by payReferral) whose award did not finish. Older rows
+ * marked completed without payment by the pre-v3 admin button have no
+ * reward_points and are never picked up here.
+ */
+async function claimedUnpaidReferralFor(customerId: string): Promise<ReferralRow | undefined> {
+  const { data, error } = await db
+    .from("referrals")
+    .select("*")
+    .eq("referred_shopify_customer_id", customerId)
+    .eq("status", "completed")
+    .eq("points_awarded", false)
+    .not("reward_points", "is", null)
+    .limit(1);
+  if (error) throw new Error(`referral lookup failed: ${error.message}`);
+  return data?.[0] as ReferralRow | undefined;
+}
+
+/**
+ * Finish a claimed payment if the claimed order still qualifies; otherwise
+ * (cancelled or refunded in the meantime, referrer gone) put the referral
+ * back to pending, so the normal rules decide again (a later order may be
+ * her first now).
+ */
+async function resumeClaimedReferral(
+  referral: ReferralRow,
+  customerId: string,
+): Promise<{ paid: boolean; points?: number; reason?: string; orderId?: string } | null> {
+  const order = await firstQualifyingOrder(customerId);
+  const points = Number(referral.reward_points ?? 0);
+  const { data: referrer } = await db.from("members").select("*").eq("id", referral.referrer_member_id).maybeSingle();
+  if (
+    order && referrer && points > 0 &&
+    order.shopify_order_id === referral.shopify_order_id && order.points_awarded && !fullyRefunded(order)
+  ) {
+    const result = await finishReferralPayment(referral, referrer as MemberRow, points, order.shopify_order_id, await getSettings());
+    return { ...result, orderId: order.shopify_order_id };
+  }
+  const { error } = await db
+    .from("referrals")
+    .update({ status: "pending", completed_at: null, shopify_order_id: null, reward_points: null })
+    .eq("id", referral.id)
+    .eq("status", "completed")
+    .eq("points_awarded", false);
+  if (error) throw new Error(`referral release failed: ${error.message}`);
+  return null; // decide again from pending
 }
 
 async function openReferralFor(customerId: string): Promise<ReferralRow | undefined> {
@@ -554,10 +768,19 @@ async function openReferralFor(customerId: string): Promise<ReferralRow | undefi
 export async function completeReferralForCustomer(
   shopifyCustomerId: string,
   shop?: string | null,
+  opts: ReferralCheckOptions = {},
 ): Promise<{ paid: boolean; points?: number; reason?: string; orderId?: string }> {
   const customerId = String(shopifyCustomerId);
-  const found = await openReferralFor(customerId);
-  if (!found) return { paid: false, reason: "no_open_referral" };
+  let found = await openReferralFor(customerId);
+  if (!found) {
+    // A payment claimed earlier whose award did not finish (payReferral).
+    const claimed = await claimedUnpaidReferralFor(customerId);
+    if (!claimed) return { paid: false, reason: "no_open_referral" };
+    const resumed = await resumeClaimedReferral(claimed, customerId);
+    if (resumed) return resumed;
+    found = await openReferralFor(customerId);
+    if (!found) return { paid: false, reason: "no_open_referral" };
+  }
   let referral: ReferralRow = found;
 
   const order = await firstQualifyingOrder(customerId);
@@ -572,6 +795,7 @@ export async function completeReferralForCustomer(
         shopifyCustomerId: customerId,
         discountCodes: order.discount_codes ?? [],
         shop,
+        finalAttempt: opts.finalAttempt,
       });
       if (check.checked) {
         const after = await openReferralFor(customerId);
@@ -632,7 +856,17 @@ export async function approveReferral(
   }
 
   if (!referral.referred_shopify_customer_id) return { ok: true, paid: false };
-  const result = await completeReferralForCustomer(referral.referred_shopify_customer_id, shop || null);
+  let result: Awaited<ReturnType<typeof completeReferralForCustomer>>;
+  try {
+    result = await completeReferralForCustomer(referral.referred_shopify_customer_id, shop || null);
+  } catch (err) {
+    // Shopify could not answer the order check (or the award failed): the
+    // approval stands and a background job finishes it, with retries, so the
+    // referral cannot be left waiting with no event to drive it.
+    console.error("[approveReferral] payment not finished yet, queued:", err instanceof Error ? err.message : err);
+    await pointsQueue.add("complete_referral", { shopifyCustomerId: referral.referred_shopify_customer_id, shop: shop || null });
+    return { ok: true, paid: false, reason: "queued" };
+  }
   return { ok: true, paid: result.paid, reason: result.paid ? undefined : result.reason };
 }
 

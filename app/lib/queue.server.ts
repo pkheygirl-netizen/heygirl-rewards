@@ -46,6 +46,48 @@ export async function failedJobCounts(): Promise<Record<string, number>> {
   return out;
 }
 
+/**
+ * True on a job's last try. BullMQ increments attemptsMade only after a try
+ * fails, so while the n-th try runs attemptsMade = n - 1 (bullmq 5,
+ * Job.shouldRetryJob: retried while attemptsMade + 1 < attempts).
+ */
+export function isFinalAttempt(job: { attemptsMade?: number; opts?: { attempts?: number } }): boolean {
+  return (job.attemptsMade ?? 0) + 1 >= (job.opts?.attempts ?? 1);
+}
+
+/** A queue's failed-job set, scored by the time each job failed (bullmq moveToFinished: ZADD failed <finishedOn ms>). */
+export type FailedSetQueue = {
+  keys: { failed: string };
+  client: Promise<{ zcount: (key: string, min: number | string, max: number | string) => Promise<number> }>;
+};
+
+/** Jobs that failed (for good) at or after `sinceMs` in one queue. */
+export async function failedSince(queue: FailedSetQueue, sinceMs: number): Promise<number> {
+  const client = await queue.client;
+  return Number(await client.zcount(queue.keys.failed, Math.floor(sinceMs), "+inf"));
+}
+
+/**
+ * Jobs that failed since `sinceMs`, per queue, including the Smile import
+ * queue (as System health counts it). Failed jobs are kept 14 days, so a
+ * plain failed count would repeat the same failure in every morning email for
+ * two weeks. -1 = that queue could not be asked.
+ */
+export async function failedJobCountsSince(sinceMs: number): Promise<Record<string, number>> {
+  const queues: Record<string, unknown> = { ...ALL_QUEUES };
+  const imp = await import("./smile-import-queue.server").catch(() => null);
+  if (imp?.importQueue) queues.import = imp.importQueue;
+  const out: Record<string, number> = {};
+  for (const [name, queue] of Object.entries(queues)) {
+    try {
+      out[name] = await failedSince(queue as FailedSetQueue, sinceMs);
+    } catch {
+      out[name] = -1;
+    }
+  }
+  return out;
+}
+
 type UniqueQueue = {
   add: (name: string, data: Record<string, unknown>, opts?: Record<string, unknown>) => Promise<unknown>;
   getJob: (id: string) => Promise<{ isFailed: () => Promise<boolean>; remove: () => Promise<unknown> } | undefined | null>;

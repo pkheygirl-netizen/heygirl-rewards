@@ -17,7 +17,9 @@ async function load(script: Parameters<typeof fakeDb>[0] = {}) {
   vi.resetModules();
   const fake = fakeDb(script);
   vi.doMock("../db.server", () => ({ db: fake.db }));
-  vi.doMock("./referrals.service", () => ({ approveReferral, rejectReferral }));
+  vi.doMock("./referrals.service", () => ({
+    approveReferral, rejectReferral,
+  }));
   vi.doMock("./admin-members.server", () => ({ setReferralsBlocked }));
   const mod = await import("./admin-referrals.server");
   return { fake, mod };
@@ -220,6 +222,46 @@ describe("one referral, and Home alerts from the order-time check (016)", () => 
     expect(await mod.blockReferrer(ID, "Ayesha")).toEqual({ ok: true, message: "Referrer blocked. Her referral link no longer earns" });
     expect(setReferralsBlocked).toHaveBeenCalledWith("m1", true, "Ayesha");
     expect(fake.firstArg("referrals", "update")).toHaveProperty("alert_resolved_at");
+  });
+
+  it("orders not checked: counted for Home (count only), listed with ?check=not_checked, can be dismissed", async () => {
+    const { fake, mod } = await load({
+      from: (_t, chain) => (chain.some(([m]) => m === "range")
+        ? { count: 2, data: [
+            { id: ID, referrer_member_id: "m1", status: "completed", order_check: "not_checked", fraud_flags: [], alert_resolved_at: null, members: null },
+            { id: OTHER, referrer_member_id: "m2", status: "flagged", order_check: "not_checked", fraud_flags: ["order_check_failed"], alert_resolved_at: null, members: null },
+          ] }
+        : { count: 2, data: null }),
+    });
+    expect(await mod.countReferralsNotChecked()).toBe(2);
+    const countChain = fake.tableCalls("referrals")[0].chain;
+    expect(countChain).toContainEqual(["select", ["id", { count: "exact", head: true }]]);
+    expect(countChain).toContainEqual(["eq", ["order_check", "not_checked"]]);
+    expect(countChain).toContainEqual(["is", ["alert_resolved_at", null]]);
+    expect(mod.parseOrderCheckFilter("not_checked")).toBe("not_checked");
+    expect(mod.parseOrderCheckFilter("same_phone")).toBeNull();
+    const res = await mod.listReferrals({ status: "flagged", orderCheck: "not_checked" });
+    const listChain = fake.tableCalls("referrals")[1].chain;
+    expect(listChain).toContainEqual(["eq", ["order_check", "not_checked"]]);
+    expect(listChain).toContainEqual(["is", ["alert_resolved_at", null]]);
+    expect(listChain).not.toContainEqual(["eq", ["status", "flagged"]]);
+    // answered without delivery details: the note; never answered: the reason (held), no second note
+    expect(res.rows[0]).toMatchObject({ alertOpen: true, reason: "" });
+    expect(res.rows[0].orderCheckNote).toContain("did not give the app the delivery details");
+    expect(res.rows[1]).toMatchObject({ alertOpen: true, orderCheckNote: "" });
+    expect(res.rows[1].reason).toContain("Shopify did not answer");
+  });
+
+  it("an alert whose tag could not be added yet (Shopify busy) does not say 'no permission'", async () => {
+    const { mod } = await load({
+      from: (table) => table === "referrals"
+        ? { data: [{ id: ID, referrer_member_id: "m1", status: "blocked", order_check: "same_phone", order_checked_order_id: "5", order_tag: null, members: null }] }
+        : { data: [] },
+    });
+    const [a] = await mod.listReferralOrderAlerts(10);
+    expect(a.detail).toContain("not tagged");
+    expect(a.detail).toContain("tries again");
+    expect(a.detail).not.toContain("permission");
   });
 
   it("block this referrer refuses an unknown referral", async () => {

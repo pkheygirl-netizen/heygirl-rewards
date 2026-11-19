@@ -3,7 +3,9 @@ import {
   addressKey,
   emailSimilarityKey,
   houseNumber,
+  MIN_MEANINGFUL_WORDS,
   normaliseEmail,
+  numberTokens,
   orderVerdict,
   phoneKey,
   sameAddress,
@@ -73,12 +75,74 @@ describe("address", () => {
     const a = { address1: "House 12, Street 5, DHA Phase 6", city: "Karachi" };
     expect(sameAddress(a, { address1: "house 12 street 5 dha phase 6", city: " karachi " })).toBe(true);
     expect(sameAddress(a, { address1: "H# 12 St 5 DHA Phase 6", city: "Karachi" })).toBe(true); // abbreviations written the same way
-    expect(sameAddress(a, { address1: "House 12, Street 5, DHA Phase 6, near park", city: "Karachi" })).toBe(true); // 6 of 6 shorter words shared
+    // extra words do not make a match when the shorter address has fewer than 3 meaningful words ("dha" only)
+    expect(sameAddress(a, { address1: "House 12, Street 5, DHA Phase 6, near park", city: "Karachi" })).toBe(false);
     expect(sameAddress(a, { address1: "House 12, Street 5, DHA Phase 6", city: "Lahore" })).toBe(false); // other city
     expect(sameAddress(a, { address1: "House 14, Street 5, DHA Phase 6", city: "Karachi" })).toBe(false); // other house
     expect(sameAddress(a, { address1: "House 12, Gulshan Block 13", city: "Karachi" })).toBe(false); // same number, other place
     expect(sameAddress(a, { address1: null, city: "Karachi" })).toBe(false);
     expect(addressKey({ address1: "Main Boulevard", city: "Lahore" })).toBeNull(); // no house number: never matches
+  });
+
+  it("number tokens: every number with the letter or sector code written onto it", () => {
+    expect([...numberTokens("House 12, Street 5, G-9/1")]).toEqual(["12", "5", "g9/1"]);
+    expect([...numberTokens("House 12 Street 5 G9/1")]).toEqual(["12", "5", "g9/1"]);
+    expect([...numberTokens("Flat 4-B, Block 7")]).toEqual(["4b", "7"]);
+    expect([...numberTokens("Apartment 4B Askari 11")]).toEqual(["4b", "11"]);
+    expect([...numberTokens("H# 12 St 5")]).toEqual(["12", "5"]); // "H" before a space is the house abbreviation, not a code
+    expect([...numberTokens("House 12 DHA Phase 6")]).toEqual(["12", "6"]);
+    expect([...numberTokens("Plot 4-Block C")]).toEqual(["4"]);
+    expect(houseNumber("House 12 G-9/1")).toBe("12"); // the sector letter is not a flat letter
+  });
+
+  describe("reviewer probe pairs (same city): a different place is NOT the same address", () => {
+    const no = (a: string, b: string, city = "Lahore") => expect(sameAddress({ address1: a, city }, { address1: b, city }), `${a} ~ ${b}`).toBe(false);
+    it("a bare house number does not match a longer address with more numbers", () => {
+      no("House 12", "House 12, Street 40, Model Town");
+      no("12", "12 Main Boulevard Gulberg");
+    });
+    it("a different street, block or phase number is a different place", () => {
+      no("House 12, Street 5, G-9/1", "House 12, Street 7, G-9/1", "Islamabad");
+      no("Flat 3, Block 7, Gulshan-e-Iqbal", "Flat 3, Block 9, Gulshan-e-Iqbal", "Karachi");
+      no("House 12 DHA Phase 5", "House 12 DHA Phase 6");
+      no("House 12, Street 5, G-9/1", "House 12, Street 5, G-9/2", "Islamabad"); // other sub-sector
+      no("House 12, Street 5, F-7", "House 12, Street 5, G-7", "Islamabad"); // other sector letter
+      no("House 12, Street 5, Model Town", "House 12, Model Town"); // street number missing on one side
+    });
+    it("fewer than 3 meaningful words: only an identical address matches", () => {
+      expect(MIN_MEANINGFUL_WORDS).toBe(3);
+      no("House 12, Street 5", "House 12, Street 5, Johar Town");
+      no("House 12 Block B", "House 12 Block C");
+    });
+  });
+
+  describe("the same address written two ways still matches", () => {
+    const yes = (a: string, b: string, city = "Lahore") => expect(sameAddress({ address1: a, city }, { address1: b, city }), `${a} ~ ${b}`).toBe(true);
+    it("identical, and abbreviations", () => {
+      yes("House 12", "House 12");
+      yes("House 12, Street 40, Model Town", "house 12 street 40 model town");
+      yes("H no 12 St 5", "House 12 Street 5");
+      yes("H# 12 St 5", "House No 12 Street 5");
+      yes("Flat 3, Block 7, Gulshan-e-Iqbal", "Flat 3 Blk 7 Gulshan e Iqbal", "Karachi");
+      yes("House 12, Street 5, G-9/1", "H 12 St 5 G9/1", "Islamabad");
+      yes("House 12 DHA Phase 6", "House 12 DHA Ph 6");
+      yes("Apartment 4B Askari 11", "Flat 4-B, Askari 11");
+    });
+    it("extra words with the same numbers, when the shorter address has 3 meaningful words", () => {
+      yes("Flat 4-B, Askari 11, Sarwar Road Cantt", "Flat 4B Askari 11 Sarwar Road Cantt near CSD");
+      yes("House 12, Street 5, Gulshan-e-Ravi Main Boulevard", "House 12 Street 5 Gulshan e Ravi Main Boulevard opposite Ravi Park");
+    });
+  });
+
+  it("address2 is read with address1 as one line", () => {
+    const city = "Islamabad";
+    // the street on line 2 on one side, on line 1 on the other: same place
+    expect(sameAddress({ address1: "House 12", address2: "Street 5, G-9/1", city }, { address1: "House 12, Street 5, G-9/1", city })).toBe(true);
+    // both have line 2 with a different street: different places
+    expect(sameAddress({ address1: "House 12", address2: "Street 5, G-9/1", city }, { address1: "House 12", address2: "Street 7, G-9/1", city })).toBe(false);
+    // a flat number only on one side's line 2: a different flat
+    expect(sameAddress({ address1: "House 12, Street 5, G-9/1", address2: "Flat 3", city }, { address1: "House 12, Street 5, G-9/1", city })).toBe(false);
+    expect(sameAddress({ address1: "House 12, Street 5, G-9/1", address2: null, city }, { address1: "House 12, Street 5, G-9/1", address2: "  ", city })).toBe(true);
   });
 });
 

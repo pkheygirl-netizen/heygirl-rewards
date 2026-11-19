@@ -1,5 +1,5 @@
 import { Worker } from "bullmq";
-import { addUnique, makeRedis, notificationQueue } from "../lib/queue.server";
+import { addUnique, isFinalAttempt, makeRedis, notificationQueue } from "../lib/queue.server";
 import { awardSignup, enrolMember } from "../lib/points.service";
 import {
   processOrderCancelled,
@@ -11,19 +11,26 @@ import {
 import { issueBirthdayReward } from "../lib/birthday.service";
 import { issueReferralFriendCode } from "../lib/referral-bonus.service";
 import { issueTierRewards } from "../lib/tier-rewards.service";
+import { completeReferralForCustomer } from "../lib/referrals.service";
 
 const shopOf = (data: { shop?: unknown }): string | null => (typeof data?.shop === "string" && data.shop ? data.shop : null);
+
 
 // One job at a time (BullMQ's default concurrency of 1): events for the same
 // order are handled in the order they were queued.
 export const pointsWorker = new Worker(
   "points",
   async (job) => {
+    const finalAttempt = isFinalAttempt(job);
     switch (job.name) {
       case "order_event":
-        return processOrderEvent(job.data.event as OrderEvent, shopOf(job.data));
+        return processOrderEvent(job.data.event as OrderEvent, shopOf(job.data), { finalAttempt });
       case "order_cancelled":
-        return processOrderCancelled(job.data.event as OrderEvent, shopOf(job.data));
+        return processOrderCancelled(job.data.event as OrderEvent, shopOf(job.data), { finalAttempt });
+      case "complete_referral":
+        // Queued by approveReferral when the payment could not finish at once.
+        if (!job.data.shopifyCustomerId) return { skipped: "no_customer" };
+        return completeReferralForCustomer(String(job.data.shopifyCustomerId), shopOf(job.data), { finalAttempt });
       case "refund_event":
         return processRefundEvent(job.data.event as RefundEvent);
       case "award_signup_points":

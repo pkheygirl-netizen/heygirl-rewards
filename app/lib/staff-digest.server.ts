@@ -3,13 +3,16 @@
 // the worker emails the staff address from Settings (app_settings.staff_alert_email)
 // a short summary, ONLY when something is waiting:
 //   - referral order alerts not yet dismissed (self-referral phone / same address)
-//   - referrals held for review
+//   - referrals held for review (a held referral that is also an order alert,
+//     or whose order could not be checked, is counted once, under that line)
+//   - referral orders that could not be checked against the referrer
 //   - review claims waiting for approval
-//   - failed background jobs, or a stale worker heartbeat
+//   - background jobs that failed in the last 24 hours (all queues, the Smile
+//     import included), or a stale worker heartbeat
 // Counts only: never a customer's name, address, phone or email. No instant
 // emails. Sent at most once per Pakistan day (app_settings.staff_digest_sent_on).
 import { db } from "../db.server";
-import { failedJobCounts } from "./queue.server";
+import { failedJobCountsSince } from "./queue.server";
 import { readHeartbeats } from "./heartbeat.server";
 import { getInstalledShop } from "./worker-admin.server";
 import { karachiParts } from "./settings.server";
@@ -18,9 +21,15 @@ import { renderEmailLayout, sendEmail } from "./email.service";
 /** Same threshold as the admin's system health (admin-health.server.ts WORKER_STALE_MINUTES). */
 export const WORKER_STALE_MINUTES = 15;
 
+/** Failed jobs are counted for this long before the email (they are kept 14 days in Redis). */
+export const FAILED_JOB_WINDOW_HOURS = 24;
+
 export type DigestCounts = {
   referralOrderAlerts: number;
+  /** Held referrals that are not already counted as an order alert or as not checked. */
   referralsHeld: number;
+  /** Referral orders not checked against the referrer (order_check not_checked), not yet dismissed. */
+  referralsNotChecked: number;
   reviewClaims: number;
   failedJobs: number;
   workerStale: boolean;
@@ -41,16 +50,37 @@ const n = (v: unknown): number => {
   return Number.isFinite(x) ? x : 0;
 };
 
+type ReferralFilter = { status?: string; orderCheck: string };
+
+/** Referrals with an open (not dismissed) order-check result, optionally in one status. Count only. */
+async function countOpenChecks(f: ReferralFilter): Promise<number> {
+  let q = db.from("referrals").select("id", { count: "exact", head: true }).eq("order_check", f.orderCheck).is("alert_resolved_at", null);
+  if (f.status) q = q.eq("status", f.status);
+  const { count, error } = await q;
+  if (error) throw new Error(`referral count failed: ${error.message}`);
+  return n(count);
+}
+
 /** What is waiting right now (counts only). */
 export async function digestCounts(now: Date = new Date()): Promise<DigestCounts> {
   const { data, error } = await db.rpc("admin_attention" as never, { p_days: 30 } as never);
   if (error) throw new Error(`admin_attention failed: ${(error as { message: string }).message}`);
   const a = ((Array.isArray(data) ? data[0] : data) ?? {}) as Record<string, unknown>;
 
+  // A held referral whose order delivers to the referrer's address is both an
+  // open alert and held; one whose order could not be checked is both held and
+  // not checked. Each is counted once, under the more specific line.
+  const [notChecked, heldAndAlert, heldAndNotChecked] = await Promise.all([
+    countOpenChecks({ orderCheck: "not_checked" }),
+    countOpenChecks({ status: "flagged", orderCheck: "same_address" }),
+    countOpenChecks({ status: "flagged", orderCheck: "not_checked" }),
+  ]);
+
   let failedJobs = 0;
   try {
     // -1 means "could not ask that queue": not counted as a failure.
-    failedJobs = Object.values(await failedJobCounts()).reduce((s, c) => s + (c > 0 ? c : 0), 0);
+    const since = now.getTime() - FAILED_JOB_WINDOW_HOURS * 3_600_000;
+    failedJobs = Object.values(await failedJobCountsSince(since)).reduce((s, c) => s + (c > 0 ? c : 0), 0);
   } catch (err) {
     console.error("[staff-digest] failed-job count unavailable:", err instanceof Error ? err.message : err);
   }
@@ -65,7 +95,8 @@ export async function digestCounts(now: Date = new Date()): Promise<DigestCounts
 
   return {
     referralOrderAlerts: n(a.referral_order_alerts),
-    referralsHeld: n(a.referrals_flagged),
+    referralsHeld: Math.max(0, n(a.referrals_flagged) - heldAndAlert - heldAndNotChecked),
+    referralsNotChecked: notChecked,
     reviewClaims: n(a.review_claims_pending),
     failedJobs,
     workerStale,
@@ -73,7 +104,7 @@ export async function digestCounts(now: Date = new Date()): Promise<DigestCounts
 }
 
 export function somethingWaiting(c: DigestCounts): boolean {
-  return c.referralOrderAlerts > 0 || c.referralsHeld > 0 || c.reviewClaims > 0 || c.failedJobs > 0 || c.workerStale;
+  return c.referralOrderAlerts > 0 || c.referralsHeld > 0 || c.referralsNotChecked > 0 || c.reviewClaims > 0 || c.failedJobs > 0 || c.workerStale;
 }
 
 const plural = (count: number, one: string, many: string) => `${count.toLocaleString("en-US")} ${count === 1 ? one : many}`;
@@ -85,8 +116,11 @@ export function digestLines(c: DigestCounts): string[] {
     lines.push(`${plural(c.referralOrderAlerts, "referral order uses", "referral orders use")} the referrer's own phone number or address (self-referral check). The orders are tagged "Rewards: check referral" in Shopify when the app is allowed to.`);
   }
   if (c.referralsHeld > 0) lines.push(`${plural(c.referralsHeld, "referral is", "referrals are")} held for your approval.`);
+  if (c.referralsNotChecked > 0) {
+    lines.push(`${plural(c.referralsNotChecked, "referral order was", "referral orders were")} not checked against the referrer's phone and address. Open Referrals to see which ones are held for your approval.`);
+  }
   if (c.reviewClaims > 0) lines.push(`${plural(c.reviewClaims, "review claim is", "review claims are")} waiting for approval.`);
-  if (c.failedJobs > 0) lines.push(`${plural(c.failedJobs, "background job has", "background jobs have")} failed in the last 14 days. See Settings, System health.`);
+  if (c.failedJobs > 0) lines.push(`${plural(c.failedJobs, "background job", "background jobs")} failed in the last 24 hours. See Settings, System health.`);
   if (c.workerStale) lines.push("The background worker has not reported for over 15 minutes. Points and emails may be waiting.");
   return lines;
 }

@@ -4,7 +4,9 @@
 import { adb, memberName, num, rpcObject, shopifyNumericId, str, strOrNull, UUID_RE, type Row } from "./admin-db.server";
 import { setReferralsBlocked } from "./admin-members.server";
 import { approveReferral, rejectReferral } from "./referrals.service";
-import { ORDER_FLAGS, REFERRAL_ORDER_TAG as ORDER_TAG, SIGNIN_FLAGS } from "./referral-checks.server";
+import {
+  ORDER_CHECK_FAILED_FLAG, ORDER_CHECK_FAILED_REASON, ORDER_FLAGS, REFERRAL_ORDER_TAG as ORDER_TAG, SIGNIN_FLAGS,
+} from "./referral-checks.server";
 
 import {
   REFERRAL_STATUSES, REFERRAL_STATUS_LABELS, REJECT_NOTE_MAX, type ReferralStatus,
@@ -21,6 +23,7 @@ const FLAG_REASONS: Record<string, string> = {
   // current rules (contract rule 10, 19 Nov 2026)
   ...SIGNIN_FLAGS,
   ...ORDER_FLAGS,
+  [ORDER_CHECK_FAILED_FLAG]: ORDER_CHECK_FAILED_REASON,
   // older rows, written by rules that are no longer used
   same_network: "Friend signed in from the same network address as the referrer (old rule, no longer used)",
   same_ip: "Friend signed in from the same network address as the referrer (old rule, no longer used)",
@@ -43,11 +46,38 @@ export function referralReason(row: { fraud_flags?: unknown; block_reason?: unkn
   return str(row.block_reason) || (status === "flagged" ? "No reason was recorded" : "");
 }
 
-/** Plain words for the order-time check when it could not be done. */
-export function orderCheckNote(row: { order_check?: unknown }): string {
-  return str(row.order_check) === "not_checked"
-    ? "Her order was not checked against the referrer's phone and address: Shopify did not give the app the delivery details"
-    : "";
+/**
+ * Plain words for the order-time check when Shopify answered without the
+ * delivery details. A check Shopify never answered (flag order_check_failed)
+ * is already explained by the reason column.
+ */
+export function orderCheckNote(row: { order_check?: unknown; fraud_flags?: unknown }): string {
+  if (str(row.order_check) !== "not_checked") return "";
+  const flags = Array.isArray(row.fraud_flags) ? row.fraud_flags.map(str) : [];
+  if (flags.includes(ORDER_CHECK_FAILED_FLAG)) return "";
+  return "Her order was not checked against the referrer's phone and address: Shopify did not give the app the delivery details";
+}
+
+/** Referral filter: orders not checked against the referrer and not yet dismissed. */
+export const ORDER_CHECK_FILTERS = ["not_checked"] as const;
+export type OrderCheckFilter = (typeof ORDER_CHECK_FILTERS)[number];
+export function parseOrderCheckFilter(v: string | null | undefined): OrderCheckFilter | null {
+  return (ORDER_CHECK_FILTERS as readonly string[]).includes(v ?? "") ? (v as OrderCheckFilter) : null;
+}
+
+/**
+ * How many referral orders were not checked against the referrer's phone and
+ * address (Shopify withheld the details, or never answered) and are not yet
+ * dismissed or decided. Count only (Home "Needs your attention").
+ */
+export async function countReferralsNotChecked(): Promise<number> {
+  const { count, error } = await adb()
+    .from("referrals")
+    .select("id", { count: "exact", head: true })
+    .eq("order_check", "not_checked")
+    .is("alert_resolved_at", null);
+  if (error) throw new Error(`could not count unchecked referrals: ${error.message}`);
+  return num(count);
 }
 
 export type ReferralListRow = {
@@ -73,6 +103,8 @@ export type ReferralListRow = {
 
 export async function listReferrals(opts: {
   status?: ReferralStatus | null; page?: number; pageSize?: number; referralId?: string | null;
+  /** "not_checked": only referrals counted by countReferralsNotChecked (any status). */
+  orderCheck?: OrderCheckFilter | null;
 }): Promise<{ rows: ReferralListRow[]; total: number }> {
   const page = Math.max(opts.page ?? 0, 0);
   const pageSize = opts.pageSize ?? 25;
@@ -86,6 +118,7 @@ export async function listReferrals(opts: {
     );
   // One referral (opened from a Home alert); an id that is not a uuid is ignored.
   if (opts.referralId && UUID_RE.test(opts.referralId)) q = q.eq("id", opts.referralId);
+  else if (opts.orderCheck === "not_checked") q = q.eq("order_check", "not_checked").is("alert_resolved_at", null);
   else if (opts.status) q = q.eq("status", opts.status);
   const { data, count, error } = await q
     .order("created_at", { ascending: false })
@@ -116,7 +149,8 @@ export async function listReferrals(opts: {
 }
 
 const ALERT_CHECKS = ["same_phone", "same_address"];
-const isOpenAlert = (r: Row): boolean => ALERT_CHECKS.includes(str(r.order_check)) && !r.alert_resolved_at;
+/** Open = can be dismissed: a matched order, or an order that was not checked. */
+const isOpenAlert = (r: Row): boolean => [...ALERT_CHECKS, "not_checked"].includes(str(r.order_check)) && !r.alert_resolved_at;
 
 // ── Home alerts from the order-time check ────────────────────────────────────
 
@@ -182,7 +216,7 @@ export async function listReferralOrderAlerts(limit = 10): Promise<ReferralOrder
       ? `The order is tagged "${ORDER_TAG}" in Shopify.`
       : tag === "failed"
         ? `The order could not be tagged "${ORDER_TAG}" in Shopify (the app may not have permission to change orders yet).`
-        : "";
+        : `The order is not tagged "${ORDER_TAG}" yet: Shopify was busy. The app tries again when the order next changes.`;
     return {
       referralId: str(r.id),
       referrerId: str(r.referrer_member_id),

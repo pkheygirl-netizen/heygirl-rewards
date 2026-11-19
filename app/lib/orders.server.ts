@@ -19,7 +19,7 @@ import {
   selectMultiplier,
   type CustomerInput,
 } from "./points.service";
-import { checkReferralOrder, completeReferralForCustomer, reverseReferralForOrder, shopifyOrderCount } from "./referrals.service";
+import { checkReferralOrder, completeReferralForCustomer, reverseReferralForOrder, shopifyOrderCount, type ReferralCheckOptions } from "./referrals.service";
 import { effectiveReferralPoints, findInfluencerByCodes } from "./influencer.service";
 import { returnRedemptionsForCancelledOrder } from "./redemption.service";
 
@@ -346,7 +346,12 @@ export type OrderEventResult = {
   pointsAwarded?: number;
 };
 
-export async function processOrderEvent(ev: OrderEvent, shop?: string | null): Promise<OrderEventResult> {
+/**
+ * `opts.finalAttempt`: the points job's last try (see ReferralCheckOptions);
+ * passed to the referral order check so a check Shopify never answers ends
+ * with the referral held for staff instead of another throw.
+ */
+export async function processOrderEvent(ev: OrderEvent, shop?: string | null, opts: ReferralCheckOptions = {}): Promise<OrderEventResult> {
   if (!ev.customer) return { status: "skipped", reason: "no_customer" };
   const customerId = String(ev.customer.id);
 
@@ -459,7 +464,7 @@ export async function processOrderEvent(ev: OrderEvent, shop?: string | null): P
     const codes = [...new Set([...ev.discountCodes, ...(state.discount_codes ?? [])])];
     if (codes.length > 0) {
       try {
-        await checkReferralOrder({ shopifyOrderId: ev.id, shopifyCustomerId: customerId, discountCodes: codes, shop });
+        await checkReferralOrder({ shopifyOrderId: ev.id, shopifyCustomerId: customerId, discountCodes: codes, shop, finalAttempt: opts.finalAttempt });
       } catch (err) {
         console.error(`[processOrderEvent] referral check for order ${ev.id} not done yet:`, err instanceof Error ? err.message : err);
       }
@@ -467,7 +472,7 @@ export async function processOrderEvent(ev: OrderEvent, shop?: string | null): P
   }
 
   if (ev.cancelledAt) {
-    await processOrderCancelled(ev, shop, { stateSynced: true });
+    await processOrderCancelled(ev, shop, { stateSynced: true, finalAttempt: opts.finalAttempt });
     return { status: "cancelled" };
   }
   if (Number(synced?.[0]?.reversed ?? 0) > 0 || state.points_awarded) await reverseFollowUpsIfFullyRefunded(ev.id);
@@ -476,7 +481,7 @@ export async function processOrderEvent(ev: OrderEvent, shop?: string | null): P
   const awardable = applied
     ? isAwardable(ev)
     : isAwardable({ fulfillmentStatus: state.fulfillment_status, financialStatus: state.financial_status, cancelledAt: state.cancelled_at });
-  if (awardable) return awardOrder(ev.id, shop);
+  if (awardable) return awardOrder(ev.id, shop, opts);
   return { status: "recorded", pendingPoints: state.pending_points };
 }
 
@@ -507,7 +512,7 @@ async function reverseFollowUpsIfFullyRefunded(shopifyOrderId: string): Promise<
  * influencer sale). The database refuses a cancelled or already-awarded order;
  * the follow-ups are idempotent, so a retried job finishes what was left.
  */
-export async function awardOrder(shopifyOrderId: string, shop?: string | null): Promise<OrderEventResult> {
+export async function awardOrder(shopifyOrderId: string, shop?: string | null, opts: ReferralCheckOptions = {}): Promise<OrderEventResult> {
   let state = await readState(shopifyOrderId);
   if (!state || !state.shopify_customer_id) return { status: "skipped", reason: "no_order_row" };
   if (state.cancelled_at) return { status: "skipped", reason: "cancelled" };
@@ -556,7 +561,7 @@ export async function awardOrder(shopifyOrderId: string, shop?: string | null): 
     // step looks at what is already there and only does what is missing.
     await checkAndUpgradeTier(fresh.id, Number(fresh.lifetime_spend_pkr ?? 0), fresh.tier, { shopifyOrderId, shop });
   }
-  await completeReferralForCustomer(state.shopify_customer_id!, shop);
+  await completeReferralForCustomer(state.shopify_customer_id!, shop, opts);
   await awardInfluencerSale(state);
 
   return { status: "awarded", pointsAwarded };
@@ -676,13 +681,13 @@ export async function processRefundEvent(
 export async function processOrderCancelled(
   ev: OrderEvent,
   shop?: string | null,
-  opts: { stateSynced?: boolean } = {},
+  opts: { stateSynced?: boolean } & ReferralCheckOptions = {},
 ): Promise<{ reversed: number; redemptionReturned: number; reason?: string }> {
   let state = await readState(ev.id);
   if (!state && !opts.stateSynced && ev.customer) {
     // Cancellation of an order we have never seen: record it (as cancelled, so
     // it can never be awarded); that call comes back here with the row in place.
-    await processOrderEvent({ ...ev, cancelledAt: ev.cancelledAt ?? new Date().toISOString() }, shop);
+    await processOrderEvent({ ...ev, cancelledAt: ev.cancelledAt ?? new Date().toISOString() }, shop, { finalAttempt: opts.finalAttempt });
     return { reversed: 0, redemptionReturned: 0, reason: "recorded_as_cancelled" };
   }
   if (!state) return { reversed: 0, redemptionReturned: 0, reason: "no_order_row" };
@@ -710,7 +715,7 @@ export async function processOrderCancelled(
   await reverseReferralForOrder(ev.id, "cancelled");
   await reverseInfluencerSale(state, "cancelled");
   // A later order may now be the friend's first.
-  if (state.shopify_customer_id) await completeReferralForCustomer(state.shopify_customer_id, shop);
+  if (state.shopify_customer_id) await completeReferralForCustomer(state.shopify_customer_id, shop, { finalAttempt: opts.finalAttempt });
 
   return { reversed, redemptionReturned };
 }

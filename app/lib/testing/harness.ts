@@ -20,6 +20,9 @@ export const h = {
   /** Decides what Shopify "returns"; replace per test. */
   graphql: ((): unknown => ({})) as GraphqlHandler,
   adminUnavailable: false,
+  /** What failedJobCountsSince answers, and the `since` it was last asked with. */
+  failedSince: {} as Record<string, number>,
+  lastFailedSince: null as number | null,
 };
 
 export function resetHarness(seed: Record<string, Row[]> = {}): FakeDb {
@@ -31,6 +34,8 @@ export function resetHarness(seed: Record<string, Row[]> = {}): FakeDb {
   h.graphqlCalls = [];
   h.graphql = () => ({});
   h.adminUnavailable = false;
+  h.failedSince = {};
+  h.lastFailedSince = null;
   return h.db;
 }
 
@@ -67,6 +72,11 @@ export function queueModule() {
       return h.cron;
     },
     failedJobCounts: async () => ({ points: 0, social: 0, notifications: 0, cron: 0 }),
+    failedJobCountsSince: async (since: number) => {
+      h.lastFailedSince = since;
+      return { ...h.failedSince };
+    },
+    isFinalAttempt: (job: { attemptsMade?: number; opts?: { attempts?: number } }) => (job.attemptsMade ?? 0) + 1 >= (job.opts?.attempts ?? 1),
     makeRedis: () => ({}),
     startWorkers: () => undefined,
   };

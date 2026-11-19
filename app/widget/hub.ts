@@ -308,15 +308,23 @@ import { earnTab, errorText, REVIEW_PENDING_TEXT, guestHome, guestSub, historyFi
       `</section>`;
   }
 
+  // Every History request gets a number; only the answer to the latest one is
+  // used, so a slow answer from an earlier open, filter or page is dropped
+  // instead of being added to the new rows (duplicates).
+  let histReq = 0;
+  let histBusy = false;
+
   function loadHistory(reset: boolean) {
     if (reset) {
       hist.page = 1;
       hist.rows = [];
       hist.loaded = false;
     }
-    const filter = hist.filter;
-    void get<{ rows?: HistoryRow[]; hasMore?: boolean }>(`/history?filter=${encodeURIComponent(filter)}&page=${hist.page}`).then((d) => {
-      if (filter !== hist.filter) return; // a newer filter was chosen meanwhile
+    const req = ++histReq;
+    histBusy = true;
+    void get<{ rows?: HistoryRow[]; hasMore?: boolean }>(`/history?filter=${encodeURIComponent(hist.filter)}&page=${hist.page}`).then((d) => {
+      if (req !== histReq) return; // a newer request was made meanwhile
+      histBusy = false;
       hist.loaded = true;
       if (d && Array.isArray(d.rows)) {
         hist.rows = hist.rows.concat(d.rows);
@@ -416,7 +424,7 @@ import { earnTab, errorText, REVIEW_PENDING_TEXT, guestHome, guestSub, historyFi
     const m = member;
     if (a === "close") close();
     else if (a === "back") { show(""); hub.focus(); }
-    else if (a === "more") { hist.page += 1; loadHistory(false); }
+    else if (a === "more") { if (!histBusy) { hist.page += 1; loadHistory(false); } }
     else if (a === "perks") {
       toLevels(true);
       // Keyboard and screen-reader users land on the section heading too.

@@ -13,7 +13,7 @@ import { REFERRAL_STATUS_LABELS, REJECT_NOTE_MAX } from "../components/admin-con
 import { fmtDate, fmtInt } from "../components/karachi";
 import { actorFromSession } from "../lib/admin-members.server";
 import {
-  approve, blockReferrer, dismissReferralAlert, listReferrals, parseReferralStatus, referralSummary, reject,
+  approve, blockReferrer, dismissReferralAlert, listReferrals, parseOrderCheckFilter, parseReferralStatus, referralSummary, reject,
 } from "../lib/admin-referrals.server";
 import { UUID_RE } from "../lib/admin-db.server";
 import { errorMessage } from "../lib/admin-validate.server";
@@ -28,15 +28,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // ?referral=<id>: one referral, opened from a Home alert.
   const one = sp.get("referral");
   const referralId = one && UUID_RE.test(one) ? one : null;
+  // ?check=not_checked: orders not compared with the referrer (from Home).
+  const orderCheck = referralId ? null : parseOrderCheckFilter(sp.get("check"));
   const raw = sp.get("status");
-  const status = referralId || raw === "all" ? null : parseReferralStatus(raw) ?? "flagged";
+  const status = referralId || orderCheck || raw === "all" ? null : parseReferralStatus(raw) ?? "flagged";
   const pageRaw = Number(sp.get("page") ?? "0");
   const page = Number.isInteger(pageRaw) && pageRaw > 0 ? pageRaw : 0;
   const [list, summary] = await Promise.all([
-    listReferrals({ status, page, pageSize: PAGE_SIZE, referralId }),
+    listReferrals({ status, page, pageSize: PAGE_SIZE, referralId, orderCheck }),
     referralSummary(),
   ]);
-  return json({ ...list, summary, status: status ?? "all", page, referralId });
+  return json({ ...list, summary, status: status ?? "all", page, referralId, orderCheck });
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -91,6 +93,7 @@ export default function Referrals() {
     next.set("status", status);
     next.delete("page");
     next.delete("referral");
+    next.delete("check");
     setSp(next, { preventScrollReset: true });
   };
 
@@ -110,6 +113,14 @@ export default function Referrals() {
           <Layout.Section>
             <InlineStack align="space-between" blockAlign="center">
               <Text as="p" tone="subdued">Showing the referral from the Home alert.</Text>
+              <Button variant="plain" onClick={() => setStatus("all")}>Show all referrals</Button>
+            </InlineStack>
+          </Layout.Section>
+        ) : null}
+        {d.orderCheck === "not_checked" ? (
+          <Layout.Section>
+            <InlineStack align="space-between" blockAlign="center">
+              <Text as="p" tone="subdued">Showing referrals whose order was not checked against the referrer's phone and address. Dismiss each one once you have looked at it.</Text>
               <Button variant="plain" onClick={() => setStatus("all")}>Show all referrals</Button>
             </InlineStack>
           </Layout.Section>

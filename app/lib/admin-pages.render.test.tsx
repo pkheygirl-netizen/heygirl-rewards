@@ -33,7 +33,9 @@ function mockAll(script: Parameters<typeof fakeDb>[0]) {
     setInfluencer: vi.fn(), createInfluencerCode: vi.fn(), removeInfluencerCode: vi.fn(),
     effectiveReferralPoints: (m: { influencer_multiplier: number | null }, s: number) => (m.influencer_multiplier ? Math.round(s * m.influencer_multiplier) : s),
   }));
-  vi.doMock("./referrals.service", () => ({ approveReferral: vi.fn(), rejectReferral: vi.fn() }));
+  vi.doMock("./referrals.service", () => ({
+    approveReferral: vi.fn(), rejectReferral: vi.fn(),
+  }));
   vi.doMock("./review-claims.service", () => ({ rejectReviewClaim: vi.fn(), approveReviewClaim: vi.fn() }));
   vi.doMock("./settings.server", () => ({ bustSettingsCache: vi.fn() }));
   vi.doMock("./storefront-config.server", () => ({ syncStorefrontConfig: vi.fn() }));
@@ -222,6 +224,15 @@ describe("pages render with data", () => {
     expect(html).not.toMatch(/release automatically|Releases|due now/);
     expect(html).toContain(`href="/app/customers/${ID}"`);
     expect(html).toContain('href="/app/referrals?status=flagged"');
+    // referral orders not compared with the referrer: a count and a link, no customer details
+    expect(html).toContain("3 referral orders were not checked");
+    expect(html).toContain('href="/app/referrals?check=not_checked"');
+  });
+
+  it("Referrals filtered to orders that were not checked", async () => {
+    const html = await renderRoute("app.referrals.tsx", "/app/referrals?check=not_checked");
+    expect(html).toContain("Showing referrals whose order was not checked");
+    expect(html).toContain("Dismiss alert");
   });
 
   it("Home lists a referral order alert with links to the order and the referral, and Block / Dismiss", async () => {
@@ -278,8 +289,9 @@ describe("pages render with data", () => {
     expect(html).toContain("The friend&#x27;s order uses the referrer&#x27;s phone number");
     expect(html).toContain("Her order was not checked against the referrer&#x27;s phone and address");
     expect(html).toContain("Block this referrer");
-    expect(html).toContain("Dismiss alert"); // r1's alert is open; r3's was dismissed
-    expect(html.match(/Dismiss alert/g)).toHaveLength(1);
+    // r1's alert is open, and r2's order was not checked (it can be dismissed too); r3's was dismissed
+    expect(html).toContain("Dismiss alert");
+    expect(html.match(/Dismiss alert/g)).toHaveLength(2);
     expect(html).not.toContain("network address");
     expect(html).toContain("Approve");
     expect(html).toContain("Reject");

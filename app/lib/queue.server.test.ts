@@ -1,6 +1,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 
 const made = vi.hoisted(() => [] as Array<{ name: string; opts: { defaultJobOptions: Record<string, unknown> } }>);
+const zcalls = vi.hoisted(() => [] as Array<{ key: string; min: number | string; max: number | string }>);
 vi.mock("bullmq", () => ({
   Queue: class {
     constructor(public name: string, opts: { defaultJobOptions: Record<string, unknown> }) {
@@ -9,6 +10,19 @@ vi.mock("bullmq", () => ({
     async getFailedCount() {
       if (this.name === "cron") throw new Error("redis down");
       return this.name === "points" ? 3 : 0;
+    }
+    get keys() {
+      return { failed: `bull:${this.name}:failed` };
+    }
+    get client() {
+      const name = this.name;
+      return Promise.resolve({
+        zcount: async (key: string, min: number | string, max: number | string) => {
+          zcalls.push({ key, min, max });
+          if (name === "cron") throw new Error("redis down");
+          return name === "points" ? 2 : name === "smile-import" ? 1 : 0;
+        },
+      });
     }
   },
 }));
@@ -76,4 +90,24 @@ it("startWorkers starts the Smile import worker with the others, only when WORKE
   delete process.env.WORKER;
   expect(loaded.sort()).toEqual(["cron", "import", "notification", "points", "social"]);
   log.mockRestore();
+});
+
+it("isFinalAttempt: true only while the last allowed try runs (bullmq counts attemptsMade after a failure)", async () => {
+  const { isFinalAttempt, DEFAULT_JOB_OPTIONS } = await import("./queue.server");
+  const opts = { attempts: DEFAULT_JOB_OPTIONS.attempts };
+  expect(isFinalAttempt({ attemptsMade: 0, opts })).toBe(false); // first try
+  expect(isFinalAttempt({ attemptsMade: opts.attempts - 2, opts })).toBe(false);
+  expect(isFinalAttempt({ attemptsMade: opts.attempts - 1, opts })).toBe(true); // 8th try of 8
+  expect(isFinalAttempt({ attemptsMade: 0, opts: {} })).toBe(true); // a job with one attempt
+});
+
+it("failed jobs since a time: counted from each queue's failed set by failure time, the Smile import queue included", async () => {
+  const { failedJobCountsSince, failedSince } = await import("./queue.server");
+  zcalls.length = 0;
+  const since = Date.parse("2026-11-18T04:00:00Z");
+  expect(await failedJobCountsSince(since)).toEqual({ points: 2, social: 0, notifications: 0, cron: -1, import: 1 });
+  expect(zcalls.find((c) => c.key === "bull:points:failed")).toEqual({ key: "bull:points:failed", min: since, max: "+inf" });
+  expect(zcalls.some((c) => c.key === "bull:smile-import:failed")).toBe(true);
+  const fake = { keys: { failed: "k" }, client: Promise.resolve({ zcount: async () => 4 }) };
+  expect(await failedSince(fake, since + 0.7)).toBe(4);
 });
