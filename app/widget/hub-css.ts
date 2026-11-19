@@ -33,11 +33,12 @@ export const HUB_CSS = `
 .hg-hub ul{list-style:none}
 .hg-hub :where(h2,h3,p,span,li,label,strong,option){color:inherit}
 .hg-hub a{color:var(--gd)}
-.hg-hub button,.hg-hub select,.hg-hub input{font:inherit;color:inherit}
+.hg-hub :where(button,select,input){font:inherit;color:inherit}
 .hg-hub :focus-visible{outline:3px solid var(--ink);outline-offset:2px;box-shadow:none}
 .hg-hub__head :focus-visible{outline-color:var(--ht)}
 .hg-hub:focus{outline:none}
 .hg-bd{position:fixed;inset:0;z-index:2147483000;background:transparent}
+.hg-bd.hg-bd{display:block}
 .hg-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .hg-ic,.hg-ico{width:22px;height:22px;flex:none}
 .hg-ic{fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
@@ -51,7 +52,8 @@ export const HUB_CSS = `
 .hg-tabs{display:flex;flex:none;overflow-x:auto;background:var(--card);border-bottom:1px solid var(--ln);scrollbar-width:none}
 .hg-tabs::-webkit-scrollbar{display:none}
 .hg-tab{flex:1 0 auto;min-height:46px;padding:0 8px;background:none;border:0;border-bottom:3px solid transparent;font-size:14px;font-weight:600;color:var(--mute);cursor:pointer;white-space:nowrap}
-.hg-tab[aria-selected=true]{color:var(--ink);border-bottom-color:var(--gd)}
+.hg-tab[aria-selected=true]{color:var(--ink);font-weight:700;border-bottom-color:var(--gd)}
+.hg-hub .hg-tab:focus-visible{outline-offset:-3px}
 .hg-msg{flex:none;margin:10px 12px 0;padding:10px 12px;border-radius:10px;background:var(--okb);color:var(--ok);font-size:14px;font-weight:600}
 .hg-msg:empty{display:none}
 .hg-msg--err{background:var(--errb);color:var(--err)}
@@ -73,6 +75,7 @@ export const HUB_CSS = `
 .hg-btn:hover{background:#f3bd1c;color:var(--ong)!important}
 .hg-btn--sm{padding:0 14px;font-size:14px;flex:none}
 .hg-btn--ghost{background:var(--card);color:var(--ink)!important}
+.hg-hub .hg-btn:not(.hg-btn--ghost){border-color:transparent}
 .hg-btn--block{display:flex;width:100%;margin-top:6px}
 .hg-btn .hg-ic{width:20px;height:20px;margin-right:8px;stroke-width:2}
 .hg-btn[disabled]{opacity:.55;cursor:default}
@@ -99,6 +102,8 @@ export const HUB_CSS = `
 .hg-tier--gold{background:#f3bd1c;border-color:var(--gd)}
 .hg-tier--diamond{background:#d9ccff}
 .hg-hub--dark .hg-bal .hg-tier{border-color:var(--baln)}
+.hg-hub--dark .hg-bal .hg-tier--gold{background:var(--baln);color:var(--ht)}
+.hg-hub .hg-note{padding:10px 12px}
 .hg-note{display:flex;gap:10px;align-items:flex-start;background:var(--card);border:1px solid var(--ln);border-radius:12px;padding:10px 12px;margin-bottom:12px!important;font-size:14px}
 .hg-note .hg-ic{color:var(--gd);margin-top:1px}
 .hg-note--warn{background:var(--wrn);border-color:var(--wrnl)}
@@ -121,7 +126,7 @@ export const HUB_CSS = `
 .hg-link:hover{text-decoration:underline}
 .hg-perks li{display:flex;gap:8px;align-items:flex-start;font-size:14px;padding:4px 0}
 .hg-perks .hg-ic{width:18px;height:18px;color:var(--pos);stroke-width:2.6;margin-top:2px}
-.hg-chips{display:flex;gap:8px;overflow-x:auto;padding-bottom:10px;scrollbar-width:none}
+.hg-chips{display:flex;flex-wrap:wrap;gap:8px;overflow-x:auto;padding-bottom:10px;scrollbar-width:none}
 .hg-fchip{flex:none;min-height:44px;padding:0 16px;border-radius:999px;border:1px solid var(--fld);background:var(--card);font-size:14px;font-weight:600;cursor:pointer}
 .hg-fchip[aria-pressed=true]{background:var(--ink);color:var(--card);border-color:var(--ink)}
 .hg-pts{font-weight:700;color:var(--pos);flex:none}

@@ -550,7 +550,7 @@ describe("panel v6 (owner, 19 Nov 2026): her level near the top, other levels at
   it("Share on WhatsApp is the filled gold button with a chat-bubble icon; Copy is the outlined button", () => {
     const h = referTab(ctx({ member: makeMember() }), null);
     expect(h).toMatch(/<a class="hg-btn hg-btn--block" target="_blank" rel="noopener" href="https:\/\/wa\.me\/\?text=[^"]+"><svg class="hg-ic" aria-hidden="true" focusable="false"><use href="#hg-i-chat"\/><\/svg>Share on WhatsApp<\/a>/);
-    expect(h).toContain('<button type="button" class="hg-btn hg-btn--sm hg-btn--ghost" data-copy="https://shop.example/?ref=aisha-1234">Copy</button>');
+    expect(h).toContain('<button type="button" class="hg-btn hg-btn--sm hg-btn--ghost" data-copy="https://shop.example/?ref=aisha-1234" aria-label="Copy referral link">Copy</button>');
     // Link field first, then the main button below it.
     expect(h.indexOf('id="hg-ref-link"')).toBeLessThan(h.indexOf("Share on WhatsApp"));
     expect(HUB_ICONS).toMatch(/<symbol id="hg-i-chat" viewBox="0 0 24 24"><path d="[^"]+"\/><\/symbol>/);
@@ -563,6 +563,12 @@ describe("panel v6 (owner, 19 Nov 2026): her level near the top, other levels at
     expect(Number(/min-height:(\d+)px/.exec(tab)![1])).toBeGreaterThanOrEqual(44);
     expect(tab).toContain("padding:0 8px");
     expect(tab).toContain("white-space:nowrap");
-    expect(HUB_CSS).toMatch(/\.hg-tab\[aria-selected=true\]\{color:var\(--ink\);border-bottom-color:var\(--gd\)\}/);
+    expect(HUB_CSS).toMatch(/\.hg-tab\[aria-selected=true\]\{color:var\(--ink\);font-weight:700;border-bottom-color:var\(--gd\)\}/);
+    // UI review 19 Nov: the element reset must not outrank the tab/button classes (it used to force 15px/400 and one colour on every tab).
+    expect(HUB_CSS).toContain(".hg-hub :where(button,select,input){font:inherit;color:inherit}");
+    expect(HUB_CSS).not.toContain(".hg-hub button,");
+    // Dawn hides empty divs (div:empty{display:none}); the backdrop is an empty div.
+    expect(HUB_CSS).toContain(".hg-bd.hg-bd{display:block}");
+    expect(HUB_CSS).toContain(".hg-hub .hg-note{padding:10px 12px}");
   });
 });

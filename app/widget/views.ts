@@ -178,7 +178,7 @@ export function influencerBox(c: Ctx): string {
   return (
     `<section class="hg-card"><h3 class="hg-h">Your creator code</h3><p class="hg-p">Shoppers who use your code get ${off}. You earn ${pts(inf.rewardPoints)} when a new customer's first order with it is delivered and paid.</p>` +
     `<div class="hg-ref"><label class="hg-sr" for="hg-inf-code">Your creator code</label><input id="hg-inf-code" class="hg-ref__i hg-code__c" type="text" readonly value="${esc(inf.code)}">` +
-    `<button type="button" class="hg-btn hg-btn--sm" data-copy="${esc(inf.code)}">Copy</button></div></section>`
+    `<button type="button" class="hg-btn hg-btn--sm" data-copy="${esc(inf.code)}" aria-label="Copy code ${esc(inf.code)}">Copy</button></div></section>`
   );
 }
 
@@ -217,8 +217,8 @@ export function redeemList(c: Ctx): string {
     if (c.member && !paused) {
       right =
         balance >= t.points
-          ? `<button type="button" class="hg-btn hg-btn--sm" data-act="redeem" data-points="${t.points}" data-pkr="${t.discountPkr}">Redeem</button>`
-          : `<span class="hg-need">${fmt(t.points - balance)} more</span>`;
+          ? `<button type="button" class="hg-btn hg-btn--sm" data-act="redeem" data-points="${t.points}" data-pkr="${t.discountPkr}" aria-label="Redeem ${rs(t.discountPkr)} off for ${pts(t.points)}">Redeem</button>`
+          : `<span class="hg-need">${fmt(t.points - balance)} more points</span>`;
     }
     return row(ico(REDEEM_ICON), `${rs(t.discountPkr)} off`, pts(t.points), right);
   });
@@ -273,7 +273,7 @@ export function codesList(c: Ctx): string {
       .map(
         (k) =>
           `<li class="hg-code"><div class="hg-row__main"><p class="hg-row__t">${esc(codeValue(k))}</p><p class="hg-code__c">${esc(k.code)}</p>${k.expiresAt ? `<p class="hg-row__s">Use by ${esc(fmtDate(k.expiresAt))}</p>` : ""}</div>` +
-          `<div class="hg-code__a"><button type="button" class="hg-btn hg-btn--sm hg-btn--ghost" data-copy="${esc(k.code)}">Copy</button>` +
+          `<div class="hg-code__a"><button type="button" class="hg-btn hg-btn--sm hg-btn--ghost" data-copy="${esc(k.code)}" aria-label="Copy code ${esc(k.code)}">Copy</button>` +
           `<a class="hg-btn hg-btn--sm" href="${esc(discountUrl(k.code, c.path))}">Apply</a></div></li>`,
       )
       .join("") +
@@ -297,7 +297,7 @@ export function referBox(c: Ctx, ghost = false): string {
   if (!url) return "";
   return (
     `<div class="hg-ref"><label class="hg-sr" for="hg-ref-link">Your referral link</label><input id="hg-ref-link" class="hg-ref__i" type="text" readonly value="${esc(url)}">` +
-    `<button type="button" class="hg-btn hg-btn--sm${ghost ? " hg-btn--ghost" : ""}" data-copy="${esc(url)}">Copy</button></div>`
+    `<button type="button" class="hg-btn hg-btn--sm${ghost ? " hg-btn--ghost" : ""}" data-copy="${esc(url)}" aria-label="Copy referral link">Copy</button></div>`
   );
 }
 
