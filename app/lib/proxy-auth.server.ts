@@ -83,6 +83,12 @@ export function proxyJson(data: unknown, status = 200, extra: Record<string, str
 
 /** Client address as forwarded by Shopify's proxy; null when absent. */
 export function clientIp(request: Request): string | null {
+  // TEMPORARY (dev store, 19 Nov 2026): find which header carries the shopper's
+  // address. Logged only while DEBUG_PROXY_IP=1 is set on the service.
+  if (process.env.DEBUG_PROXY_IP === "1") {
+    const pick = ["x-forwarded-for", "cf-connecting-ip", "true-client-ip", "x-real-ip", "x-envoy-external-address", "x-client-ip", "forwarded"];
+    console.log("[debug-proxy-ip]", JSON.stringify(Object.fromEntries(pick.map((h) => [h, request.headers.get(h)]))));
+  }
   const fwd = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
   return fwd || request.headers.get("x-real-ip") || null;
 }
