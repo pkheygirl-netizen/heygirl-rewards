@@ -594,8 +594,8 @@ describe("referral order-time check runs before the referrer can be paid (rule 1
       if (opName(q) === "HgCustomerOrderCount") return { customer: { numberOfOrders: "1" } };
       if (opName(q) === "HgReferralOrderCheck") {
         return {
-          order: { shippingAddress: { address1: "House 12, Street 5", city: "Karachi", phone: "03117654321" } },
-          customer: { defaultPhoneNumber: null, defaultAddress: { address1: "H 12 St 5", city: "Karachi", phone: null }, addressesV2: { nodes: [] }, orders: { nodes: [] } },
+          order: { shippingAddress: { address1: "House 12, Street 5, Clifton", city: "Karachi", phone: "03117654321" } },
+          customer: { defaultPhoneNumber: null, defaultAddress: { address1: "H 12 St 5 Clifton", city: "Karachi", phone: null }, addressesV2: { nodes: [] }, orders: { nodes: [] } },
         };
       }
       return {};
@@ -641,8 +641,8 @@ describe("referral order-time check runs before the referrer can be paid (rule 1
       if (opName(q) === "HgCustomerOrderCount") return { customer: { numberOfOrders: "1" } };
       if (opName(q) === "HgReferralOrderCheck") {
         return {
-          order: { shippingAddress: { address1: "House 12, Street 5", city: "Karachi", phone: "03117654321" } },
-          customer: { defaultPhoneNumber: null, defaultAddress: { address1: "H 12 St 5", city: "Karachi", phone: null }, addressesV2: { nodes: [] }, orders: { nodes: [] } },
+          order: { shippingAddress: { address1: "House 12, Street 5, Clifton", city: "Karachi", phone: "03117654321" } },
+          customer: { defaultPhoneNumber: null, defaultAddress: { address1: "H 12 St 5 Clifton", city: "Karachi", phone: null }, addressesV2: { nodes: [] }, orders: { nodes: [] } },
         };
       }
       return {};
@@ -695,8 +695,8 @@ describe("referral order-time check runs before the referrer can be paid (rule 1
       if (opName(q) === "HgCustomerOrderCount") return { customer: { numberOfOrders: "1" } };
       if (opName(q) === "HgReferralOrderCheck") {
         return {
-          order: { shippingAddress: { address1: "House 12, Street 5", city: "Karachi", phone: "03117654321" } },
-          customer: { defaultPhoneNumber: null, defaultAddress: { address1: "H 12 St 5", city: "Karachi", phone: null }, addressesV2: { nodes: [] }, orders: { nodes: [] } },
+          order: { shippingAddress: { address1: "House 12, Street 5, Clifton", city: "Karachi", phone: "03117654321" } },
+          customer: { defaultPhoneNumber: null, defaultAddress: { address1: "H 12 St 5 Clifton", city: "Karachi", phone: null }, addressesV2: { nodes: [] }, orders: { nodes: [] } },
         };
       }
       if (opName(q) === "HgTagReferralOrder") {
@@ -721,6 +721,31 @@ describe("referral order-time check runs before the referrer can be paid (rule 1
     expect(tags()).toHaveLength(tagTries + 1);
     expect(checks()).toHaveLength(1);
     expect(referrer.points_balance).toBe(0);
+  });
+
+  it("review 10 L5: the tag is retried on a refund of the matched order too", async () => {
+    const { referrer, referral } = setupReferral();
+    referrer.phone = null;
+    let throttled = true;
+    h.graphql = (q) => {
+      if (opName(q) === "HgCustomerOrderCount") return { customer: { numberOfOrders: "1" } };
+      if (opName(q) === "HgReferralOrderCheck") {
+        return {
+          order: { shippingAddress: { address1: "House 12, Street 5, Clifton", city: "Karachi", phone: "03117654321" } },
+          customer: { defaultPhoneNumber: null, defaultAddress: { address1: "H 12 St 5 Clifton", city: "Karachi", phone: null }, addressesV2: { nodes: [] }, orders: { nodes: [] } },
+        };
+      }
+      if (opName(q) === "HgTagReferralOrder") {
+        if (throttled) throw new ShopifyRateLimitError();
+        return { tagsAdd: { node: { id: "gid://shopify/Order/O1" }, userErrors: [] } };
+      }
+      return {};
+    };
+    await processOrderEvent(order({ discountCodes: [], fulfillmentStatus: "fulfilled", financialStatus: "paid" }), "s");
+    expect(referral).toMatchObject({ order_check: "same_address", order_tag: null });
+    throttled = false;
+    await processRefundEvent({ refundId: "R1", orderId: "O1", refundedMerchandisePkr: 100 }, "s");
+    expect(referral.order_tag).toBe("tagged");
   });
 
   it("review 9 item 1: the tag is retried on a cancellation of the matched order too", async () => {

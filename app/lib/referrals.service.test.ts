@@ -960,6 +960,80 @@ describe("order-time check: the friend's order that used her free-shipping code"
     expect(referrer.points_balance).toBe(6000);
   });
 
+  // ── review 10 (L1-L4) ──
+  it("L1: a legacy hold (same_ip) whose check fails on the last try does not record the order, so Approve checks first", async () => {
+    const { referrer } = setup();
+    await visit();
+    Object.assign(referral(), { status: "flagged", fraud_flags: ["same_ip"], block_reason: "Same network" });
+    awardedOrder("O1", { order_name: "#1007", discount_codes: [] });
+    failCheckWith(() => Object.assign(new Error("Bad Request"), { response: { code: 400 } }));
+    await completeReferralForCustomer("FR", "s", { finalAttempt: true });
+    expect(referral()).toMatchObject({ status: "flagged", order_check: "not_checked", order_checked_order_id: null });
+    h.graphql = withCheck;
+    ship = { address1: "Flat 3, Gulberg III", city: "Lahore", phone: "03001234567" }; // the referrer's phone
+    expect(await approveReferral(String(referral().id), "staff", "s")).toMatchObject({ ok: true, paid: false, reason: "blocked_by_order_check" });
+    expect(referrer.points_balance).toBe(0);
+  });
+
+  it("L2: held at sign-in, approved, then complete_referral fails on every try: the last try does NOT record the order, so a second Approve checks (not paid)", async () => {
+    const { referrer } = heldSetup();
+    await visit();
+    awardedOrder("O1", { order_name: "#1007", discount_codes: [] });
+    failCheckWith(() => Object.assign(new Error("Bad Request"), { response: { code: 400 } }));
+    expect(await approveReferral(String(referral().id), "staff", "s")).toMatchObject({ ok: true, paid: false, reason: "queued" });
+    expect(h.points.named("complete_referral")).toHaveLength(1);
+    expect(referral().status).toBe("pending");
+    // the queued job's last try
+    expect(await completeReferralForCustomer("FR", "s", { finalAttempt: true })).toMatchObject({ paid: false, reason: "held_for_review" });
+    expect(referral()).toMatchObject({ status: "flagged", order_check: "not_checked", order_checked_order_id: null });
+    h.graphql = withCheck;
+    ship = { address1: "Flat 3, Gulberg III", city: "Lahore", phone: "03001234567" }; // the referrer's phone
+    const n = checkCalls().length;
+    expect(await approveReferral(String(referral().id), "staff", "s")).toMatchObject({ ok: true, paid: false, reason: "blocked_by_order_check" });
+    expect(checkCalls()).toHaveLength(n + 1);
+    expect(referrer.points_balance).toBe(0);
+  });
+
+  it("L3: Approve pays while the worker cancels the order (cancel lands between the order read and the award): the points are taken back", async () => {
+    const { referrer } = setup();
+    await visit();
+    const order = friendOrder();
+    Object.assign(referral(), { status: "flagged", fraud_flags: ["same_address_on_order"], order_check: "same_address", order_checked_order_id: "O1" });
+    const realRpc = h.db.rpc.bind(h.db);
+    vi.spyOn(h.db, "rpc").mockImplementation(async (fn: string, args: Record<string, unknown>) => {
+      if (fn === "award_points" && args.p_action_type === "referral_earned") {
+        // the worker: reverse_order_points(cancel) sets cancelled_at, then its
+        // reverseReferralForOrder finds the claim not yet paid: nothing to reverse
+        order.cancelled_at = "2026-11-12T00:00:00Z";
+        expect(await reverseReferralForOrder("O1", "cancelled")).toEqual({ reversed: false });
+      }
+      return realRpc(fn, args);
+    });
+    expect(await approveReferral(String(referral().id), "staff", "s")).toMatchObject({ ok: true, paid: false, reason: "qualifying_order_cancelled" });
+    expect(referrer.points_balance).toBe(0);
+    expect(h.db.table("points_ledger").filter((l) => l.action_type === "referral_reversal")).toHaveLength(1);
+    expect(referral()).toMatchObject({ status: "rejected" });
+    expect(h.notifications.named("referral_completed")).toHaveLength(0);
+  });
+
+  it("L4: the completed email is queued with a fixed job id BEFORE points_awarded is set", async () => {
+    setup();
+    await visit();
+    friendOrder();
+    const flagAtQueue: unknown[] = [];
+    const realAdd = h.notifications.add;
+    h.notifications.add = async (name, data, opts) => {
+      if (name === "referral_completed") flagAtQueue.push(referral().points_awarded);
+      return realAdd(name, data, opts);
+    };
+    expect((await completeReferralForCustomer("FR", "s")).paid).toBe(true);
+    expect(flagAtQueue).toEqual([false]);
+    const job = h.notifications.named("referral_completed")[0];
+    expect(job.opts).toEqual({ jobId: `referral_completed-${referral().id}` });
+    expect(String(job.opts?.jobId)).not.toContain(":"); // BullMQ refuses ":" in custom ids
+    expect(referral().points_awarded).toBe(true);
+  });
+
   it("item 4: a held referral whose check threw is tried at most once an hour, not on every event; Approve always checks", async () => {
     const { referrer } = heldSetup();
     await visit();

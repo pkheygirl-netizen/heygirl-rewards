@@ -655,10 +655,14 @@ async function reverseInfluencerSale(state: OrderState, why: "refunded" | "cance
 
 export async function processRefundEvent(
   ev: RefundEvent,
+  shop?: string | null,
 ): Promise<{ reversed: number; reason?: string }> {
   const state = await readState(ev.orderId);
   // The customer is found through the stored order, never the refund payload.
   if (!state) return { reversed: 0, reason: "no_order_row" };
+  // A referred friend's order whose "Rewards: check referral" tag could not be
+  // added yet: a refund is one more event to retry it on (review 10, L5).
+  if (state.shopify_customer_id) await retryReferralOrderTag(ev.orderId, state.shopify_customer_id, shop);
 
   // Prices that include tax: the earning basis never included it, so it comes off.
   let merchandiseRefunded = ev.refundedMerchandisePkr;

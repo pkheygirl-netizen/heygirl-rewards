@@ -212,15 +212,15 @@ export default function Home() {
               ) : null}
               {d.referralsHeldOnly > 0 ? (
                 <AttentionRow
-                  title={`${fmtInt(d.referralsHeldOnly)} referral${d.referralsHeldOnly === 1 ? "" : "s"} held for review`}
-                  detail="The friend looks like the referrer (similar email or the same full name). Held referrals whose order delivers to the referrer's address or could not be checked are listed above or below, once each. Approve or reject each one."
+                  title={`${fmtInt(d.referralsHeldOnly)} referral${d.referralsHeldOnly === 1 ? "" : "s"} waiting for your approval`}
+                  detail="The referrer is paid only if you approve. Each one shows its reason on the Referrals page (for example a similar email or the same full name, or an order alert you dismissed). Referrals with an open alert above, or on the not-checked line, are not counted again. Approve or reject each one."
                   action={<Button url="/app/referrals?status=flagged">Review</Button>}
                 />
               ) : null}
               {d.referralsNotChecked > 0 ? (
                 <AttentionRow
                   title={`${fmtInt(d.referralsNotChecked)} referral order${d.referralsNotChecked === 1 ? " was" : "s were"} not checked`}
-                  detail="The friend's order could not be compared with the referrer's phone number and address, because Shopify did not share the delivery details or did not answer. Those Shopify did not answer are held for you; the others were paid as usual. Look at each one, then dismiss it."
+                  detail="The friend's order could not be compared with the referrer's phone number and address, because Shopify did not share the delivery details or did not answer. Those Shopify did not answer, and those already held for another reason, wait for your approval; the others carry on as usual (the referrer is paid once the order is delivered and paid). Look at each one, then dismiss it."
                   action={<Button url="/app/referrals?check=not_checked">See which</Button>}
                 />
               ) : null}
@@ -502,7 +502,7 @@ export default function Home() {
         }}
       >
         <Text as="p">
-          {blockingReferrer?.name}'s referral link will stop earning, and no referral of hers that is still waiting will be paid. You can allow her referrals again from her profile. Her own points and orders are not changed.
+          {blockingReferrer?.name}'s referral link will stop earning, and no referral of hers that is still waiting will be paid. If this referral is held, it is rejected. You can allow her referrals again from her profile. Her own points and orders are not changed.
         </Text>
       </ConfirmModal>
     </Page>

@@ -23,7 +23,7 @@ import { issueReferralFriendCode } from "./referral-bonus.service";
 import { expiresAtForTier } from "./points.service";
 import {
   ORDER_CHECK_FAILED_FLAG, ORDER_CHECK_FAILED_REASON, ORDER_FLAGS, orderVerdict, REFERRAL_ORDER_TAG, signInVerdict,
-  type AddressLike, type OrderCheckResult, type SIGNIN_FLAGS,
+  type AddressLike, type OrderCheckResult,
 } from "./referral-checks.server";
 
 type ReferralRow = Database["public"]["Tables"]["referrals"]["Row"];
@@ -440,10 +440,30 @@ export function resetHeldCheckAttempts(): void {
   heldCheckAttempts.clear();
 }
 
-/** Sign-in reasons that hold a referral (rule 10: similar email, same full name). */
-const SIGNIN_HOLD_FLAGS: ReadonlyArray<keyof typeof SIGNIN_FLAGS> = ["similar_email", "same_name"];
-const heldAtSignIn = (r: { status?: unknown; fraud_flags?: unknown }): boolean =>
-  r.status === "flagged" && Array.isArray(r.fraud_flags) && r.fraud_flags.some((f) => SIGNIN_HOLD_FLAGS.includes(String(f) as keyof typeof SIGNIN_FLAGS));
+/** Reasons set by an order check (this module): every other reason was given at sign-in or by older rules. */
+const ORDER_CHECK_FLAGS: ReadonlySet<string> = new Set([
+  "same_phone_on_order", "same_order_phone_on_order", "same_address_on_order", ORDER_CHECK_FAILED_FLAG,
+]);
+/**
+ * Held (now or before an Approve) for a reason that is NOT an order check:
+ * similar email or same full name at sign-in (rule 10), or a reason from older
+ * rules (same_ip, same_network, ...), or a held row with no reason at all.
+ * Staff approving such a referral judge that reason, not an order, so an
+ * order check Shopify never answered must not record the order id
+ * (review 10, L1/L2): the flags decide, whatever the status (an approved
+ * referral is pending again and still carries its sign-in flags).
+ */
+export function heldAtSignIn(r: { status?: unknown; fraud_flags?: unknown }): boolean {
+  const flags = Array.isArray(r.fraud_flags) ? r.fraud_flags.map(String) : [];
+  if (flags.some((f) => !ORDER_CHECK_FLAGS.has(f))) return true;
+  return r.status === "flagged" && flags.length === 0;
+}
+
+/** The referral columns the order check reads. */
+type OpenReferral = Pick<
+  ReferralRow,
+  "id" | "referrer_member_id" | "status" | "friend_code_id" | "fraud_flags" | "block_reason" | "order_check" | "order_checked_order_id"
+>;
 
 export type ReferralOrderCheck =
   | { checked: false; reason: "no_open_referral" | "no_friend_code" | "code_not_used" | "already_checked" | "referrer_not_found" | "tried_recently" }
@@ -524,17 +544,25 @@ export async function checkReferralOrder(input: {
   finalAttempt?: boolean;
   /** The friend's first qualifying order: checked whether or not she used her code. */
   qualifyingOrder?: boolean;
+  /**
+   * Her open (pending or held) referral when the caller has just read it
+   * (completeReferralForCustomer), so it is not read twice in one event.
+   */
+  openReferral?: OpenReferral;
 }): Promise<ReferralOrderCheck> {
   const orderId = String(input.shopifyOrderId);
   await retryReferralOrderTag(orderId, String(input.shopifyCustomerId), input.shop);
-  const { data: open, error } = await db
-    .from("referrals")
-    .select("id, referrer_member_id, status, friend_code_id, fraud_flags, block_reason, order_check, order_checked_order_id")
-    .eq("referred_shopify_customer_id", String(input.shopifyCustomerId))
-    .in("status", ["pending", "flagged"])
-    .limit(1);
-  if (error) throw new Error(`referral lookup failed: ${error.message}`);
-  const referral = open?.[0];
+  let referral = input.openReferral;
+  if (!referral) {
+    const { data: open, error } = await db
+      .from("referrals")
+      .select("id, referrer_member_id, status, friend_code_id, fraud_flags, block_reason, order_check, order_checked_order_id")
+      .eq("referred_shopify_customer_id", String(input.shopifyCustomerId))
+      .in("status", ["pending", "flagged"])
+      .limit(1);
+    if (error) throw new Error(`referral lookup failed: ${error.message}`);
+    referral = open?.[0];
+  }
   if (!referral) return { checked: false, reason: "no_open_referral" };
   if (referral.order_checked_order_id === orderId) return { checked: false, reason: "already_checked" };
   const held = referral.status === "flagged";
@@ -821,13 +849,42 @@ async function finishReferralPayment(
   if (error) throw new Error(`award_points(referral) failed: ${error.message}`);
   const awarded = data?.[0]?.awarded ?? false;
 
-  // Written on a replay too, so a crash after the award cannot leave it open.
-  // The call that sets it sends the "referral completed" email, so the email
-  // goes out once even when an earlier call added the points and then stopped.
+  // Review 10, L3: the order may have been cancelled or refunded in full while
+  // this call was paying (Approve in the web process against the worker's
+  // cancellation: the worker's reversal can run before the claim and find
+  // nothing to reverse). Read the order again now that the points are in the
+  // ledger; if it is gone, take them back (the reversal is idempotent, so the
+  // worker doing it too changes nothing).
+  const gone = await reverseIfOrderGone(shopifyOrderId);
+  if (gone) return { paid: false, points, reason: `qualifying_order_${gone}` };
+
+  // Review 10, L4: the "referral completed" email is queued BEFORE
+  // points_awarded is set, under a fixed job id, so a crash in between cannot
+  // lose it (the next call queues it again and the id removes the copy).
+  // points_awarded is written on a replay too, so a crash after the award
+  // cannot leave it open.
+  await queueReferralCompletedEmail(String(referral.id), r.id, points);
   const finished = await markReferralAwarded(referral.id);
-  if (finished) await queueReferralCompletedEmail(r.id, points);
   const paid = awarded || finished;
   return { paid, points, reason: paid ? undefined : "already_paid" };
+}
+
+/**
+ * The claimed order was cancelled or refunded in full: reverse the referral
+ * (reverseReferralForOrder, idempotent) and say why; null while it still
+ * qualifies or when the order row is not found.
+ */
+async function reverseIfOrderGone(shopifyOrderId: string): Promise<"cancelled" | "refunded" | null> {
+  const { data, error } = await db
+    .from("order_webhook_state")
+    .select(ORDER_LITE_COLUMNS)
+    .eq("shopify_order_id", shopifyOrderId)
+    .maybeSingle();
+  if (error) throw new Error(`order lookup failed: ${error.message}`);
+  const o = data as OrderLite | null;
+  const gone = o?.cancelled_at ? "cancelled" as const : o && fullyRefunded(o) ? "refunded" as const : null;
+  if (gone) await reverseReferralForOrder(shopifyOrderId, gone);
+  return gone;
 }
 
 /**
@@ -846,10 +903,16 @@ async function markReferralAwarded(referralId: string, points?: number): Promise
   return !!data && data.length > 0;
 }
 
-async function queueReferralCompletedEmail(memberId: string, points: number): Promise<void> {
-  await notificationQueue
-    .add("referral_completed", { memberId, points })
-    .catch((err) => console.error("[payReferral] notification enqueue failed:", err));
+/**
+ * The referrer's "referral completed" email, once per referral: a fixed job id
+ * (BullMQ ignores an add whose id is already queued, running or recently
+ * finished), queued before points_awarded is set (at least once, de-duplicated).
+ * Throws when Redis refuses, so points_awarded stays false and the next call
+ * (or the job's retry) queues it again.
+ */
+export const referralCompletedJobId = (referralId: string) => `referral_completed-${referralId}`;
+async function queueReferralCompletedEmail(referralId: string, memberId: string, points: number): Promise<void> {
+  await notificationQueue.add("referral_completed", { memberId, points }, { jobId: referralCompletedJobId(referralId) });
 }
 
 /**
@@ -910,21 +973,12 @@ async function resumeClaimedReferral(
   const earned = await earnedReferralPoints(referral);
   if (earned !== null) {
     if (claimedOrderId) {
-      const { data: claimed, error } = await db
-        .from("order_webhook_state")
-        .select(ORDER_LITE_COLUMNS)
-        .eq("shopify_order_id", claimedOrderId)
-        .maybeSingle();
-      if (error) throw new Error(`order lookup failed: ${error.message}`);
-      const o = claimed as OrderLite | null;
-      const gone = o?.cancelled_at ? "cancelled" as const : o && fullyRefunded(o) ? "refunded" as const : null;
-      if (gone) {
-        await reverseReferralForOrder(claimedOrderId, gone);
-        return { paid: false, reason: `qualifying_order_${gone}`, orderId: claimedOrderId };
-      }
+      const gone = await reverseIfOrderGone(claimedOrderId);
+      if (gone) return { paid: false, reason: `qualifying_order_${gone}`, orderId: claimedOrderId };
     }
+    // Email first (fixed job id), then the flag: see finishReferralPayment.
+    await queueReferralCompletedEmail(String(referral.id), referral.referrer_member_id, earned);
     const finished = await markReferralAwarded(referral.id, earned);
-    if (finished) await queueReferralCompletedEmail(referral.referrer_member_id, earned);
     return { paid: finished, points: earned, reason: finished ? undefined : "already_paid", orderId: claimedOrderId ?? undefined };
   }
 
@@ -1008,6 +1062,7 @@ export async function completeReferralForCustomer(
         shop,
         finalAttempt: opts.finalAttempt,
         qualifyingOrder: true,
+        openReferral: referral,
       });
       if (check.checked) {
         const after = await openReferralFor(customerId);

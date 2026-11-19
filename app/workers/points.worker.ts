@@ -32,7 +32,7 @@ export const pointsWorker = new Worker(
         if (!job.data.shopifyCustomerId) return { skipped: "no_customer" };
         return completeReferralForCustomer(String(job.data.shopifyCustomerId), shopOf(job.data), { finalAttempt });
       case "refund_event":
-        return processRefundEvent(job.data.event as RefundEvent);
+        return processRefundEvent(job.data.event as RefundEvent, shopOf(job.data));
       case "award_signup_points":
         if (!job.data.memberId) return { awarded: false, reason: "legacy_job_without_member" };
         return awardSignup(String(job.data.memberId));

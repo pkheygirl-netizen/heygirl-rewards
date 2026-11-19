@@ -213,7 +213,7 @@ describe("pages render with data", () => {
 
   it("Home", async () => {
     const html = await renderRoute("app._index.tsx", "/app?view=claims");
-    for (const text of ["Needs your attention", "3 referrals held for review", "2 review claims waiting", "41 members have points expiring", "1,912", "842,300", "14%", "Rs.386,000", "Reward cost Rs.21,500", "Members by tier", "Order #1042 delivered and paid", "Program live", "Reject", "Approve", "then approve or reject each claim",
+    for (const text of ["Needs your attention", "3 referrals waiting for your approval", "2 review claims waiting", "41 members have points expiring", "1,912", "842,300", "14%", "Rs.386,000", "Reward cost Rs.21,500", "Members by tier", "Order #1042 delivered and paid", "Program live", "Reject", "Approve", "then approve or reject each claim",
       "Order value using a reward", "after discounts, without shipping and tax, before refunds"]) {
       expect(html, text).toContain(text);
     }
@@ -244,9 +244,9 @@ describe("pages render with data", () => {
       },
     });
     const html = await renderRoute("app._index.tsx", "/app");
-    expect(html).toContain("1 referral held for review"); // 2 held, 1 of them is on the "not checked" line
+    expect(html).toContain("1 referral waiting for your approval"); // 2 held, 1 of them is on the "not checked" line
     expect(html).toContain("1 referral order was not checked");
-    expect(html).not.toContain("2 referrals held for review");
+    expect(html).not.toContain("2 referrals waiting for your approval");
   });
 
   it("Referrals filtered to orders that were not checked", async () => {

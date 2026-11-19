@@ -238,6 +238,21 @@ describe("one referral, and Home alerts from the order-time check (016)", () => 
     expect(fake.firstArg("referrals", "update")).toHaveProperty("alert_resolved_at");
   });
 
+  it("review 10 L6: block this referrer from the alert of a HELD referral also rejects it (no longer counted as held)", async () => {
+    setReferralsBlocked.mockResolvedValue(true);
+    const { fake, mod } = await load({
+      from: (_t, chain) => (chain.some(([m]) => m === "maybeSingle")
+        ? { data: { id: ID, referrer_member_id: "m1", status: "flagged" } }
+        : chain.some(([m]) => m === "update") ? { data: [{ id: ID }] } : { data: null }),
+    });
+    expect(await mod.blockReferrer(ID, "Ayesha")).toEqual({ ok: true, message: "Referrer blocked and this held referral rejected. Her referral link no longer earns" });
+    const upd = fake.firstArg("referrals", "update") as Record<string, unknown>;
+    expect(upd).toMatchObject({ status: "rejected", reviewed_note: "rejected by Ayesha: referrer blocked" });
+    expect(upd).toHaveProperty("alert_resolved_at");
+    const updChain = fake.tableCalls("referrals").find((c) => c.chain.some(([m]) => m === "update"))!.chain;
+    expect(updChain).toContainEqual(["eq", ["status", "flagged"]]);
+  });
+
   it("review 9 item 6: held referrals already on the alert or not-checked line are counted for Home's subtraction", async () => {
     const { fake, mod } = await load({ from: () => ({ count: 2, data: null }) });
     expect(await mod.countHeldCountedElsewhere()).toBe(2);

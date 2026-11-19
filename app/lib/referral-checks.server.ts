@@ -97,32 +97,57 @@ export function sameFullName(
 export type AddressLike = { address1?: string | null; address2?: string | null; city?: string | null };
 
 /*
- * Address comparison (owner decisions 19 Nov 2026, round 9). An address only
- * ever HOLDS a referral, never blocks it, so the rule leans towards "no match"
- * when the evidence is thin. Each address is read into:
+ * Address comparison (owner decisions 19 Nov 2026, rounds 9 and 10). An
+ * address only ever HOLDS a referral, never blocks it, so the rule leans
+ * towards "no match" when the evidence is thin. Each address (address1 and
+ * address2 read as one line, address2 after a comma) is read into:
  *   - labelled numbers: house, street, road, block, phase, sector, flat, plot,
  *     lane, floor, building, town -> "house:12", "street:5", "block:a",
- *     "phase:6" ("Phase VI" = 6), "flat:4b" ("Flat B-4" = "4-B" = "4B")
- *   - sector codes without a label: "G-9/1" = "G 9/1" = "G9/1" = "G-9-1",
- *     "F-7", "I-8" -> "sector:g9/1"
- *   - unlabelled numbers ("Askari 11", "Gulberg III" -> 3), compared as a set
+ *     "phase:6" ("Phase VI" = "Phase 6"), "flat:4b" ("Flat B-4" = "4-B" =
+ *     "4B" = "B4"). A label takes the number right after it, never across a
+ *     comma ("Faisal Town, 123-A": 123-A is not the town's number); road and
+ *     town take a plain number only. "D Block" = "Block D", "10 D Block" =
+ *     house 10, block D. After phase, block, sector, askari, gulberg and town
+ *     a single I, V or X is a Roman numeral ("Phase V" = 5, "Askari X" = 10);
+ *     ii..xx are read as numbers anywhere.
+ *   - sector codes: "G-9/1" = "G 9/1" = "G9/1" = "G-9-1" (any city), and in
+ *     Islamabad also "F-7", "I-8" -> "sector:g9/1", "sector:f7".
+ *   - numbers and codes without a label ("Askari 11", "Gulberg III" -> 3,
+ *     "33A", Karachi's "A-12" -> "12a"), compared as a set. A house, flat or
+ *     plot number on one side may be written bare on the other ("Plot 34" =
+ *     "34", "House A-12" = "A-12") when that other side has no house, flat or
+ *     plot label at all; a block or sector letter code likewise ("Block R-1"
+ *     = "R1") when the other side has no block (sector) label.
  *   - locality words: what is left after dropping the city names, "Pakistan",
  *     provinces, filler ("near", "opposite", "behind") and generic words
- *     ("town", "colony", "road" ...)
+ *     ("town", "colony", "road" ...). Landmark words (masjid, bazar, market,
+ *     hospital, school, park ...) are weak: shared only they count just when
+ *     neither side has any other locality word; before "road"/"street"
+ *     ("University Road", "Mall Road") they name the road and count fully.
+ * Phone numbers (Pakistani mobile and landline shapes, with their own digit
+ * boundaries, so "House 12 0321-1234567" keeps 12) and 5-digit postcodes are
+ * removed first. The city field drops provinces, "Cantt", "Cantonment",
+ * "Capital Territory", "ICT"; Pindi = Rawalpindi.
  * Two addresses match when: same city AND the same labelled numbers (a label
- * on one side only = no match) AND the same unlabelled numbers AND
- * (at least one locality word in common, OR the same sector code, OR nothing
- * else at all on either side, e.g. "H# 12 St 5" = "House No 12 Street 5").
+ * on one side only = no match, e.g. a floor or street written once) AND the
+ * same unlabelled numbers AND (at least one locality word in common, OR the
+ * same sector code, OR no locality word on either side but a landmark word in
+ * common). A bare house number alone ("House 12, Street 5", Lahore) never
+ * matches: half a city could live there.
  * Order does not matter: "G-9/1, House 12" = "House 12, G-9/1", and
  * "Street 12, House 5" is not "House 12, Street 5".
  *
  * "H-12" (also "H 12", "H12"): Islamabad has a sector H-12, and "H" is also
  * the usual short form of "House". Read as:
- *   - a sector when the address already has a house number written another way;
+ *   - a sector when the address already has a house number written another way
+ *     (outside Islamabad: a bare code "12h");
  *   - house 12 when another sector code is present, or "street"/"st" follows;
  *   - otherwise BOTH readings are tried, and either may match (an address
  *     result only holds the referral for staff, so a possible match is shown).
  * "H#12", "H no 12", "H.No.12", "House No. 12" are always house 12.
+ *
+ * Every regular expression here is linear (bounded repeats, look-arounds of
+ * fixed shape): a 100 KB line is read in milliseconds.
  */
 
 /** Words that label the number (or single letter / Roman numeral) after them. */
@@ -133,7 +158,7 @@ const LABELS: Record<string, string> = {
   block: "block", blk: "block",
   phase: "phase", ph: "phase",
   sector: "sector", sec: "sector",
-  flat: "flat", apt: "flat", apartment: "flat", unit: "flat", suite: "flat", portion: "flat",
+  flat: "flat", apt: "flat", apts: "flat", apartment: "flat", unit: "flat", suite: "flat", portion: "flat",
   plot: "plot",
   lane: "lane",
   floor: "floor",
@@ -142,14 +167,28 @@ const LABELS: Record<string, string> = {
 };
 /** Labels whose letter goes after the number ("Flat B-4" = "4b"); the others keep a code's letter first. */
 const DWELLING = new Set(["house", "flat", "plot", "building"]);
+/** Labelled values a bare number or code on the other side may stand for. */
+const STAND_IN_HOME = new Set(["house", "flat", "plot"]);
+const STAND_IN_CODE = new Set(["block", "sector"]);
+/** Labels that take only a plain number: a road or town name is often followed by the house number. */
+const NUMBER_ONLY = new Set(["road", "town"]);
+/** Labels that may follow their letter: "D Block" = "Block D". */
+const BACK_LABELS = new Set(["block", "sector"]);
+/** Words after which a single i, v or x is a Roman numeral. */
+const ROMAN_AFTER = new Set(["phase", "ph", "block", "blk", "sector", "sec", "askari", "gulberg", "town"]);
+const ROMAN_SINGLE: Record<string, number> = { i: 1, v: 5, x: 10 };
 /** Between a label and its number: "House No. 12", "St # 5". */
 const FILLER_AFTER_LABEL = new Set(["no", "number", "num", "nmbr"]);
+/** Words naming a road: a landmark word before one names the road ("University Road"). */
+const ROAD_WORDS = new Set(["road", "rd", "street", "st", "avenue", "boulevard", "lane"]);
 
 /** City field forms read as the same city. */
 const CITY_ALIASES: Record<string, string> = {
   pindi: "rawalpindi", rwp: "rawalpindi", isb: "islamabad", isl: "islamabad", khi: "karachi", lhr: "lahore", fsd: "faisalabad",
 };
 const PROVINCES = new Set(["pakistan", "pk", "sindh", "punjab", "kpk", "kp", "khyber", "pakhtunkhwa", "balochistan", "baluchistan", "ict", "ajk"]);
+/** Dropped from the city field: "Lahore Cantt" = "Lahore", "Islamabad Capital Territory" = "Islamabad". */
+const CITY_EXTRA = new Set(["cantt", "cant", "cantonment", "capital", "territory", "ict"]);
 /** City names dropped from the address line (the order's own city is dropped too). */
 const CITY_WORDS = new Set([
   "karachi", "lahore", "islamabad", "rawalpindi", "pindi", "faisalabad", "multan", "peshawar", "quetta", "sialkot", "gujranwala",
@@ -160,8 +199,17 @@ const CITY_WORDS = new Set([
 const GENERIC = new Set([
   "near", "opp", "opposite", "behind", "beside", "nearby", "adjacent", "front", "back", "side", "the", "of", "and", "in", "at", "to", "on",
   "town", "colony", "society", "scheme", "housing", "city", "cantt", "cantonment", "extension", "ext", "main", "road", "street",
-  "avenue", "boulevard", "lane", "mohalla", "gali", "area", "sector", "block", "phase", "plot", "house", "flat", "floor", "building",
-  "tower", "apartment", "apartments", "portion", "upper", "lower", "ground", "first", "second", "third", "no", "number", "pakistan",
+  "avenue", "boulevard", "lane", "mohalla", "mohallah", "muhalla", "muhallah", "gali", "area", "sector", "block", "phase", "plot",
+  "house", "flat", "floor", "building", "tower", "apartment", "apartments", "apts", "portion", "upper", "lower", "ground", "first",
+  "second", "third", "no", "number", "pakistan", "contact", "cell", "mobile", "phone", "tel", "whatsapp",
+]);
+/**
+ * Landmarks shared by many neighbourhoods ("near Jamia Masjid", "near Main
+ * Bazar"): weak locality words (see readingsMatch).
+ */
+const LANDMARKS = new Set([
+  "masjid", "mosque", "jamia", "jamiya", "madrasa", "madrassa", "church", "bazar", "bazaar", "market", "hospital", "clinic",
+  "school", "college", "university", "chowk", "stop", "plaza", "mall", "park", "station", "bank", "pump", "petrol", "store", "shop",
 ]);
 const ROMAN: Record<string, number> = {
   ii: 2, iii: 3, iv: 4, vi: 6, vii: 7, viii: 8, ix: 9, xi: 11, xii: 12, xiii: 13, xiv: 14, xv: 15, xvi: 16, xvii: 17, xviii: 18, xix: 19, xx: 20,
@@ -172,18 +220,34 @@ function asciiDigits(v: string): string {
   return v.replace(/[٠-٩۰-۹]/g, (d) => String((d.charCodeAt(0) & 0xf) % 10));
 }
 
-/** Lowercase text with phone numbers, postcodes and punctuation removed; "-" and "/" kept for codes. */
+// Pakistani phone shapes, each with its own digit boundaries so a house or
+// sector number next to it is kept ("G-9/1 0300 1234567", "House 12 0321-1234567").
+// Mobile: optional +92 / 0092 / 92 / 0, then 3xx and 7 digits (spaces or dashes allowed).
+const MOBILE = /(?<![\d/-])(?:(?:\+|00)?92[\s-]?|0)?3\d{2}[\s-]?\d{3}[\s-]?\d{4}(?!\d)/g;
+// Landline: +92 / 0092 / 0, a 2-4 digit area code, a 6-8 digit number (9 or 10 national digits).
+const LANDLINE = /(?<![\d/-])(?:(?:\+|00)92[\s-]?0?|0)[1-9]\d{1,3}[\s-]?\d{6,8}(?!\d)/g;
+// Any other long digit run (10-13 digits, no separators).
+const LONG_RUN = /(?<![\d/-])\d{10,13}(?![\d/-])/g;
+const POSTCODE = /(?<![\d/-])\d{5}(?![\d/-])/g;
+
+/** Lowercase text with phone numbers, postcodes and punctuation removed; "-" and "/" kept for codes, "," kept as a separator. */
 function cleanLine(v: string): string {
   let s = asciiDigits(v.normalize("NFKC")).toLowerCase();
-  // Phone-like digit runs (10-13 digits, spaces/dashes allowed: +92 300 1234567, 0300-1234567).
-  s = s.replace(/\+?\d[\d\s-]{8,18}\d/g, (m) => {
-    const n = m.replace(/\D/g, "").length;
-    return n >= 10 && n <= 13 ? " " : m;
+  s = s.replace(MOBILE, " ");
+  s = s.replace(LANDLINE, (m) => {
+    const national = m.replace(/\D/g, "").replace(/^(?:0092|92)?0?/, "");
+    return national.length === 9 || national.length === 10 ? " " : m;
   });
-  s = s.replace(/(?<!\d)\d{5}(?![\d/-])/g, " "); // 5-digit postcode
+  s = s.replace(LONG_RUN, " ");
+  s = s.replace(POSTCODE, " ");
   // "H#12", "H # 12", "H no 12", "H.No.12", "h. no. 12": always the house number.
   s = s.replace(/(?<![\p{L}\p{N}])h\s*(?:#|\.?\s*no\b\.?)/gu, " house ");
-  return s.replace(/[^\p{L}\p{N}/\-\s]+/gu, " ");
+  // Initials: "F.B. Area" = "FB Area", "P.E.C.H.S." = "PECHS".
+  s = s.replace(/(?<![\p{L}\p{N}])(?:[a-z]\.[ \t]?){2,}/gu, (m) => m.replace(/[.\s]/g, "") + (/\s$/.test(m) ? " " : ""));
+  // Izafat "-e-": "Gulshan-e-Iqbal" = "Gulshan e Iqbal" (a lone "e" is never a locality word).
+  s = s.replace(/(?<=\p{L})-e-(?=\p{L})/gu, " ");
+  s = s.replace(/[,;|\n\r]+/g, " , ");
+  return s.replace(/[^\p{L}\p{N}/\-\s,]+/gu, " ");
 }
 
 type Tok =
@@ -191,7 +255,8 @@ type Tok =
   | { t: "ln"; l: string; n: string } // single letter + number: h12, b4, f7
   | { t: "nl"; n: string; l: string } // number + single letter: 12a, 4b
   | { t: "num"; n: string; ord?: boolean }
-  | { t: "word"; w: string };
+  | { t: "word"; w: string }
+  | { t: "sep" }; // a comma (or the address1 / address2 boundary)
 
 const LEX = new RegExp(
   [
@@ -199,9 +264,11 @@ const LEX = new RegExp(
     String.raw`(?<![\p{L}\p{N}])(?<ord>\d+)(?:st|nd|rd|th)(?![\p{L}\p{N}])`,
     String.raw`(?<![\p{L}\p{N}])(?<ll>[a-z])[ -]?(?<ln>\d+)(?![\p{L}\p{N}/])`,
     // not a letter that starts a code: "Street 5 G 9/1", "Street 3 H-12"
-    String.raw`(?<![\p{L}\p{N}])(?<nn>\d+)[ -]?(?<nl>[a-z])(?![\p{L}\p{N}])(?!\s*-?\s*\d)`,
+    // (but "4-B 2nd Floor" is flat 4-B: the number after it is an ordinal)
+    String.raw`(?<![\p{L}\p{N}])(?<nn>\d+)[ -]?(?<nl>[a-z])(?![\p{L}\p{N}])(?!\s*-?\s*\d+(?:\s*[/-]\s*\d+)*(?!\p{L}))`,
     String.raw`(?<num>\d+(?:/\d+)*)`,
     String.raw`(?<w>\p{L}+)`,
+    String.raw`(?<sep>,)`,
   ].join("|"),
   "gu",
 );
@@ -216,6 +283,45 @@ function lex(line: string): Tok[] {
     else if (g.nn) out.push({ t: "nl", n: g.nn, l: g.nl });
     else if (g.num) out.push({ t: "num", n: g.num });
     else if (g.w) out.push(ROMAN[g.w] ? { t: "num", n: String(ROMAN[g.w]) } : { t: "word", w: g.w });
+    else if (g.sep) out.push({ t: "sep" });
+  }
+  return out;
+}
+
+const isWord = (t: Tok | undefined): t is { t: "word"; w: string } => t?.t === "word";
+
+/** A token that can be a label's value: a number, a code, or a single letter. */
+function isValue(t: Tok | undefined): boolean {
+  if (!t) return false;
+  if (t.t === "num") return !t.ord;
+  if (t.t === "nl" || t.t === "ln" || t.t === "code") return true;
+  return t.t === "word" && t.w.length === 1;
+}
+
+/** Roman I/V/X after phase, block, askari ...; "D Block" -> "Block D"; "10 D Block" -> "10 Block D". */
+function arrange(toks: Tok[]): Tok[] {
+  const out: Tok[] = [];
+  for (let i = 0; i < toks.length; i++) {
+    let tok = toks[i];
+    const prev = out[out.length - 1];
+    if (isWord(tok) && ROMAN_SINGLE[tok.w] && isWord(prev) && ROMAN_AFTER.has(prev.w)) tok = { t: "num", n: String(ROMAN_SINGLE[tok.w]) };
+    if (isWord(tok) && BACK_LABELS.has(LABELS[tok.w] ?? "")) {
+      let j = i + 1;
+      while (isWord(toks[j]) && FILLER_AFTER_LABEL.has((toks[j] as { w: string }).w)) j++;
+      const next = toks[j];
+      const nextValue = isValue(next) || (isWord(next) && !!ROMAN_SINGLE[next.w]);
+      if (!nextValue && isWord(prev) && prev.w.length === 1) {
+        out.pop();
+        out.push(tok, prev);
+        continue;
+      }
+      if (!nextValue && prev?.t === "nl") {
+        out.pop();
+        out.push({ t: "num", n: prev.n }, tok, { t: "word", w: prev.l });
+        continue;
+      }
+    }
+    out.push(tok);
   }
   return out;
 }
@@ -225,24 +331,42 @@ export type AddressReading = {
   city: string;
   /** "house:12", "street:5", "sector:g9/1", ... */
   labelled: Set<string>;
-  /** Numbers without a label ("Askari 11" -> "11"). */
+  /** Numbers and letter codes without a label ("Askari 11" -> "11", "33-A" -> "33a", Karachi "A-12" -> "12a"). */
   numbers: Set<string>;
-  /** Locality words (city, filler and generic words removed). */
+  /** Locality words (city, filler, generic and landmark words removed). */
   words: Set<string>;
+  /** Landmark words ("masjid", "bazar", "hospital" ...), weak (see readingsMatch). */
+  landmarks: Set<string>;
+  /** Sector codes ("g9/1", Islamabad "f7", labelled "Sector C"): the same one counts as the same locality. */
   sectors: Set<string>;
 };
 
-/** address1 and address2 as one line (address2 is often the flat, street or area). */
+/** address1 and address2 as one line (address2 is often the flat, street or area), a comma between them. */
 function fullLine(a: AddressLike): string {
-  return [a.address1, a.address2].map((v) => (typeof v === "string" ? v.trim() : "")).filter(Boolean).join(" ");
+  return [a.address1, a.address2].map((v) => (typeof v === "string" ? v.trim() : "")).filter(Boolean).join(", ");
 }
 
-/** The city as compared: lowercase words without province/country, aliases applied. */
+function cityWords(city: string | null | undefined): string[] {
+  return lex(cleanLine(city ?? "")).flatMap((t) => (t.t === "word" ? [t.w] : []));
+}
+
+/** The city as compared: lowercase words without province/country/"Cantt"/"Capital Territory", aliases applied. */
 export function cityKey(city: string | null | undefined): string {
-  return lex(cleanLine(city ?? ""))
-    .flatMap((t) => (t.t === "word" ? [CITY_ALIASES[t.w] ?? t.w] : []))
-    .filter((w) => !PROVINCES.has(w))
+  return cityWords(city)
+    .map((w) => CITY_ALIASES[w] ?? w)
+    .filter((w) => !PROVINCES.has(w) && !CITY_EXTRA.has(w))
     .join("");
+}
+
+/** A dwelling's value number first ("4b"), any other label's letter first ("r1"). */
+function labelValue(label: string, v: Tok | undefined): string | null {
+  if (!v) return null;
+  if (NUMBER_ONLY.has(label)) return v.t === "num" && !v.ord ? v.n.replace(/-/g, "/") : null;
+  if (v.t === "num" && !v.ord) return v.n.replace(/-/g, "/");
+  if (v.t === "nl" || v.t === "ln") return DWELLING.has(label) ? `${v.n}${v.l}` : `${v.l}${v.n}`;
+  if (v.t === "code") return `${v.l}${v.n}`;
+  if (v.t === "word" && v.w.length === 1) return v.w; // "Block A", "Sector E"
+  return null;
 }
 
 /**
@@ -254,13 +378,15 @@ export function addressReadings(a: AddressLike | null | undefined): AddressReadi
   if (!a) return [];
   const city = cityKey(a.city);
   if (!city) return [];
-  const ownCity = new Set(lex(cleanLine(a.city ?? "")).flatMap((t) => (t.t === "word" ? [t.w] : [])));
-  const toks = lex(cleanLine(fullLine(a)));
+  const islamabad = city === "islamabad";
+  const ownCity = new Set(cityWords(a.city));
+  const toks = arrange(lex(cleanLine(fullLine(a))));
   if (toks.length === 0) return [];
 
   const labelled = new Set<string>();
   const numbers = new Set<string>();
   const words = new Set<string>();
+  const landmarks = new Set<string>();
   const sectors = new Set<string>();
   const hCodes: Array<{ n: string; streetNext: boolean }> = [];
   let home = false;
@@ -269,22 +395,22 @@ export function addressReadings(a: AddressLike | null | undefined): AddressReadi
     if (label === "sector") sectors.add(value);
     if (DWELLING.has(label)) home = true;
   };
+  const nextNonSep = (i: number) => {
+    let j = i + 1;
+    while (toks[j]?.t === "sep") j++;
+    return toks[j];
+  };
 
   for (let i = 0; i < toks.length; i++) {
     const tok = toks[i];
+    if (tok.t === "sep") continue;
     if (tok.t === "word") {
       const label = LABELS[tok.w];
       if (label) {
-        // the value: the next token after any "no"/"number"
+        // the value: the next token after any "no"/"number", never across a comma
         let j = i + 1;
-        while (j < toks.length && toks[j].t === "word" && FILLER_AFTER_LABEL.has((toks[j] as { w: string }).w)) j++;
-        const v = toks[j];
-        let value: string | null = null;
-        if (v?.t === "num" && !v.ord) value = v.n.replace(/-/g, "/");
-        else if (v?.t === "nl") value = DWELLING.has(label) ? `${v.n}${v.l}` : `${v.l}${v.n}`;
-        else if (v?.t === "ln") value = DWELLING.has(label) ? `${v.n}${v.l}` : `${v.l}${v.n}`;
-        else if (v?.t === "code") value = `${v.l}${v.n}`;
-        else if (v?.t === "word" && v.w.length === 1 && v.w !== "e") value = v.w; // "Block A", "Sector C"
+        while (isWord(toks[j]) && FILLER_AFTER_LABEL.has((toks[j] as { w: string }).w)) j++;
+        const value = labelValue(label, toks[j]);
         if (value !== null) {
           addLabel(label, value);
           i = j;
@@ -300,41 +426,58 @@ export function addressReadings(a: AddressLike | null | undefined): AddressReadi
         }
         continue; // a label word with no value is generic
       }
-      if (tok.w.length > 1 && !GENERIC.has(tok.w) && !CITY_WORDS.has(tok.w) && !ownCity.has(tok.w) && !PROVINCES.has(tok.w)
-        && !FILLER_AFTER_LABEL.has(tok.w)) words.add(tok.w);
+      if (tok.w.length < 2 || GENERIC.has(tok.w) || CITY_WORDS.has(tok.w) || ownCity.has(tok.w) || PROVINCES.has(tok.w)
+        || FILLER_AFTER_LABEL.has(tok.w)) continue;
+      if (LANDMARKS.has(tok.w)) {
+        const next = toks[i + 1];
+        // "University Road", "Mall Road": the landmark word names the road
+        if (isWord(next) && ROAD_WORDS.has(next.w)) words.add(tok.w);
+        else landmarks.add(tok.w);
+        continue;
+      }
+      words.add(tok.w);
       continue;
     }
     if (tok.t === "code") addLabel("sector", `${tok.l}${tok.n}`);
     else if (tok.t === "ln" && tok.l === "h") {
-      const next = toks[i + 1];
-      hCodes.push({ n: tok.n, streetNext: next?.t === "word" && LABELS[next.w] === "street" });
+      const next = nextNonSep(i);
+      hCodes.push({ n: tok.n, streetNext: isWord(next) && LABELS[next.w] === "street" });
     } else if (tok.t === "ln") {
-      addLabel("sector", `${tok.l}${tok.n}`); // "F-7", "I-8"; also Karachi's "A-12" (read as a code, not a house)
+      // Islamabad: "F-7", "I-8" are sectors. Elsewhere a letter code is a
+      // home or block code (Karachi "A-12", "R-45"; Lahore "R1"), "12a".
+      if (islamabad) addLabel("sector", `${tok.l}${tok.n}`);
+      else numbers.add(`${tok.n}${tok.l}`);
       home = true;
     } else if (tok.t === "nl") {
       numbers.add(`${tok.n}${tok.l}`);
       home = true;
     } else if (tok.t === "num") {
       // an ordinal straight before "floor" is taken by the floor label above
-      if (!(tok.ord && toks[i + 1]?.t === "word" && LABELS[(toks[i + 1] as { w: string }).w] === "floor")) {
+      const next = toks[i + 1];
+      if (!(tok.ord && isWord(next) && LABELS[next.w] === "floor")) {
         numbers.add(tok.n.replace(/-/g, "/"));
         home = true;
       }
     }
   }
 
-  const base = (): AddressReading => ({ city, labelled: new Set(labelled), numbers: new Set(numbers), words, sectors: new Set(sectors) });
+  const copy = (r: AddressReading): AddressReading => ({
+    ...r, labelled: new Set(r.labelled), numbers: new Set(r.numbers), sectors: new Set(r.sectors),
+  });
   const hasHouse = [...labelled].some((l) => l.startsWith("house:"));
-  let readings: AddressReading[] = [base()];
+  let readings: AddressReading[] = [copy({ city, labelled, numbers, words, landmarks, sectors })];
   for (const h of hCodes) {
-    const asSector = (r: AddressReading) => { r.labelled.add(`sector:h${h.n}`); r.sectors.add(`h${h.n}`); };
+    // outside Islamabad there is no sector H-12: the other reading is a bare home code "12h"
+    const asSector = (r: AddressReading) => {
+      if (islamabad) { r.labelled.add(`sector:h${h.n}`); r.sectors.add(`h${h.n}`); } else r.numbers.add(`${h.n}h`);
+    };
     const asHouse = (r: AddressReading) => { r.labelled.add(`house:${h.n}`); };
     if (hasHouse) readings.forEach(asSector);
     else if (sectors.size > 0 || h.streetNext) readings.forEach(asHouse);
     else {
       readings = readings.flatMap((r) => {
-        const s = { ...r, labelled: new Set(r.labelled), sectors: new Set(r.sectors) };
-        const hs = { ...r, labelled: new Set(r.labelled), sectors: new Set(r.sectors) };
+        const s = copy(r);
+        const hs = copy(r);
         asSector(s);
         asHouse(hs);
         return [hs, s];
@@ -348,13 +491,55 @@ export function addressReadings(a: AddressLike | null | undefined): AddressReadi
 
 const sameSet = (a: Set<string>, b: Set<string>) => a.size === b.size && [...a].every((v) => b.has(v));
 const shares = (a: Set<string>, b: Set<string>) => [...a].some((v) => b.has(v));
+const labelOf = (e: string) => e.slice(0, e.indexOf(":"));
+const valueOf = (e: string) => e.slice(e.indexOf(":") + 1);
+/** "a12" and "12a" read the same; anything else unchanged. */
+const codeKey = (v: string) => {
+  const m = /^([a-z])(\d+)$/.exec(v);
+  return m ? `${m[2]}${m[1]}` : v;
+};
+const LETTER_CODE = /^(?:[a-z]\d+|\d+[a-z])$/;
+
+/**
+ * Labelled numbers on one side that the other side wrote bare: a house, flat
+ * or plot number when the other side has no house, flat or plot label at all
+ * ("Plot 34" = "34", "House 17-B" = "17B", "House A-12" = "A-12"); a block or
+ * sector letter code when the other side has no block (sector) label ("Block
+ * R-1" = "R1"). Each bare number stands in once. Returns the sets left to compare.
+ */
+function withStandIns(x: AddressReading, y: AddressReading) {
+  const xl = new Set(x.labelled), yl = new Set(y.labelled), xn = new Set(x.numbers), yn = new Set(y.numbers);
+  const fill = (from: Set<string>, otherOriginal: Set<string>, otherBare: Set<string>) => {
+    const otherLabels = new Set([...otherOriginal].map(labelOf));
+    const otherHasHome = [...otherLabels].some((l) => STAND_IN_HOME.has(l));
+    for (const e of [...from]) {
+      if (otherOriginal.has(e)) continue;
+      const label = labelOf(e);
+      const value = valueOf(e);
+      const allowed = STAND_IN_HOME.has(label)
+        ? !otherHasHome
+        : STAND_IN_CODE.has(label) && !otherLabels.has(label) && LETTER_CODE.test(value);
+      const key = codeKey(value);
+      if (allowed && otherBare.has(key)) {
+        from.delete(e);
+        otherBare.delete(key);
+      }
+    }
+  };
+  fill(xl, y.labelled, yn);
+  fill(yl, x.labelled, xn);
+  return { xl, yl, xn, yn };
+}
 
 function readingsMatch(x: AddressReading, y: AddressReading): boolean {
   if (x.city !== y.city) return false;
-  if (!sameSet(x.labelled, y.labelled) || !sameSet(x.numbers, y.numbers)) return false;
+  const { xl, yl, xn, yn } = withStandIns(x, y);
+  if (!sameSet(xl, yl) || !sameSet(xn, yn)) return false;
   if (shares(x.words, y.words)) return true;
   if (shares(x.sectors, y.sectors)) return true;
-  return x.words.size === 0 && y.words.size === 0; // nothing else written on either side
+  // Only landmarks ("near Park") and nothing else on either side: the landmark
+  // must be shared. Numbers alone never match (round 10: "House 12, Street 5").
+  return x.words.size === 0 && y.words.size === 0 && shares(x.landmarks, y.landmarks);
 }
 
 /** Same place (see the rules above). Never stored or logged: a yes/no only. */

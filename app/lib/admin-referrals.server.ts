@@ -290,16 +290,31 @@ export async function dismissReferralAlert(referralId: string): Promise<ReviewOu
 /**
  * "Block this referrer": her referral link stops earning (members.referrals_blocked),
  * which also stops payment of any referral of hers still waiting. Recorded in
- * her staff notes; the referral's Home alert is closed.
+ * her staff notes; the referral's Home alert is closed. If this referral is
+ * held, it is also rejected (review 10, L6): staff have decided it, so it no
+ * longer counts on Home's "waiting for your approval" line.
  */
 export async function blockReferrer(referralId: string, actor: string): Promise<ReviewOutcome> {
   if (!UUID_RE.test(referralId)) return { ok: false, error: "That referral could not be found." };
-  const { data, error } = await adb().from("referrals").select("id, referrer_member_id").eq("id", referralId).maybeSingle();
+  const { data, error } = await adb().from("referrals").select("id, referrer_member_id, status").eq("id", referralId).maybeSingle();
   if (error) throw new Error(`could not read the referral: ${error.message}`);
   const row = data as Row | null;
   if (!row) return { ok: false, error: "That referral could not be found." };
   const found = await setReferralsBlocked(str(row.referrer_member_id), true, actor);
   if (!found) return { ok: false, error: "The referrer no longer exists. Nothing was changed." };
+  let rejected = false;
+  if (row.status === "flagged") {
+    const now = new Date().toISOString();
+    const { data: rej, error: rErr } = await adb()
+      .from("referrals")
+      .update({ status: "rejected", reviewed_at: now, reviewed_note: `rejected by ${actor || "admin"}: referrer blocked`, alert_resolved_at: now })
+      .eq("id", referralId)
+      .eq("status", "flagged")
+      .select("id");
+    if (rErr) console.error(`[admin] held referral ${referralId} not rejected: ${rErr.message}`);
+    rejected = !rErr && Array.isArray(rej) && rej.length > 0;
+  }
+  if (rejected) return { ok: true, message: "Referrer blocked and this held referral rejected. Her referral link no longer earns" };
   const { error: aErr } = await adb()
     .from("referrals")
     .update({ alert_resolved_at: new Date().toISOString() })

@@ -135,7 +135,8 @@ describe("address (owner rules 19 Nov 2026, round 9: an address only ever holds)
       L("House 12 DHA Phase 5", "House 12 DHA Phase 6", false);
       L("12", "12 Main Boulevard Gulberg", false);
       L("Street 5, House 12, F-7", "House 12, Street 5, F-7", true, "Islamabad");
-      L("H# 12 St 5", "House No 12 Street 5", true);
+      L("H# 12 St 5", "House No 12 Street 5", false); // round 10: no locality word or sector on either side = city-wide, never a match
+      same(C("H# 12 St 5 G-9/1"), C("House No 12 Street 5 G-9/1"), true); // the same with a sector
       L("Apartment 4B Askari 11", "Flat 4-B, Askari 11", true);
       L("House 12 Block B", "House 12 Block C", false);
     });
@@ -191,6 +192,146 @@ describe("address (owner rules 19 Nov 2026, round 9: an address only ever holds)
     });
   });
 
+  describe("review 10: all 72 reviewer pairs with the intended answer (S*/P* = one person writing her address twice; G* = two genuine friends; S31 = floor on one side only, no match by design)", () => {
+    type R = { address1: string; address2: string | null; city: string };
+    const A = (address1: string, city: string, address2?: string): R => ({ address1, address2: address2 ?? null, city });
+    const cases: Array<[R, R, boolean, string]> = [
+      // ── self-referrals written differently (expect true) ──
+      [A("House 12, Street 5, G-9/1","Islamabad"), A("H# 12 St 5 G 9/1","Islamabad"), true, "S1 ISB H# / G 9/1"],
+      [A("H.No. 45, Block 13-D, Gulshan-e-Iqbal","Karachi"), A("House No 45 Block 13D Gulshan e Iqbal","Karachi"), true, "S2 KHI Gulshan 13-D"],
+      [A("Flat B-4, 2nd Floor, Sea View Apartments, Clifton Block 2","Karachi"), A("Flat 4-B 2nd floor Sea View Apts, Block 2 Clifton","Karachi"), true, "S3 Clifton flat floor"],
+      [A("House 23, Street 7, Phase VI DHA","Lahore"), A("H 23 St 7 DHA Phase 6","Lahore"), true, "S4 LHR DHA Phase VI"],
+      [A("House 112-C, Model Town","Lahore"), A("112 C Model Town","Lahore"), true, "S5 Model Town 112-C vs 112 C"],
+      [A("Plot 34, Khayaban-e-Ittehad, Phase 6 DHA","Karachi"), A("34 Khayaban e Ittehad DHA Phase VI","Karachi"), true, "S6 plot label vs bare number"],
+      [A("House 5, Street 10, F-7/2","Islamabad"), A("House #5, St. 10, Sector F-7/2","Islamabad, ICT"), true, "S7 F-7/2 with Sector label + ICT"],
+      [A("House 789, Block R-1, Johar Town","Lahore"), A("H no 789 R1 Johar town","Lahore Punjab"), true, "S8 Johar Block R-1 vs R1"],
+      [A("A-12, Block 7, Gulistan-e-Jauhar","Karachi"), A("House A-12, Block-7, Gulistan e Johar","Karachi"), true, "S9 A-12 vs House A-12"],
+      [A("House 12, Street 3, I-8/3","Islamabad"), A("H-12, St 3, I 8/3","Islamabad"), true, "S10 H-12 = house (sector present)"],
+      [A("House 3, Street 12, H-12","Islamabad"), A("H#3 St 12 Sector H-12","Islamabad"), true, "S11 sector H-12"],
+      [A("Bahria Town Phase 4, Street 9, House 221","Rawalpindi"), A("House 221 St 9 Phase IV Bahria Town","Pindi"), true, "S12 Bahria Pindi alias"],
+      [A("Flat 302, Block A, Askari 11","Lahore"), A("Askari XI, Flat no. 302, Block-A","Lahore"), true, "S13 Askari XI"],
+      [A("House 17-B, Street 2, Gulberg III","Lahore"), A("17B St 2 Gulberg 3","Lahore"), true, "S14 House 17-B vs bare 17B"],
+      [A("House 45, Street 6, G-9/1","Islamabad","near Masjid Bilal"), A("House 45 Street 6 G-9/1","Islamabad"), true, "S15 near masjid one side"],
+      [A("House 10 Block D North Nazimabad","Karachi"), A("H. No. 10, D Block, North Nazimabad","Karachi"), true, "S16 'D Block' word order"],
+      [A("House 22, Street 4, Phase 2 Bahria Town","Rawalpindi","46000 0300-1234567"), A("House 22 Street 4 Bahria Town Phase 2","Rawalpindi"), true, "S17 postcode+phone ignored"],
+      [A("House ۱۲, Street ۵, G-9/1","Islamabad"), A("House 12 Street 5 G-9/1","Islamabad"), true, "S18 Urdu digits"],
+      [A("Upper Portion, House 56, Street 3, F-10/4","Islamabad"), A("House 56 St 3 F-10/4","Islamabad"), true, "S19 upper portion one side"],
+      [A("House 8, Lane 3, DHA Phase 8","Karachi"), A("8 Lane 3 Phase VIII DHA","Karachi"), true, "S20 house label vs bare 8"],
+      [A("Apartment 5C, Block 4, Clifton","Karachi"), A("Flat 5-C, Block 4, Clifton","Karachi"), true, "S21 apartment = flat"],
+      [A("House 14, Street 21, E-11/2","Islamabad"), A("House 14 Street 21 E 11/2","Islamabad"), true, "S22 E-11/2"],
+      [A("House 14, Street 21, E-11","Islamabad"), A("House 14 St 21 Sector E-11","Islamabad"), true, "S23 E-11 with Sector"],
+      [A("House 5, Street 2, Askari 10","Lahore Cantt"), A("House 5 St 2 Askari X","Lahore"), true, "S24 Lahore Cantt city + Askari X"],
+      [A("H 12, Bahria Enclave","Islamabad"), A("House 12, Bahria Enclave","Islamabad"), true, "S25 ambiguous H 12 = house"],
+      [A("House 5, DHA Phase V","Lahore"), A("House 5 DHA Phase 5","Lahore"), true, "S26 Phase V roman"],
+      [A("House 7, Gulshan-e-Iqbal Block 2","Karachi"), A("House 7, Gulshan-e-Iqbal Block 2","Karachi"), true, "S27 identical"],
+      [A("House 9, Street 1, Sector E, Bahria Town","Lahore"), A("H#9 Street 1 Sector E Bahria","Lahore"), true, "S28 Sector E"],
+      [A("R-45, Block 15, FB Area","Karachi"), A("House R-45 Block 15 F.B. Area","Karachi"), true, "S29 R-45 FB Area"],
+      [A("House 12 Street 5 G-9/1","Islamabad"), A("G-9/1 Street 5 House 12","islamabad"), true, "S30 reordered lowercase city"],
+      [A("Flat 12, 3rd Floor, Block 5, Clifton","Karachi"), A("Flat 12 Block 5 Clifton","Karachi"), false, "S31 floor written one side only (design: no match)"],
+      [A("House 33, Street 4, Gulberg II","Lahore"), A("House 33 Street 4 Gulberg-2","Lahore"), true, "S32 Gulberg-2"],
+      [A("House 33-A, Johar Town","Lahore"), A("33A Johar Town","Lahore"), true, "S33 33-A vs 33A no label"],
+      // ── genuine different friends (expect false) ──
+      [A("House 12, Street 5, G-9/1","Islamabad"), A("House 14, Street 5, G-9/1","Islamabad"), false, "G1 neighbour house"],
+      [A("House 12, Street 5, G-9/1","Islamabad"), A("House 12, Street 5, G-9/2","Islamabad"), false, "G2 sub-sector"],
+      [A("Flat 4-B, Sea View Apartments, Clifton","Karachi"), A("Flat 5-B, Sea View Apartments, Clifton","Karachi"), false, "G3 flat"],
+      [A("House 23, Street 7, DHA Phase 6","Lahore"), A("House 23, Street 7, DHA Phase 5","Lahore"), false, "G4 phase"],
+      [A("House 12, Model Town","Lahore"), A("House 12, Model Town","Karachi"), false, "G5 city"],
+      [A("House 10, Block D, North Nazimabad","Karachi"), A("House 10, Block D, Gulshan","Karachi"), false, "G6 locality"],
+      [A("House 10, Block 13-D, Gulshan-e-Iqbal","Karachi"), A("House 10, Block 13-D, Gulistan-e-Jauhar","Karachi"), false, "G7 Gulshan vs Gulistan"],
+      [A("Flat 1, 1st Floor, Building 7, Bahadurabad","Karachi"), A("Flat 1, 2nd Floor, Building 7, Bahadurabad","Karachi"), false, "G8 floor"],
+      [A("House 221, Street 9, Phase 4 Bahria Town","Rawalpindi"), A("House 221, Street 9, Phase 7 Bahria Town","Rawalpindi"), false, "G9 Bahria phase"],
+      [A("House 5, Street 10, F-7/2","Islamabad"), A("House 5, Street 10, F-7/3","Islamabad"), false, "G10 F-7/3"],
+      [A("House 3, Street 12, Sector H-12","Islamabad"), A("H-12 Street 3","Islamabad"), false, "G11 H-12 swap"],
+      [A("Flat 12, NUST Hostel, H-12","Islamabad"), A("House 12, Street 4, G-11/3","Islamabad"), false, "G12 NUST H-12"],
+      [A("House 12","Lahore","Gulberg"), A("House 12, Johar Town","Lahore"), false, "G13 locality differs"],
+      [A("Flat 302, Block A, Askari 11","Lahore"), A("Flat 302, Block B, Askari 11","Lahore"), false, "G14 block letter"],
+      [A("House 45, Street 6, G-9/1","Islamabad"), A("House 6, Street 45, G-9/1","Islamabad"), false, "G15 swapped numbers"],
+      [A("Street 5, House 12, Johar Town Block R1","Lahore"), A("House 12, Street 5, Johar Town Block R2","Lahore"), false, "G16 R1 vs R2"],
+      [A("House 7, Street 1, Mohallah Islampura, near Main Bazar","Lahore"), A("House 7, Street 1, Krishan Nagar, near Main Bazar","Lahore"), false, "G17 shared 'bazar' only"],
+      [A("House 12, Street 5, near Jamia Masjid, Ichhra","Lahore"), A("House 12, Street 5, near Jamia Masjid, Shadman","Lahore"), false, "G18 shared 'jamia masjid'"],
+      [A("House 12, Street 5","Lahore"), A("House 12, Street 5","Lahore"), false, "G19 no locality at all (city-wide: no match since round 10)"],
+      [A("House 2, Street 3, Gulberg III","Lahore"), A("House 2, Street 3, Gulberg II","Lahore"), false, "G20 Gulberg III vs II"],
+      [A("House 9, Street 1, Sector C, Bahria Town","Lahore"), A("House 9, Street 1, Sector E, Bahria Town","Lahore"), false, "G21 Sector C vs E"],
+      [A("House 9, Phase V, DHA","Lahore"), A("House 9, DHA Phase 6","Lahore"), false, "G22 Phase V vs 6"],
+      [A("House 4, Askari X","Lahore"), A("House 4, Askari 11","Lahore"), false, "G23 Askari X vs 11"],
+      [A("12","Karachi"), A("12","Karachi"), false, "G24 only digits"],
+      [A("House 15, Street 2, near Chase Up, Gulshan Block 6","Karachi"), A("House 15, Street 2, near Chase Up, Gulshan Block 6","Hyderabad"), false, "G25 diff city same line"],
+      [A("House 1, Street 1, Sector I-8/3","Islamabad"), A("House 1, Street 1, Sector I-8/4","Islamabad"), false, "G26 I-8/3 vs I-8/4"],
+      [A("House 11, Street 2, near Hospital, Satellite Town","Rawalpindi"), A("House 11, Street 2, near Hospital, Westridge","Rawalpindi"), false, "G27 shared 'hospital'"],
+      [A("C-12, Block 2, PECHS","Karachi"), A("C-12, Block 2, KDA Scheme 1","Karachi"), false, "G28 PECHS vs KDA"],
+      [A("House 12, Street 5, G-9/1","Islamabad","0300 1234567"), A("House 12 Street 5 G-9/1","Islamabad"), true, "P1 phone in address2 after sector"],
+      [A("House 12","Lahore","0321-1234567 Johar Town"), A("House 12 Johar Town","Lahore"), true, "P2 phone right after house no"],
+      [A("Faisal Town, 123-A","Lahore"), A("123-A Faisal Town","Lahore"), true, "P3 Town label eats house no"],
+      [A("University Road, 23-B, Block 13","Karachi"), A("23-B, Block 13, Gulshan, University Road","Karachi"), true, "P4 Road label eats house no"],
+      [A("Flat 4-B 2nd Floor, Block 2, Clifton","Karachi"), A("Flat B-4, 2nd Floor, Block 2, Clifton","Karachi"), true, "P5 4-B followed by number"],
+      [A("House 10 D Block North Nazimabad","Karachi"), A("House 10, Block D, North Nazimabad","Karachi"), true, "P6 D Block no comma"],
+      [A("House 5, Phase I, DHA","Lahore"), A("House 5, Phase 1, DHA","Lahore"), true, "P7 Phase I"],
+      [A("House 12, Street 5, G-9/1","Islamabad"), A("House 12, Street 5, G-9/1","Islamabad, Pakistan"), true, "P8 city with country"],
+      [A("House 12, Street 5, G-9/1","Islamabad"), A("House 12, Street 5, G-9/1","Islamabad Capital Territory"), true, "P9 city 'Capital Territory'"],
+      // genuine
+      [A("House 12, Main Market Road","Lahore"), A("House 12, Main Market Road","Lahore"), true, "P10 identical"],
+      [A("House 1, Street 2, near Park","Karachi"), A("House 1, Street 2, near Park","Karachi"), true, "P11 identical landmark only"],
+    ];
+    it("has every pair", () => {
+      expect(cases).toHaveLength(72);
+    });
+    for (const [x, y, want, label] of cases) {
+      it(label, () => same(x, y, want));
+    }
+  });
+
+  it("round 10 details", () => {
+    // phones are removed by shape, keeping the house / sector numbers next to them
+    expect([...addressReadings(C("G-9/1 0300 1234567, House 12"))[0].labelled].sort()).toEqual(["house:12", "sector:g9/1"]);
+    expect([...addressReadings(C("House 12 0321-1234567 Johar Town", "Lahore"))[0].labelled]).toEqual(["house:12"]);
+    expect([...addressReadings(C("House 12, Johar Town 042-35761234", "Lahore"))[0].numbers]).toEqual([]);
+    expect([...addressReadings(C("House 12, Johar Town 46000 0300-1234567", "Lahore"))[0].numbers]).toEqual([]);
+    expect([...addressReadings(C("House 12, Johar Town +923001234567", "Lahore"))[0].numbers]).toEqual([]);
+    // "4-B" = "4B" = "B-4" = "B4"
+    for (const v of ["Flat 4-B, Clifton", "Flat 4B, Clifton", "Flat B-4, Clifton", "Flat B4, Clifton", "Flat 4 B, Clifton"]) {
+      expect([...addressReadings(C(v, "Karachi"))[0].labelled], v).toEqual(["flat:4b"]);
+    }
+    // a label never takes a value across a comma; road and town take only a plain number
+    expect([...addressReadings(C("Faisal Town, 123-A", "Lahore"))[0].numbers]).toEqual(["123a"]);
+    expect([...addressReadings(C("University Road 23-B", "Karachi"))[0].numbers]).toEqual(["23b"]);
+    // "D Block" = "Block D"; "10 D Block" = house 10, block D
+    expect([...addressReadings(C("House 10 D Block, North Nazimabad", "Karachi"))[0].labelled].sort()).toEqual(["block:d", "house:10"]);
+    expect([...addressReadings(C("10 D Block North Nazimabad", "Karachi"))[0].numbers]).toEqual(["10"]);
+    // Roman I, V, X only after phase/block/sector/askari/gulberg/town
+    expect([...addressReadings(C("House 5, Phase V, DHA", "Lahore"))[0].labelled].sort()).toEqual(["house:5", "phase:5"]);
+    expect([...addressReadings(C("House 5, Askari X", "Lahore"))[0].numbers]).toEqual(["10"]);
+    expect([...addressReadings(C("House 5, Gulberg I", "Lahore"))[0].numbers]).toEqual(["1"]);
+    // landmark words are weak; before "road" they name the road
+    const lm = addressReadings(C("House 5, near Jamia Masjid, University Road", "Karachi"))[0];
+    expect([...lm.words]).toEqual(["university"]);
+    expect([...lm.landmarks].sort()).toEqual(["jamia", "masjid"]);
+    L("House 5, Street 2, near Main Bazar, Ichhra", "House 5, Street 2, near Main Bazar, Shadman", false);
+    L("House 5, Mall Road", "House 5, Mall Road", true);
+    // a stand-in only when the other side has no house/flat/plot label at all
+    L("Flat 302, Block A, Askari 11", "House 11, Block A, Askari 302", false);
+    // the city field
+    expect(cityKey("Lahore Cantt")).toBe("lahore");
+    expect(cityKey("Rawalpindi Cantonment")).toBe("rawalpindi");
+    expect(cityKey("Islamabad Capital Territory")).toBe("islamabad");
+    expect(cityKey("Islamabad, ICT")).toBe("islamabad");
+    // initials: "F.B. Area" = "FB Area"
+    expect([...addressReadings(C("House R-45, F.B. Area", "Karachi"))[0].words]).toEqual(["fb"]);
+  });
+
+  it("stays fast on hostile 100 KB input (linear regular expressions)", () => {
+    const inputs = [
+      "1".repeat(100_000), "a ".repeat(50_000), "1-".repeat(50_000), "1 ".repeat(50_000), "g" + "1/".repeat(50_000) + "x",
+      "h no ".repeat(20_000), "a1 ".repeat(33_000), "1a ".repeat(33_000), "0300 ".repeat(20_000), "+92 ".repeat(25_000),
+      "1, ".repeat(33_000), "d block ".repeat(12_500), "f.b. ".repeat(20_000), "1 a 1 a ".repeat(12_500), "1" + " -".repeat(50_000) + "x",
+      "1".repeat(50_000) + "a" + "1".repeat(50_000),
+    ];
+    for (const s of inputs) {
+      const t0 = Date.now();
+      sameAddress({ address1: s, address2: s, city: "Karachi" }, { address1: s, city: "Karachi" });
+      expect(Date.now() - t0, s.slice(0, 12)).toBeLessThan(1500);
+    }
+  });
+
   it("earlier rules that still hold", () => {
     const a = C("House 12, Street 5, DHA Phase 6", "Karachi");
     same(a, C("house 12 street 5 dha phase 6", " karachi "), true);
@@ -202,7 +343,7 @@ describe("address (owner rules 19 Nov 2026, round 9: an address only ever holds)
     L("House 12, Street 5", "House 12, Street 5, Johar Town", false); // no locality word in common
     L("House 12, Street 5, Model Town", "House 12, Street 5, Johar Town", false); // "town" alone tells nothing
     L("House 12, Street 5, Model Town", "House 12, Model Town", false);
-    L("House 12", "House 12", true);
+    L("House 12", "House 12", false); // round 10: a bare house number alone never matches
     same(C("House 12, Street 5, F-7"), C("House 12, Street 5, G-7"), false);
     L("Flat 4-B, Askari 11, Sarwar Road Cantt", "Flat 4B Askari 11 Sarwar Road Cantt near CSD", true);
   });
