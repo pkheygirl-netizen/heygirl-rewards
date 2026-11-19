@@ -393,6 +393,25 @@ describe("core.ts wiring: opening the panel asks for fresh member data (owner, 1
     expect(p.proxyCalls()).toEqual(["GET /customer"]);
   });
 
+  it("an answer that started before a redeem never overwrites the balance after it (review: stale ordering)", async () => {
+    const p = await secondPage({ body: FRESH }); // later requests answer 5,200 (after the redeem)
+    let releaseOld: (v: unknown) => void = () => undefined;
+    const OLD = makeMember({ pointsBalance: 9000 }); // the balance before the redeem
+    p.fetch.mockImplementationOnce(() => new Promise((res) => { releaseOld = res; }));
+    const upd = vi.fn();
+    p.api()!._upd = upd;
+    p.click(p.launcher); // slow request A starts
+    p.api()!.invalidate(); // the redeem finished first
+    await settle(2000); // the refresh after invalidate runs: request B, not a reuse of A
+    expect(p.proxyCalls()).toEqual(["GET /customer", "GET /customer"]);
+    expect(p.label.textContent).toBe("5,200 pts");
+    releaseOld({ ok: true, status: 200, json: () => Promise.resolve(OLD) }); // A lands late
+    await settle(0);
+    expect(p.label.textContent).toBe("5,200 pts");
+    expect(cachedBalance()).toBe(5200);
+    expect(upd.mock.calls.every((c) => c[0].member.pointsBalance === 5200)).toBe(true);
+  });
+
   it("every open asks again (any [data-hg-open] control and the #hg-rewards deep link too)", async () => {
     const p = await secondPage({ body: FRESH }, { hash: "#hg-rewards-earn" });
     p.fireLoad(); // the deep link opens the panel on load

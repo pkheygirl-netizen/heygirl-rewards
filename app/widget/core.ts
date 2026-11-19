@@ -76,6 +76,9 @@ declare const __HG_LINE_CSS__: string;
   // "Earn N points" is hidden at once on later pages.
   let noEarn = !!(cid && ss && readNoEarn(ss, cid));
   let inflight: Promise<MemberData | null> | null = null;
+  // Bumped whenever the balance is known to have changed (invalidate).
+  let gen = 0;
+  let inflightGen = -1;
 
   /** Applies a cached or fresh answer; returns the member payload or null. */
   function take(d: CacheEntry | null): MemberData | null {
@@ -101,12 +104,17 @@ declare const __HG_LINE_CSS__: string;
       if (c) return Promise.resolve(take(c));
       if (!ss && (member || state)) return Promise.resolve(member);
     }
-    // One request at a time: a second open (or the idle load) shares it.
-    if (inflight) return inflight;
-    inflight = fetch(PROXY + "/customer", { credentials: "same-origin", headers: { Accept: "application/json" } })
+    // One request at a time: a second open (or the idle load) shares it,
+    // unless the balance changed since it started (redeem, claim...).
+    if (inflight && inflightGen === gen) return inflight;
+    const myGen = gen;
+    inflightGen = myGen;
+    const req: Promise<MemberData | null> = fetch(PROXY + "/customer", { credentials: "same-origin", headers: { Accept: "application/json" } })
       .then((r) => (r.ok ? r.json() : null))
       .then((d: (Partial<MemberData> & { state?: string }) | null) => {
-        inflight = null;
+        if (inflight === req) inflight = null;
+        // An answer that started before the balance changed is stale: drop it.
+        if (myGen !== gen) return member;
         let entry: CacheEntry | null = null;
         if (d && d.member) entry = d as MemberData;
         else if (d && d.state === "not_enrolled") entry = { member: null, state: "not_enrolled" };
@@ -124,10 +132,11 @@ declare const __HG_LINE_CSS__: string;
         return member;
       })
       .catch(() => {
-        inflight = null;
-        return failed();
+        if (inflight === req) inflight = null;
+        return myGen === gen ? failed() : member;
       });
-    return inflight;
+    inflight = req;
+    return req;
   }
 
   /** A failed request keeps whatever is already shown (cached data), silently. */
@@ -142,6 +151,7 @@ declare const __HG_LINE_CSS__: string;
   }
 
   function invalidate() {
+    gen++;
     member = null;
     state = "";
     try { if (ss && cid) ss.removeItem(cacheKey(cid)); } catch { /* noop */ }
