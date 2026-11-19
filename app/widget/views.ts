@@ -253,14 +253,14 @@ export function guestHome(c: Ctx): string {
     `<section class="hg-card"><h3 class="hg-h">Points</h3><p class="hg-p">Earn points in different ways, then swap them for money off.</p><ul class="hg-list hg-list--nav">` +
     navRow(ico("coin"), "Ways to earn", "earn") +
     navRow(ico(REDEEM_ICON), "Ways to redeem", "redeem") +
-    navRow(ico("crown"), "VIP tiers", "tiers") +
+    navRow(ico("crown"), "VIP levels", "tiers") +
     `</ul></section>` +
     refer
   );
 }
 
 export function guestSub(c: Ctx, screen: "earn" | "redeem" | "tiers"): string {
-  const body = screen === "earn" ? earnList(c) : screen === "redeem" ? redeemList(c) : tiersView(c);
+  const body = screen === "earn" ? earnList(c) : screen === "redeem" ? redeemList(c) : tierCards(c);
   return `<section class="hg-card">${body}</section><div class="hg-foot">${joinCta(c)}</div>`;
 }
 
@@ -291,16 +291,28 @@ export function referralUrl(c: Ctx): string {
   }
 }
 
-export function referBox(c: Ctx): string {
+/** The referral link with a Copy button; `ghost` makes Copy the outlined (secondary) button. */
+export function referBox(c: Ctx, ghost = false): string {
   const url = referralUrl(c);
   if (!url) return "";
   return (
     `<div class="hg-ref"><label class="hg-sr" for="hg-ref-link">Your referral link</label><input id="hg-ref-link" class="hg-ref__i" type="text" readonly value="${esc(url)}">` +
-    `<button type="button" class="hg-btn hg-btn--sm" data-copy="${esc(url)}">Copy</button></div>`
+    `<button type="button" class="hg-btn hg-btn--sm${ghost ? " hg-btn--ghost" : ""}" data-copy="${esc(url)}">Copy</button></div>`
   );
 }
 
-/** Member home tab: balance, pending points, next expiry, codes, redeem, refer. */
+/** Customer-facing words say "level", never "tier" (owner, 19 Nov 2026); code names keep "tier". */
+export const OTHER_LEVELS_TITLE = "Other VIP levels";
+export const PERKS_LINK_TEXT = "View all VIP perks";
+export const TOP_LEVEL_TEXT = "You're at our top level.";
+
+/**
+ * Member home tab, top to bottom: balance card, "Your progress", her own level
+ * card (#hg-level), the "View all VIP perks" line, codes, redeem, the pending
+ * and expiry notices, Refer & Earn, then the levels above hers (#hg-tiers: where
+ * the perks line, "tiers" deep links and the level nudge land). A Diamond member
+ * has none above her, so the line and the bottom section are left out.
+ */
 export function rewardsTab(c: Ctx): string {
   const m = c.member!;
   const mm = m.member;
@@ -315,12 +327,17 @@ export function rewardsTab(c: Ctx): string {
     on(c.cfg, "referral") && referralUrl(c)
       ? `<section class="hg-card"><h3 class="hg-h">Refer &amp; Earn</h3><p class="hg-p">Share your link. You earn when a friend's first order is delivered and paid.</p>${referBox(c)}</section>`
       : "";
+  const others = tierCards(c, mm.tier);
   return (
     `<section class="hg-bal"><p class="hg-bal__l">Hi ${esc(mm.firstName || "there")}, you have</p><p class="hg-bal__n">${fmt(mm.pointsBalance)} <span>points</span></p><span class="hg-tier hg-tier--${mm.tier}">${TIER_NAME[mm.tier]} member</span></section>` +
-    notes.join("") +
+    progressCard(c) +
+    levelCard(c, mm.tier) +
+    (others ? `<button type="button" class="hg-link" data-act="perks">${PERKS_LINK_TEXT}${ico("chev")}</button>` : "") +
     `<section class="hg-card"><h3 class="hg-h">Your rewards</h3>${codesList(c)}</section>` +
     `<section class="hg-card"><h3 class="hg-h">Redeem points</h3>${redeemList(c)}</section>` +
-    refer
+    notes.join("") +
+    refer +
+    (others ? `<div class="hg-tiers" id="hg-tiers"><h3 class="hg-h hg-sec" tabindex="-1">${OTHER_LEVELS_TITLE}</h3>${others}</div>` : "")
   );
 }
 
@@ -346,48 +363,58 @@ export function referTab(c: Ctx, summary: ReferralSummary | null): string {
       `</section>`;
   }
   const url = referralUrl(c);
+  // The main action: a filled gold button with a plain chat bubble (not the WhatsApp logo).
   const share = url
-    ? `<a class="hg-btn hg-btn--block hg-btn--ghost" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(`Shop with my link and get a welcome gift: ${url}`)}">Share on WhatsApp</a>`
+    ? `<a class="hg-btn hg-btn--block" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(`Shop with my link and get a welcome gift: ${url}`)}">${ico("chat")}Share on WhatsApp</a>`
     : "";
-  return `<section class="hg-card"><h3 class="hg-h">Refer &amp; Earn</h3><p class="hg-p">Invite a friend. You are rewarded when their first order is delivered and paid.</p>${referPerks(c, youGet)}${referBox(c)}${share}</section>${influencerBox(c)}${stats}`;
+  return `<section class="hg-card"><h3 class="hg-h">Refer &amp; Earn</h3><p class="hg-p">Invite a friend. You are rewarded when their first order is delivered and paid.</p>${referPerks(c, youGet)}${referBox(c, !!share)}${share}</section>${influencerBox(c)}${stats}`;
 }
 
-/** "Your progress" comes first, then the three tiers with perks from config. */
-export function tiersView(c: Ctx): string {
-  const { cfg } = c;
-  let progress = "";
+/** "Your progress" card: tier, progress bar and what is left to the next tier ("" for guests). */
+export function progressCard(c: Ctx): string {
   const mm = c.member ? c.member.member : null;
-  if (mm) {
-    const p = tierProgress(mm.lifetimeSpendPkr, mm.tier, cfg.tiers);
-    progress =
-      `<section class="hg-card hg-prog"><h3 class="hg-h">Your progress</h3><p class="hg-p">You are a <strong>${TIER_NAME[p.tier]}</strong> member.</p>` +
-      `<div class="hg-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${p.pct}" aria-label="Progress to ${p.next ? TIER_NAME[p.next] : "top tier"}"><span style="width:${p.pct}%"></span></div>` +
-      (p.next
-        ? `<p class="hg-row__s">Spend ${rs(p.remaining)} more to reach ${TIER_NAME[p.next]} (${rs(p.target)} in total).</p>`
-        : `<p class="hg-row__s">You have reached the top tier.</p>`) +
-      `</section>`;
-  }
-  const perk = (t: string) => `<li>${ico("check")}<span>${t}</span></li>`;
-  const bday = (t: Tier) => (on(cfg, "birthday") && cfg.birthday[t] > 0 ? perk(`${rs(cfg.birthday[t])} birthday gift code`) : "");
-  const card = (t: Tier, need: string, perks: string) =>
-    `<section class="hg-card hg-tcard${mm && mm.tier === t ? " hg-tcard--me" : ""}"><h3 class="hg-h"><span class="hg-tier hg-tier--${t}">${TIER_NAME[t]}</span>${mm && mm.tier === t ? `<span class="hg-chip">Your tier</span>` : ""}</h3><p class="hg-p">${need}</p><ul class="hg-perks">${perks}</ul></section>`;
+  if (!mm) return "";
+  const p = tierProgress(mm.lifetimeSpendPkr, mm.tier, c.cfg.tiers);
   return (
-    progress +
-    card("silver", "Everyone starts here.", perk("Earn points on every order") + (cfg.expiryDays > 0 ? perk(`Points stay valid for ${fmt(cfg.expiryDays)} days`) : "") + bday("silver")) +
-    card(
-      "gold",
-      `Spend ${rs(cfg.tiers.gold)} in total.`,
-      perk("Points never expire") + (cfg.tierRewards.goldFreeShipping ? perk("Free shipping code when you reach Gold") : "") + bday("gold"),
-    ) +
-    card(
-      "diamond",
-      `Spend ${rs(cfg.tiers.diamond)} in total.`,
-      perk("Points never expire") +
-        (cfg.tierRewards.diamondPkr > 0 ? perk(`${rs(cfg.tierRewards.diamondPkr)} reward code when you reach Diamond`) : "") +
-        bday("diamond") +
-        (on(cfg, "birthday") ? perk("Bonus points on orders during your birthday month") : ""),
-    )
+    `<section class="hg-card hg-prog"><h3 class="hg-h">Your progress</h3><p class="hg-p">You are a <strong>${TIER_NAME[p.tier]}</strong> member.</p>` +
+    `<div class="hg-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${p.pct}" aria-label="Progress to ${p.next ? TIER_NAME[p.next] : "top level"}"><span style="width:${p.pct}%"></span></div>` +
+    (p.next
+      ? `<p class="hg-row__s">Spend ${rs(p.remaining)} more to reach ${TIER_NAME[p.next]} (${rs(p.target)} in total).</p>`
+      : `<p class="hg-row__s">${TOP_LEVEL_TEXT}</p>`) +
+    `</section>`
   );
+}
+
+/** One level card with its perks from config; the member's own level is marked "Your level". */
+export function levelCard(c: Ctx, t: Tier): string {
+  const { cfg } = c;
+  const mine = !!c.member && c.member.member.tier === t;
+  const perk = (x: string) => `<li>${ico("check")}<span>${x}</span></li>`;
+  const bday = on(cfg, "birthday") && cfg.birthday[t] > 0 ? perk(`${rs(cfg.birthday[t])} birthday gift code`) : "";
+  const need = t === "silver" ? "Everyone starts here." : `Spend ${rs(cfg.tiers[t])} in total.`;
+  const perks =
+    t === "silver"
+      ? perk("Earn points on every order") + (cfg.expiryDays > 0 ? perk(`Points stay valid for ${fmt(cfg.expiryDays)} days`) : "") + bday
+      : t === "gold"
+        ? perk("Points never expire") + (cfg.tierRewards.goldFreeShipping ? perk("Free shipping code when you reach Gold") : "") + bday
+        : perk("Points never expire") +
+          (cfg.tierRewards.diamondPkr > 0 ? perk(`${rs(cfg.tierRewards.diamondPkr)} reward code when you reach Diamond`) : "") +
+          bday +
+          (on(cfg, "birthday") ? perk("Bonus points on orders during your birthday month") : "");
+  return (
+    `<section class="hg-card hg-tcard${mine ? " hg-tcard--me" : ""}"${mine ? ' id="hg-level"' : ""}><h3 class="hg-h"><span class="hg-tier hg-tier--${t}">${TIER_NAME[t]}</span>${mine ? `<span class="hg-chip">Your level</span>` : ""}</h3>` +
+    `<p class="hg-p">${need}</p><ul class="hg-perks">${perks}</ul></section>`
+  );
+}
+
+const LEVELS: Tier[] = ["silver", "gold", "diamond"];
+
+/**
+ * The level cards in order: all three (guests), or with `above` only the levels
+ * higher than that one (the Rewards tab's bottom section: none for Diamond).
+ */
+export function tierCards(c: Ctx, above?: Tier): string {
+  return LEVELS.slice(above ? LEVELS.indexOf(above) + 1 : 0).map((t) => levelCard(c, t)).join("");
 }
 
 export const HISTORY_FILTERS: Array<{ key: string; label: string }> = [

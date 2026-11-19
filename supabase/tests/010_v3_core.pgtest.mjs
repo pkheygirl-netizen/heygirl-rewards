@@ -650,6 +650,86 @@ console.log("\n[16] 015_review_manual_approval: review claims wait for staff, la
   await q(`update app_settings set launcher_label='Shop & Earn' where id=1`);
 }
 
+console.log("\n[17] 016_referral_checks: order-time referral check, Home alert count, order tag, staff morning email");
+{
+  const m016 = fs.readFileSync(path.join(MIG, "016_referral_checks.sql"), "utf8");
+  // 016 was applied once with the later migrations above, on a database that
+  // already held referrals and settings. Write rows that use the new columns,
+  // then apply it twice more: nothing may change.
+  const [{ id: rr }] = await q(`insert into members (shopify_customer_id,email,referral_slug) values ('RC1','rc1@x.com','rc-1') returning id`);
+  const [{ id: ref1 }] = await q(`insert into referrals (referrer_member_id, referred_shopify_customer_id, referred_email, status, fraud_flags, order_check, order_checked_order_id, order_checked_at, order_tag)
+    values ($1,'RCF1','f@x.com','blocked','{same_phone_on_order}','same_phone','9001',now(),'tagged') returning id`, [rr]);
+  await q(`insert into referrals (referrer_member_id, referred_shopify_customer_id, referred_email, status, order_check, order_checked_order_id, order_checked_at)
+    values ($1,'RCF2','g@x.com','flagged','same_address','9002',now())`, [rr]);
+  await q(`insert into referrals (referrer_member_id, referred_shopify_customer_id, referred_email, status, order_check, order_checked_order_id, order_checked_at, alert_resolved_at)
+    values ($1,'RCF3','h@x.com','blocked','same_phone','9003',now(), now())`, [rr]);
+  await q(`insert into referrals (referrer_member_id, referred_shopify_customer_id, referred_email, status, order_check)
+    values ($1,'RCF4','i@x.com','completed','not_checked')`, [rr]);
+  await q(`update app_settings set staff_alert_email='staff@heygirl.pk', staff_digest_sent_on=date '2026-11-18' where id=1`);
+  const before = await q(`select id, status, fraud_flags, order_check, order_checked_order_id, alert_resolved_at, order_tag from referrals order by id`);
+  let again = null;
+  try { await db.query(m016); await db.query(m016); } catch (e) { again = e.message; }
+  ok("016 is re-runnable on a populated database (applied twice more without error)", again === null, again);
+  eq("re-running 016 changes no referral row", await q(`select id, status, fraud_flags, order_check, order_checked_order_id, alert_resolved_at, order_tag from referrals order by id`), before);
+  eq("re-running 016 keeps the saved staff email and sent date",
+    (await q(`select staff_alert_email e, staff_digest_sent_on::text d from app_settings where id=1`))[0], { e: "staff@heygirl.pk", d: "2026-11-18" });
+
+  const cols = (await q(`select table_name t, column_name c, is_nullable n, data_type d from information_schema.columns
+     where (table_name='referrals' and column_name in ('order_check','order_checked_order_id','order_checked_at','alert_resolved_at','order_tag'))
+        or (table_name='app_settings' and column_name in ('staff_alert_email','staff_digest_sent_on')) order by t, c`));
+  eq("new columns exist with the right types", cols.map((r) => `${r.t}.${r.c}:${r.d}:${r.n}`), [
+    "app_settings.staff_alert_email:text:YES", "app_settings.staff_digest_sent_on:date:NO",
+    "referrals.alert_resolved_at:timestamp with time zone:YES", "referrals.order_check:text:YES", "referrals.order_checked_at:timestamp with time zone:YES",
+    "referrals.order_checked_order_id:text:YES", "referrals.order_tag:text:YES",
+  ]);
+  eq("each check constraint exists once after three runs",
+    (await q(`select conname, count(*)::int n from pg_constraint where conname in ('referrals_order_check_check','referrals_order_tag_check','app_settings_staff_alert_email_check') group by conname order by conname`)),
+    [{ conname: "app_settings_staff_alert_email_check", n: 1 }, { conname: "referrals_order_check_check", n: 1 }, { conname: "referrals_order_tag_check", n: 1 }]);
+  ok("the open-alert index exists", (await q(`select 1 from pg_indexes where indexname='referrals_order_alert_open_idx'`)).length === 1);
+
+  for (const [what, sql] of [
+    ["order_check outside its list", `update referrals set order_check='same_ip' where id='${ref1}'`],
+    ["order_tag outside its list", `update referrals set order_tag='yes' where id='${ref1}'`],
+  ]) {
+    let code = null;
+    try { await q(sql); } catch (e) { code = e.code; }
+    eq(`refuses ${what} (23514)`, code, "23514");
+  }
+
+  // Home: one open phone alert + one open address alert; the dismissed one and the not_checked one do not count
+  const att = (await q(`select admin_attention(30) a`))[0].a;
+  eq("admin_attention counts open order alerts only", att.referral_order_alerts, 2);
+  ok("admin_attention keeps every 011 key", ["referrals_flagged", "review_claims_pending", "expiring_members", "expiring_points", "expiring_overdue_members", "gdpr_open"].every((k) => k in att), Object.keys(att));
+  await q(`update referrals set alert_resolved_at=now() where id='${ref1}'`);
+  eq("a dismissed alert stops counting", (await q(`select admin_attention(30) a`))[0].a.referral_order_alerts, 1);
+
+  // staff email check
+  for (const bad of ["staff", "a@b", "a@b.com, c@d.com", "a b@c.com", "<x@y.com>", `${"a".repeat(250)}@b.com`]) {
+    let code = null;
+    try { await q(`update app_settings set staff_alert_email=$1 where id=1`, [bad]); } catch (e) { code = e.code; }
+    eq(`staff email refuses ${JSON.stringify(bad.slice(0, 20))} (23514)`, code, "23514");
+  }
+  await q(`update app_settings set staff_alert_email=null where id=1`);
+  ok("staff email may be empty (NULL)", (await q(`select staff_alert_email e from app_settings where id=1`))[0].e === null);
+  let nul = null;
+  try { await q(`update app_settings set staff_digest_sent_on=null where id=1`); } catch (e) { nul = e.code; }
+  eq("staff_digest_sent_on refuses null (23502)", nul, "23502");
+
+  // the worker's claim: only the first of two runs on the same Pakistan day moves the date
+  const claim = async (day) => (await q(`update app_settings set staff_digest_sent_on=$1::date where id=1 and staff_digest_sent_on < $1::date returning id`, [day])).length;
+  eq("first claim of 2026-11-19 succeeds", await claim("2026-11-19"), 1);
+  eq("second claim of 2026-11-19 is refused", await claim("2026-11-19"), 0);
+  eq("next day can be claimed", await claim("2026-11-20"), 1);
+  await q(`update app_settings set staff_digest_sent_on=date '2000-01-01', staff_alert_email=null where id=1`);
+  // a fresh settings row gets the defaults
+  await q(`begin`);
+  await q(`delete from app_settings where id=1`);
+  await q(`insert into app_settings (id) values (1)`);
+  eq("a new settings row: no staff email, sent date 2000-01-01",
+    (await q(`select staff_alert_email e, staff_digest_sent_on::text d from app_settings where id=1`))[0], { e: null, d: "2000-01-01" });
+  await q(`rollback`);
+}
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 if (fail) console.log("FAILED:", failures.join(" | "));
 await db.end();

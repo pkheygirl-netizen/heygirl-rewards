@@ -19,7 +19,7 @@ import {
   selectMultiplier,
   type CustomerInput,
 } from "./points.service";
-import { completeReferralForCustomer, reverseReferralForOrder, shopifyOrderCount } from "./referrals.service";
+import { checkReferralOrder, completeReferralForCustomer, reverseReferralForOrder, shopifyOrderCount } from "./referrals.service";
 import { effectiveReferralPoints, findInfluencerByCodes } from "./influencer.service";
 import { returnRedemptionsForCancelledOrder } from "./redemption.service";
 
@@ -449,6 +449,23 @@ export async function processOrderEvent(ev: OrderEvent, shop?: string | null): P
 
   await markCodesUsed(member.id, ev);
 
+  // Rule 10: a referred friend's order that used her free-shipping code is
+  // compared with the referrer's phone and addresses as soon as the order is
+  // seen (orders/create, or the first event if that was missed), before
+  // awardOrder below could pay the referrer. Once per order; read-only in
+  // Shopify. A failure here never stops the order: completeReferralForCustomer
+  // runs the check again before paying and refuses to pay without it.
+  if (member.referred_by_member_id && !ev.cancelledAt && !state.cancelled_at) {
+    const codes = [...new Set([...ev.discountCodes, ...(state.discount_codes ?? [])])];
+    if (codes.length > 0) {
+      try {
+        await checkReferralOrder({ shopifyOrderId: ev.id, shopifyCustomerId: customerId, discountCodes: codes, shop });
+      } catch (err) {
+        console.error(`[processOrderEvent] referral check for order ${ev.id} not done yet:`, err instanceof Error ? err.message : err);
+      }
+    }
+  }
+
   if (ev.cancelledAt) {
     await processOrderCancelled(ev, shop, { stateSynced: true });
     return { status: "cancelled" };
@@ -539,7 +556,7 @@ export async function awardOrder(shopifyOrderId: string, shop?: string | null): 
     // step looks at what is already there and only does what is missing.
     await checkAndUpgradeTier(fresh.id, Number(fresh.lifetime_spend_pkr ?? 0), fresh.tier, { shopifyOrderId, shop });
   }
-  await completeReferralForCustomer(state.shopify_customer_id!);
+  await completeReferralForCustomer(state.shopify_customer_id!, shop);
   await awardInfluencerSale(state);
 
   return { status: "awarded", pointsAwarded };
@@ -693,7 +710,7 @@ export async function processOrderCancelled(
   await reverseReferralForOrder(ev.id, "cancelled");
   await reverseInfluencerSale(state, "cancelled");
   // A later order may now be the friend's first.
-  if (state.shopify_customer_id) await completeReferralForCustomer(state.shopify_customer_id);
+  if (state.shopify_customer_id) await completeReferralForCustomer(state.shopify_customer_id, shop);
 
   return { reversed, redemptionReturned };
 }

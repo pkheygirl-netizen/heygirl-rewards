@@ -95,7 +95,6 @@ async function findMember(shopifyCustomerId: string): Promise<MemberRow | null> 
 async function insertMember(
   customer: CustomerInput,
   consent: ConsentSource | null,
-  ip?: string | null,
 ): Promise<MemberRow | null> {
   const customerId = String(customer.id);
   const now = new Date().toISOString();
@@ -116,7 +115,8 @@ async function insertMember(
         consent_given: consent !== null,
         consent_given_at: consent !== null ? now : null,
         consent_source: consent,
-        last_seen_ip: clean(ip),
+        // last_seen_ip is no longer written: the proxy's forwarded address is
+        // not the shopper's (see clientIp in proxy-auth.server.ts).
       })
       .select("*")
       .single();
@@ -253,23 +253,22 @@ async function welcomeBonusOutstanding(member: MemberRow): Promise<boolean> {
 
 /**
  * Called by the storefront whenever a signed-in customer loads the widget.
- * Enrols (or records consent for) the customer, remembers her network address
- * for the referral check (rule 10) and queues the one-time welcome bonus.
+ * Enrols (or records consent for) the customer and queues the one-time
+ * welcome bonus. No network address is recorded (19 Nov 2026: the address
+ * the app sees is a proxy's, not the shopper's).
  * Cheap on repeat calls: two indexed reads and no write.
  */
 export async function enrolFromSignin(input: {
   shopifyCustomerId: string;
   shop: string;
-  ip?: string | null;
 }): Promise<{ memberId: string | null; welcomeQueued: boolean; welcomeAwarded?: boolean; reason?: string }> {
   const customerId = String(input.shopifyCustomerId ?? "").trim();
   if (!customerId) return { memberId: null, welcomeQueued: false, reason: "no_customer" };
-  const ip = clean(input.ip);
 
   let member = await findMember(customerId);
   if (!member) {
     const customer = await fetchCustomer(customerId, input.shop);
-    member = await insertMember(customer, "signin", ip);
+    member = await insertMember(customer, "signin");
     if (!member) return { memberId: null, welcomeQueued: false, reason: "enrol_failed" };
   }
 
@@ -281,7 +280,6 @@ export async function enrolFromSignin(input: {
     patch.consent_given_at = new Date().toISOString();
     patch.consent_source = "signin";
   }
-  if (ip && member.last_seen_ip !== ip) patch.last_seen_ip = ip;
   if (Object.keys(patch).length > 0) {
     const { error } = await db.from("members").update(patch).eq("id", member.id);
     if (error) console.error("[enrolFromSignin] member update failed:", error.message);

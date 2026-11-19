@@ -110,6 +110,8 @@ export type Attention = {
   /** Of expiringMembers: those whose date has passed but the nightly job has not run yet ("expiring now"). */
   expiringOverdueMembers: number;
   gdprOpen: number;
+  /** Open alerts from the referral order-time check (migration 016). */
+  referralOrderAlerts: number;
 };
 
 export async function getAttention(days = 30): Promise<Attention> {
@@ -121,6 +123,7 @@ export async function getAttention(days = 30): Promise<Attention> {
     expiringPoints: num(r.expiring_points),
     expiringOverdueMembers: num(r.expiring_overdue_members),
     gdprOpen: num(r.gdpr_open),
+    referralOrderAlerts: num(r.referral_order_alerts),
   };
 }
 

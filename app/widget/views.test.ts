@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { EARN_ICON, REDEEM_ICON, REVIEW_PENDING_TEXT, reviewTitle, earnList, earnTab, errorText, guestHome, guestSub, historyRows, influencerBox, instagramHandle, REDEEM_PAUSED_TEXT, redeemList, referralReward, referTab, rewardsTab, stateMessage, tiersView, type Ctx } from "./views";
+import { EARN_ICON, REDEEM_ICON, REVIEW_PENDING_TEXT, reviewTitle, earnList, earnTab, errorText, guestHome, guestSub, historyRows, influencerBox, instagramHandle, REDEEM_PAUSED_TEXT, redeemList, referralReward, OTHER_LEVELS_TITLE, PERKS_LINK_TEXT, progressCard, referTab, rewardsTab, stateMessage, tierCards, TOP_LEVEL_TEXT, type Ctx } from "./views";
 import { makeConfig, makeMember } from "./test-fixtures";
 import { HUB_CSS, HUB_ICONS } from "./hub-css";
 
@@ -100,11 +100,14 @@ describe("member views", () => {
     expect(h.indexOf("Refer &amp; Earn")).toBeLessThan(h.indexOf("https://shop.example/?ref=aisha-1234"));
   });
 
-  it("tiers tab puts Your progress first and uses real thresholds", () => {
-    const h = tiersView(ctx({ member: makeMember({ lifetimeSpendPkr: 5000 }) }));
-    expect(h.indexOf("Your progress")).toBe(h.indexOf("<h3") + '<h3 class="hg-h">'.length);
-    expect(h).toContain('aria-valuenow="10"');
-    expect(h).toContain("Spend Rs. 45,000 more to reach Gold (Rs. 50,000 in total)");
+  it("Your progress uses real thresholds, and comes before the tier cards on the Rewards tab", () => {
+    const c = ctx({ member: makeMember({ lifetimeSpendPkr: 5000 }) });
+    const p = progressCard(c);
+    expect(p).toMatch(/^<section class="hg-card hg-prog"><h3 class="hg-h">Your progress<\/h3>/);
+    expect(p).toContain('aria-valuenow="10"');
+    expect(p).toContain("Spend Rs. 45,000 more to reach Gold (Rs. 50,000 in total)");
+    expect(progressCard(ctx())).toBe(""); // guests have no progress
+    const h = rewardsTab(c);
     expect(h.indexOf("Your progress")).toBeLessThan(h.indexOf("Everyone starts here"));
   });
 
@@ -317,8 +320,9 @@ describe("owner notes (coding changes.txt) 1-3", () => {
     expect(last).toContain('id="hg-ref-link"');
   });
 
-  it("2: Your progress is the first block of the VIP tiers tab", () => {
-    expect(tiersView(ctx({ member: makeMember() }))).toMatch(/^<section class="hg-card hg-prog"><h3 class="hg-h">Your progress<\/h3>/);
+  it("2 (panel v5): Your progress is its own card directly below the balance card on the Rewards tab", () => {
+    const h = rewardsTab(ctx({ member: makeMember() }));
+    expect(h).toMatch(/^<section class="hg-bal">.*?<\/section><section class="hg-card hg-prog"><h3 class="hg-h">Your progress<\/h3>/);
   });
 
   it("ways to redeem: every reward row and the Ways to redeem entry show currency notes, not the gift", () => {
@@ -390,7 +394,8 @@ describe("rule 20: redeeming paused (the program switch)", () => {
     const m = makeMember({}, { review: { eligible: true, pending: 0 } });
     expect(earnTab(ctx({ cfg: paused(), member: m }))).toBe(earnTab(ctx({ member: m })));
     expect(guestHome(ctx({ cfg: paused() }))).toBe(guestHome(ctx()));
-    expect(tiersView(ctx({ cfg: paused(), member: m }))).toBe(tiersView(ctx({ member: m })));
+    expect(tierCards(ctx({ cfg: paused(), member: m }))).toBe(tierCards(ctx({ member: m })));
+    expect(progressCard(ctx({ cfg: paused(), member: m }))).toBe(progressCard(ctx({ member: m })));
     expect(referTab(ctx({ cfg: paused(), member: m }), null)).toBe(referTab(ctx({ member: m }), null));
   });
 
@@ -432,10 +437,131 @@ describe("feedback 18 Nov: review row, icons and Diamond wording", () => {
   });
 
   it("Diamond: bonus points on orders during your birthday month (panel and rewards page)", () => {
-    const h = tiersView(ctx());
+    const h = tierCards(ctx());
     expect(h).toContain("Bonus points on orders during your birthday month");
     expect(h).not.toContain("orders in your birthday month");
     expect(page).toContain("<li>Bonus points on orders during your birthday month</li>");
     expect(page).not.toContain("orders in your birthday month");
+  });
+});
+
+describe("panel v6 (owner, 19 Nov 2026): her level near the top, other levels at the bottom, 'level' wording", () => {
+  const order = (h: string, parts: string[]) => {
+    const at = parts.map((p) => h.indexOf(p));
+    at.forEach((i, n) => expect(i, `missing: ${parts[n]}`).toBeGreaterThan(-1));
+    for (let n = 1; n < at.length; n++) expect(at[n], `${parts[n - 1]} before ${parts[n]}`).toBeGreaterThan(at[n - 1]);
+  };
+  const silverAt = (spend: number) => makeMember({ pendingPoints: 1200, lifetimeSpendPkr: spend }, { nextExpiry: { points: 800, at: "2026-12-01T10:00:00Z" } });
+
+  it("Silver, top to bottom: balance, progress, her Silver card, View all VIP perks, rewards, redeem, notices, Refer & Earn, Other VIP levels (Gold, Diamond)", () => {
+    const h = rewardsTab(ctx({ member: silverAt(1300) }));
+    order(h, [
+      '<section class="hg-bal">',
+      "Your progress</h3>",
+      "Spend Rs. 48,700 more to reach Gold (Rs. 50,000 in total).",
+      '<section class="hg-card hg-tcard hg-tcard--me" id="hg-level"><h3 class="hg-h"><span class="hg-tier hg-tier--silver">Silver</span><span class="hg-chip">Your level</span></h3>',
+      "Everyone starts here.",
+      `<button type="button" class="hg-link" data-act="perks">${PERKS_LINK_TEXT}<svg class="hg-ic" aria-hidden="true" focusable="false"><use href="#hg-i-chev"/></svg></button>`,
+      "Your rewards</h3>",
+      "Redeem points</h3>",
+      "1,200 points</strong> pending",
+      "800 points</strong> will expire on",
+      "Refer &amp; Earn</h3>",
+      'id="hg-ref-link"',
+      `<div class="hg-tiers" id="hg-tiers"><h3 class="hg-h hg-sec" tabindex="-1">Other VIP levels</h3>`,
+      "hg-tier--gold",
+      "Spend Rs. 50,000 in total.",
+      "hg-tier--diamond",
+      "Spend Rs. 100,000 in total.",
+    ]);
+    // Her level appears once (at the top); the bottom holds only the others.
+    expect((h.match(/hg-tier--silver/g) || []).length).toBe(2); // balance badge + her card
+    expect(h.match(/Everyone starts here\./g)!.length).toBe(1);
+    expect(h.match(/Your level</g)!.length).toBe(1);
+    const bottom = h.slice(h.indexOf('id="hg-tiers"'));
+    expect(bottom).not.toContain("hg-tier--silver");
+    expect(bottom).not.toContain("hg-tcard--me");
+    expect(h.endsWith("</section></div>")).toBe(true);
+  });
+
+  it("Gold: her Gold card on top; only Diamond (the level above her) at the bottom", () => {
+    const h = rewardsTab(ctx({ member: makeMember({ tier: "gold", lifetimeSpendPkr: 60000 }) }));
+    order(h, ["Your progress</h3>", 'id="hg-level"><h3 class="hg-h"><span class="hg-tier hg-tier--gold">Gold</span><span class="hg-chip">Your level</span>', "Points never expire", PERKS_LINK_TEXT, "Your rewards</h3>", 'id="hg-tiers"', "hg-tier--diamond"]);
+    const bottom = h.slice(h.indexOf('id="hg-tiers"'));
+    expect(bottom).not.toContain("hg-tier--gold");
+    expect(bottom).not.toContain("Everyone starts here.");
+    expect(h).not.toContain("Everyone starts here.");
+  });
+
+  it("Diamond: top-level line, her Diamond card, and no perks line or bottom section (nothing above her)", () => {
+    const h = rewardsTab(ctx({ member: makeMember({ tier: "diamond", lifetimeSpendPkr: 150000 }) }));
+    expect(TOP_LEVEL_TEXT).toBe("You're at our top level.");
+    order(h, ["Your progress</h3>", TOP_LEVEL_TEXT, 'id="hg-level"><h3 class="hg-h"><span class="hg-tier hg-tier--diamond">Diamond</span><span class="hg-chip">Your level</span>', "Your rewards</h3>"]);
+    expect(h).toContain('aria-label="Progress to top level"');
+    expect(h).not.toContain(PERKS_LINK_TEXT);
+    expect(h).not.toContain('id="hg-tiers"');
+    expect(h).not.toContain(OTHER_LEVELS_TITLE);
+  });
+
+  it("the notices sit just above Refer & Earn, and the bottom section stays without a referral card", () => {
+    const h = rewardsTab(ctx({ member: makeMember({ referralLink: "", pendingPoints: 500 }) }));
+    expect(h).not.toContain("Refer &amp; Earn");
+    order(h, ["Redeem points</h3>", "500 points</strong> pending", 'id="hg-tiers"']);
+  });
+
+  it("customer-facing text says 'level', never 'tier' (panel, nudge, rewards page)", () => {
+    const m = makeMember();
+    const all = [
+      rewardsTab(ctx({ member: m })),
+      rewardsTab(ctx({ member: makeMember({ tier: "diamond", lifetimeSpendPkr: 150000 }) })),
+      guestHome(ctx()),
+      guestSub(ctx(), "tiers"),
+      earnTab(ctx({ member: m })),
+      referTab(ctx({ member: m }), null),
+    ];
+    // Visible text and labels only (class names, ids and data values keep "tier").
+    const text = (h: string) => h.replace(/<[^>]*>/g, " ") + " " + [...h.matchAll(/aria-label="([^"]*)"/g)].map((x) => x[1]).join(" ");
+    for (const h of all) expect(text(h)).not.toMatch(/tier/i);
+    const hub = readFileSync("app/widget/hub.ts", "utf8");
+    expect(hub).toContain('tiers: "VIP levels"');
+    expect(hub).not.toMatch(/"[^"]*VIP tiers[^"]*"/);
+    const core = readFileSync("app/widget/core.ts", "utf8");
+    expect(core).toContain('{ label: "See VIP levels", screen: "tiers" }');
+    expect(core).not.toMatch(/label: "[^"]*tier/i);
+    const page = readFileSync("extensions/hg-loyalty/blocks/rewards-page.liquid", "utf8");
+    expect(page).toContain('<h2 id="hg-lp-tiers">VIP levels</h2>');
+    expect(page.replace(/<[^>]*>|\{[%{][\s\S]*?[%}]\}/g, " ").replace(/<style>[\s\S]*?<\/style>/g, "")).not.toMatch(/\btiers?\b/i);
+  });
+
+  it("guests keep the VIP levels entry and its screen (all three level cards, no progress, none marked)", () => {
+    expect(guestHome(ctx())).toContain('data-go="tiers"><span class="hg-row__ic"><svg class="hg-ic" aria-hidden="true" focusable="false"><use href="#hg-i-crown"/></svg></span><span class="hg-nav__t">VIP levels</span>');
+    const g = guestSub(ctx(), "tiers");
+    order(g, ["Everyone starts here.", "Spend Rs. 50,000 in total.", "Spend Rs. 100,000 in total."]);
+    expect(g).not.toContain("Your progress");
+    expect(g).not.toContain("Your level");
+    expect(g).not.toContain('id="hg-level"');
+  });
+
+  it("the View all VIP perks line is a real button, a 44px gold text link", () => {
+    expect(HUB_CSS).toMatch(/\.hg-hub \.hg-link\{[^}]*min-height:44px;[^}]*background:none;border:0;color:var\(--gd\);/);
+  });
+
+  it("Share on WhatsApp is the filled gold button with a chat-bubble icon; Copy is the outlined button", () => {
+    const h = referTab(ctx({ member: makeMember() }), null);
+    expect(h).toMatch(/<a class="hg-btn hg-btn--block" target="_blank" rel="noopener" href="https:\/\/wa\.me\/\?text=[^"]+"><svg class="hg-ic" aria-hidden="true" focusable="false"><use href="#hg-i-chat"\/><\/svg>Share on WhatsApp<\/a>/);
+    expect(h).toContain('<button type="button" class="hg-btn hg-btn--sm hg-btn--ghost" data-copy="https://shop.example/?ref=aisha-1234">Copy</button>');
+    // Link field first, then the main button below it.
+    expect(h.indexOf('id="hg-ref-link"')).toBeLessThan(h.indexOf("Share on WhatsApp"));
+    expect(HUB_ICONS).toMatch(/<symbol id="hg-i-chat" viewBox="0 0 24 24"><path d="[^"]+"\/><\/symbol>/);
+    expect(HUB_ICONS).not.toMatch(/whatsapp/i);
+    expect(HUB_CSS).toMatch(/\.hg-btn \.hg-ic\{width:20px;height:20px;margin-right:8px/);
+  });
+
+  it("the tab bar keeps 44px+ tap height and the gold underline with tighter padding", () => {
+    const tab = /\.hg-tab\{([^}]*)\}/.exec(HUB_CSS)![1];
+    expect(Number(/min-height:(\d+)px/.exec(tab)![1])).toBeGreaterThanOrEqual(44);
+    expect(tab).toContain("padding:0 8px");
+    expect(tab).toContain("white-space:nowrap");
+    expect(HUB_CSS).toMatch(/\.hg-tab\[aria-selected=true\]\{color:var\(--ink\);border-bottom-color:var\(--gd\)\}/);
   });
 });

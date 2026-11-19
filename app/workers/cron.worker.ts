@@ -8,6 +8,7 @@ import { syncStorefrontConfig } from "../lib/storefront-config.server";
 import { recordHeartbeat } from "../lib/heartbeat.server";
 import { getSettings, isEarnRuleEnabled } from "../lib/settings.server";
 import { db } from "../db.server";
+import { runStaffDigest } from "../lib/staff-digest.server";
 
 const TZ = "Asia/Karachi";
 
@@ -22,6 +23,10 @@ const SCHEDULE: Array<{ name: string; pattern: string }> = [
   // Every day at 09:00, not only on the 1st: the issue is idempotent per
   // member and year, so a day the worker was down is simply caught up.
   { name: "cron_birthday", pattern: "0 9 * * *" },
+  // Staff morning email, only when something is waiting; at most once a day
+  // (runStaffDigest claims the Pakistan date in app_settings before sending).
+  // Heartbeat key: cron:staff_digest.
+  { name: "cron_staff_digest", pattern: "0 9 * * *" },
 ];
 
 /**
@@ -202,6 +207,8 @@ export async function runCronJob(name: string): Promise<unknown> {
       return awardOverdueSocialActions();
     case "cron_storefront_config":
       return runStorefrontConfig();
+    case "cron_staff_digest":
+      return runStaffDigest();
     default:
       console.warn("[cronWorker] unknown job:", name);
       return { ignored: name };

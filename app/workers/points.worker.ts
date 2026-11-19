@@ -45,7 +45,7 @@ export const pointsWorker = new Worker(
       }
       case "issue_referral_friend_code": {
         const result = await issueReferralFriendCode(String(job.data.referralId), shopOf(job.data));
-        if (!result.issued && !["already_issued", "disabled", "referral_closed", "blocked", "opted_out", "member_not_found", "referral_not_found"].includes(result.reason ?? "")) {
+        if (!result.issued && !["already_issued", "disabled", "referral_closed", "held_for_review", "blocked", "opted_out", "member_not_found", "referral_not_found"].includes(result.reason ?? "")) {
           throw new Error(`friend code not issued (${result.reason}); will retry`);
         }
         return result;

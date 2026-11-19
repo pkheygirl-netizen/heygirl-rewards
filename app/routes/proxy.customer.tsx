@@ -1,6 +1,6 @@
 // app/routes/proxy.customer.tsx — GET /apps/loyalty/customer (contract section 4)
 import type { LoaderFunctionArgs } from "@remix-run/node";
-import { clientIp, guardProxy, proxyJson } from "../lib/proxy-auth.server";
+import { guardProxy, proxyJson } from "../lib/proxy-auth.server";
 import { getCustomerPayload, getMemberByCustomerId, type MemberRow } from "../lib/widget-data.server";
 import { enrolFromSignin } from "../lib/points.service";
 import { effectiveReferralPoints } from "../lib/influencer.service";
@@ -35,7 +35,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // not hide an existing member's balance.
     let welcomeQueued = false;
     try {
-      const enrol = await enrolFromSignin({ shopifyCustomerId: customerId, shop, ip: clientIp(request) });
+      const enrol = await enrolFromSignin({ shopifyCustomerId: customerId, shop });
       welcomeQueued = enrol.welcomeQueued;
     } catch (err) {
       console.error("[proxy.customer] enrolFromSignin failed:", err instanceof Error ? err.message : err);

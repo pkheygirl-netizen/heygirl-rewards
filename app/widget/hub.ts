@@ -4,7 +4,7 @@
 // to the app server); members get tabs backed by the proxy API.
 import { HUB_CSS, HUB_ICONS } from "./hub-css";
 import { fmtDate, PROXY, pts, rs, type LoyaltyApi, type MemberData } from "./shared";
-import { earnTab, errorText, REVIEW_PENDING_TEXT, guestHome, guestSub, historyFilters, historyRows, referTab, rewardsTab, stateMessage, tiersView, type Ctx, type HistoryRow, type ReferralSummary } from "./views";
+import { earnTab, errorText, REVIEW_PENDING_TEXT, guestHome, guestSub, historyFilters, historyRows, referTab, rewardsTab, stateMessage, type Ctx, type HistoryRow, type ReferralSummary } from "./views";
 
 (function () {
   const api = (window as unknown as { HGLoyalty?: LoyaltyApi }).HGLoyalty;
@@ -13,14 +13,16 @@ import { earnTab, errorText, REVIEW_PENDING_TEXT, guestHome, guestSub, historyFi
   const cfg = data.config;
   const signedIn = !!data.customer;
 
+  // Labels are HTML. There is no tiers tab: the member's own level sits near the
+  // top of Rewards and the other levels at its end; a "tiers" target (deep link,
+  // level nudge) and the "View all VIP perks" line scroll to that end section.
   const TABS: Array<{ key: string; label: string }> = [
     { key: "rewards", label: "Rewards" },
-    { key: "earn", label: "Earn" },
+    { key: "refer", label: "Refer &amp; Earn" },
+    { key: "earn", label: "Shop &amp; Earn" },
     { key: "history", label: "History" },
-    { key: "refer", label: "Refer" },
-    { key: "tiers", label: "VIP tiers" },
   ];
-  const GUEST_TITLES: Record<string, string> = { earn: "Ways to earn", redeem: "Ways to redeem", tiers: "VIP tiers" };
+  const GUEST_TITLES: Record<string, string> = { earn: "Ways to earn", redeem: "Ways to redeem", tiers: "VIP levels" };
   const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
 
   let hub: HTMLElement;
@@ -38,6 +40,8 @@ import { earnTab, errorText, REVIEW_PENDING_TEXT, guestHome, guestSub, historyFi
   let screen = "";
   let member: MemberData | null = null;
   let summary: ReferralSummary | null = null;
+  /** Set by a "tiers" target: the next Rewards paint scrolls to the other levels. */
+  let toTiers = false;
   const hist: { filter: string; page: number; rows: HistoryRow[]; hasMore: boolean; loaded: boolean } = { filter: "all", page: 1, rows: [], hasMore: false, loaded: false };
 
   const ctx = (): Ctx => ({ cfg, member, loginUrl: data.urls.login, path: window.location.pathname + window.location.search, origin: window.location.origin, shopUrl: data.urls.shop });
@@ -191,6 +195,8 @@ import { earnTab, errorText, REVIEW_PENDING_TEXT, guestHome, guestSub, historyFi
       return;
     }
     head("", cfg.programName, false);
+    next = tabFor(next);
+    screen = next;
     const mm = member && member.member;
     if (!member || !mm || mm.optedOut || mm.blocked) {
       tabs.hidden = true;
@@ -209,7 +215,6 @@ import { earnTab, errorText, REVIEW_PENDING_TEXT, guestHome, guestSub, historyFi
     body.setAttribute("role", "tabpanel");
     body.setAttribute("aria-labelledby", "hg-tab-" + next);
     if (next === "earn") body.innerHTML = earnTab(ctx());
-    else if (next === "tiers") body.innerHTML = tiersView(ctx());
     else if (next === "refer") {
       body.innerHTML = referTab(ctx(), summary);
       if (!summary) {
@@ -223,11 +228,38 @@ import { earnTab, errorText, REVIEW_PENDING_TEXT, guestHome, guestSub, historyFi
     } else if (next === "history") {
       renderHistory();
       if (!hist.loaded) loadHistory(true);
-    } else body.innerHTML = rewardsTab(ctx());
+    } else {
+      body.innerHTML = rewardsTab(ctx());
+      if (toTiers) {
+        toTiers = false;
+        toLevels(false);
+      }
+    }
+  }
+
+  /**
+   * Scrolls the Rewards tab to the other levels (#hg-tiers), or to her own level
+   * card when there is none (Diamond). Smooth only for a tap, and never when the
+   * shopper asked for reduced motion.
+   */
+  function toLevels(smooth: boolean) {
+    const t = body.querySelector<HTMLElement>("#hg-tiers") || body.querySelector<HTMLElement>("#hg-level");
+    if (!t) return;
+    const top = Math.max(0, t.getBoundingClientRect().top - body.getBoundingClientRect().top + body.scrollTop - 8);
+    const still = !!window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (smooth && !still && typeof body.scrollTo === "function") body.scrollTo({ top, behavior: "smooth" });
+    else body.scrollTop = top;
+  }
+
+  /** Member tab for a target: a tab key, else Rewards ("tiers" also asks for the scroll to the other levels). */
+  function tabFor(target: string): string {
+    if (target === "tiers") toTiers = true;
+    return TABS.some((t) => t.key === target) ? target : "rewards";
   }
 
   function openMember(target: string) {
-    const tab = target === "redeem" ? "rewards" : TABS.some((t) => t.key === target) ? target : "rewards";
+    toTiers = false;
+    const tab = tabFor(target);
     // Whatever core holds is shown at once; core has already asked for fresh
     // data (every open) and hands it to sync() when it arrives.
     const held = api!.cached();
@@ -260,9 +292,11 @@ import { earnTab, errorText, REVIEW_PENDING_TEXT, guestHome, guestSub, historyFi
     if (!isOpen || same) return;
     const top = body.scrollTop;
     const focused = body.contains(document.activeElement);
+    // A first paint that still owes the scroll to the other levels keeps that position.
+    const jump = toTiers;
     show(screen);
     if (focused) hub.focus();
-    body.scrollTop = top;
+    if (!jump) body.scrollTop = top;
   }
 
   function renderHistory() {
@@ -383,6 +417,12 @@ import { earnTab, errorText, REVIEW_PENDING_TEXT, guestHome, guestSub, historyFi
     if (a === "close") close();
     else if (a === "back") { show(""); hub.focus(); }
     else if (a === "more") { hist.page += 1; loadHistory(false); }
+    else if (a === "perks") {
+      toLevels(true);
+      // Keyboard and screen-reader users land on the section heading too.
+      const h = body.querySelector<HTMLElement>("#hg-tiers .hg-sec");
+      if (h) h.focus({ preventScroll: true });
+    }
     else if (a === "retry") { member = null; api!.invalidate(); openMember(screen); }
     else if (a === "social" && m) {
       // Open the profile first (new tab), then let her confirm.

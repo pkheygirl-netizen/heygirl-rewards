@@ -193,3 +193,21 @@ describe("privacy requests", () => {
     expect(fake.tableCalls("gdpr_requests")[0].chain).toEqual([["update", [{ status: "fulfilled" }]], ["eq", ["id", "g1"]]]);
   });
 });
+
+describe("staff alert email (016)", () => {
+  it("accepts one address (trimmed) or blank, and refuses anything else", async () => {
+    const { mod } = await load();
+    expect(mod.parseStaffAlertEmail(" staff@heygirl.pk ")).toEqual({ ok: true, value: "staff@heygirl.pk" });
+    expect(mod.parseStaffAlertEmail("")).toEqual({ ok: true, value: null });
+    expect(mod.parseStaffAlertEmail(null)).toEqual({ ok: true, value: null });
+    for (const bad of ["staff", "staff@heygirl", "a@b.com, c@d.com", "a b@c.com", "<x@y.com>", `${"a".repeat(250)}@b.com`]) {
+      expect(mod.parseStaffAlertEmail(bad).ok, bad).toBe(false);
+    }
+  });
+
+  it("is an editable settings column", async () => {
+    const { fake, mod } = await load();
+    await mod.updateSettings({ staff_alert_email: "staff@heygirl.pk", staff_digest_sent_on: "2099-01-01" });
+    expect(fake.firstArg("app_settings", "update")).toEqual({ staff_alert_email: "staff@heygirl.pk" }); // the sent-date is the worker's
+  });
+});

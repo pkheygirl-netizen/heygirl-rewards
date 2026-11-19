@@ -43,7 +43,7 @@ const TABLE_DEFAULTS: Record<string, () => Row> = {
     referred_shopify_customer_id: null, referred_email: null, referred_ip: null, referrer_ip: null,
     status: "pending", block_reason: null, shopify_order_id: null, points_awarded: false,
     completed_at: null, reward_points: null, friend_code_id: null, reviewed_at: null, reviewed_note: null,
-    fraud_flags: [],
+    fraud_flags: [], order_check: null, order_checked_order_id: null, order_checked_at: null, alert_resolved_at: null, order_tag: null,
   }),
   review_claims: () => ({ shopify_order_id: null, status: "pending", claimed_at: new Date().toISOString(), resolved_at: null }),
   social_actions: () => ({ status: "pending", points_awarded: null }),

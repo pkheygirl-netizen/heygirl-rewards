@@ -12,7 +12,7 @@ import "@shopify/polaris-viz/build/esm/styles.css";
 import { authenticate } from "../shopify.server";
 import { ClientOnly } from "../components/ClientOnly";
 import {
-  EmptyBlock, Pager, PeriodSelect, ResultBanner, StatCard, useActionToast,
+  ConfirmModal, EmptyBlock, Pager, PeriodSelect, ResultBanner, StatCard, useActionToast,
 } from "../components/admin-ui";
 import {
   fmtAge, fmtChange, fmtDate, fmtDateTime, fmtInt, fmtPercent, fmtPkr, fmtSigned, parsePeriodKey, periodRange,
@@ -28,6 +28,7 @@ import { getSettingsRow } from "../lib/admin-settings.server";
 import { errorMessage } from "../lib/admin-validate.server";
 import { ACTIVITY_FILTERS, PROGRAM_OFF_EFFECTS } from "../components/admin-constants";
 import { handleReviewClaimIntent } from "../lib/admin-review-claims.server";
+import { blockReferrer, dismissReferralAlert, listReferralOrderAlerts, shopifyOrderUrl } from "../lib/admin-referrals.server";
 import { ReviewClaimConfirm, type ClaimDecision } from "../components/review-claim-confirm";
 
 const LIST_PAGE = 25;
@@ -39,7 +40,7 @@ function pageParam(sp: URLSearchParams, name: string): number {
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
   const sp = new URL(request.url).searchParams;
   const period = periodRange(parsePeriodKey(sp.get("period")));
   const filter = parseActivityFilter(sp.get("activity"));
@@ -47,7 +48,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const view = sp.get("view") === "claims" ? "claims" : sp.get("view") === "expiring" ? "expiring" : null;
   const listPage = pageParam(sp, "page");
 
-  const [stats, previous, series, tiers, attention, health, activity, settings, claims, expiring] = await Promise.all([
+  const [stats, previous, series, tiers, attention, health, activity, settings, claims, expiring, referralAlerts] = await Promise.all([
     getPeriodStats(period.from, period.to),
     getPeriodStats(period.prevFrom, period.prevTo),
     getPointsSeries(period.from, period.to),
@@ -58,11 +59,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     getSettingsRow(),
     view === "claims" ? listPendingReviewClaims(listPage, LIST_PAGE) : null,
     view === "expiring" ? listExpiringMembers(30, listPage, LIST_PAGE) : null,
+    listReferralOrderAlerts(10),
   ]);
 
   return json({
     period, stats, previous, series: groupSeries(series), tiers, attention, health,
     activity, filter, activityPage, view, listPage, claims, expiring,
+    // Only reason codes are kept: no phone number or address reaches the page.
+    referralAlerts: referralAlerts.map((a) => ({ ...a, orderUrl: shopifyOrderUrl(session.shop, a.orderId) })),
     programEnabled: settings.program_enabled !== false,
     // rewards customers can choose right now (hidden rewards are not available)
     rewardsShown: visibleRedemptionTiers(readRedemptionTiers(settings.redemption_tiers)).length,
@@ -83,6 +87,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         ? json({ ok: true as const, message: claim.message })
         : json({ ok: false as const, error: claim.error }, { status: claim.status });
     }
+    // Referral order alerts: block the referrer, or dismiss the alert.
+    if (intent === "block_referrer" || intent === "dismiss_referral_alert") {
+      const id = String(form.get("referral_id") ?? "");
+      const res = intent === "block_referrer" ? await blockReferrer(id, actorFromSession(session)) : await dismissReferralAlert(id);
+      return res.ok ? json({ ok: true as const, message: res.message }) : json({ ok: false as const, error: res.error }, { status: 409 });
+    }
     return json({ ok: false as const, error: "Unknown action." }, { status: 400 });
   } catch (e) {
     return json({ ok: false as const, error: errorMessage(e) }, { status: 500 });
@@ -100,6 +110,7 @@ export default function Home() {
   useActionToast(fetcher.data);
   const [search, setSearch] = useState("");
   const [deciding, setDeciding] = useState<ClaimDecision | null>(null);
+  const [blockingReferrer, setBlockingReferrer] = useState<{ id: string; name: string } | null>(null);
 
   const withParams = (changes: Record<string, string | null>) => {
     const next = new URLSearchParams(sp);
@@ -116,7 +127,7 @@ export default function Home() {
   const nothingToRedeem = d.programEnabled && d.rewardsShown === 0;
   const nothingWaiting =
     !nothingToRedeem && d.attention.referralsFlagged === 0 && d.attention.reviewClaimsPending === 0 &&
-    d.attention.expiringMembers === 0 && d.attention.gdprOpen === 0;
+    d.attention.expiringMembers === 0 && d.attention.gdprOpen === 0 && d.referralAlerts.length === 0;
 
   return (
     <Page
@@ -170,10 +181,30 @@ export default function Home() {
                   action={<Button url="/app/program">Open ways to redeem</Button>}
                 />
               ) : null}
+              {d.referralAlerts.map((a) => (
+                <AttentionRow
+                  key={`ref-alert-${a.referralId}`}
+                  title={a.title}
+                  detail={`Referrer: ${a.referrerName}. ${a.detail}`}
+                  action={
+                    <ButtonGroup>
+                      {a.orderUrl ? <Button url={a.orderUrl} target="_top">Open order in Shopify</Button> : null}
+                      <Button url={`/app/referrals?referral=${a.referralId}`}>View referral</Button>
+                      {a.referrerReferralsBlocked ? null : (
+                        <Button tone="critical" onClick={() => setBlockingReferrer({ id: a.referralId, name: a.referrerName })}>Block this referrer</Button>
+                      )}
+                      <Button variant="plain" onClick={() => fetcher.submit({ intent: "dismiss_referral_alert", referral_id: a.referralId }, { method: "post" })}>Dismiss</Button>
+                    </ButtonGroup>
+                  }
+                />
+              ))}
+              {d.attention.referralOrderAlerts > d.referralAlerts.length ? (
+                <Text as="p" tone="subdued">{`${fmtInt(d.attention.referralOrderAlerts - d.referralAlerts.length)} more referral order alert(s): see Referrals.`}</Text>
+              ) : null}
               {d.attention.referralsFlagged > 0 ? (
                 <AttentionRow
                   title={`${fmtInt(d.attention.referralsFlagged)} referral${d.attention.referralsFlagged === 1 ? "" : "s"} held for review`}
-                  detail="Friend and referrer share a network address. Approve or reject each one."
+                  detail="The friend looks like the referrer (similar email, same full name, or her order delivers to the referrer's address). Approve or reject each one."
                   action={<Button url="/app/referrals?status=flagged">Review</Button>}
                 />
               ) : null}
@@ -441,6 +472,23 @@ export default function Home() {
           setDeciding(null);
         }}
       />
+
+      <ConfirmModal
+        open={blockingReferrer !== null}
+        title="Block this referrer?"
+        confirmLabel="Block referrer"
+        loading={fetcher.state !== "idle"}
+        onClose={() => setBlockingReferrer(null)}
+        onConfirm={() => {
+          if (!blockingReferrer) return;
+          fetcher.submit({ intent: "block_referrer", referral_id: blockingReferrer.id }, { method: "post" });
+          setBlockingReferrer(null);
+        }}
+      >
+        <Text as="p">
+          {blockingReferrer?.name}'s referral link will stop earning, and no referral of hers that is still waiting will be paid. You can allow her referrals again from her profile. Her own points and orders are not changed.
+        </Text>
+      </ConfirmModal>
     </Page>
   );
 }

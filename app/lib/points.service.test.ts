@@ -90,14 +90,14 @@ describe("pure rules", () => {
 });
 
 describe("enrolFromSignin (auto-consent + welcome bonus at first sign-in)", () => {
-  it("new customer: enrolled with consent 'signin', address stored, welcome bonus added at once (first answer shows it)", async () => {
+  it("new customer: enrolled with consent 'signin', NO network address stored, welcome bonus added at once (first answer shows it)", async () => {
     h.graphql = () => customerReply();
-    const r = await enrolFromSignin({ shopifyCustomerId: "501", shop: "s.myshopify.com", ip: "1.2.3.4" });
+    const r = await enrolFromSignin({ shopifyCustomerId: "501", shop: "s.myshopify.com" });
     expect(r).toMatchObject({ welcomeQueued: false, welcomeAwarded: true });
     const m = h.db.table("members")[0];
     expect(m).toMatchObject({
       shopify_customer_id: "501", email: "aisha@example.com", first_name: "Aisha",
-      consent_given: true, consent_source: "signin", last_seen_ip: "1.2.3.4",
+      consent_given: true, consent_source: "signin", last_seen_ip: null, // 19 Nov 2026: the proxy address is not the shopper's
     });
     expect(r.memberId).toBe(m.id);
     expect(m.points_balance).toBe(1000); // before the response goes out: never a bare 0
@@ -118,10 +118,10 @@ describe("enrolFromSignin (auto-consent + welcome bonus at first sign-in)", () =
 
   it("member row created earlier by a webhook (no consent, zero points) gets consent AND the bonus", async () => {
     const m = seedMember(h.db, { shopify_customer_id: "503", consent_given: false });
-    const r = await enrolFromSignin({ shopifyCustomerId: "503", shop: "s", ip: "9.9.9.9" });
+    const r = await enrolFromSignin({ shopifyCustomerId: "503", shop: "s" });
     expect(r).toMatchObject({ memberId: m.id, welcomeAwarded: true });
     expect(m.points_balance).toBe(1000);
-    expect(m).toMatchObject({ consent_given: true, consent_source: "signin", last_seen_ip: "9.9.9.9" });
+    expect(m).toMatchObject({ consent_given: true, consent_source: "signin", last_seen_ip: null });
     expect(h.graphqlCalls).toHaveLength(0); // no Shopify call for an existing member
   });
 
@@ -150,7 +150,7 @@ describe("enrolFromSignin (auto-consent + welcome bonus at first sign-in)", () =
 
   it("opted-out member: nothing changes, nothing queued", async () => {
     const m = seedMember(h.db, { shopify_customer_id: "508", opted_out: true, consent_given: false });
-    const r = await enrolFromSignin({ shopifyCustomerId: "508", shop: "s", ip: "1.1.1.1" });
+    const r = await enrolFromSignin({ shopifyCustomerId: "508", shop: "s" });
     expect(r).toMatchObject({ welcomeQueued: false, reason: "opted_out" });
     expect(m).toMatchObject({ consent_given: false, last_seen_ip: null });
   });
@@ -173,12 +173,13 @@ describe("enrolFromSignin (auto-consent + welcome bonus at first sign-in)", () =
     expect(h.db.table("members")[0]).toMatchObject({ shopify_customer_id: "511", email: null });
   });
 
-  it("repeat page load writes nothing", async () => {
+  it("repeat page load writes nothing (an old stored address is neither updated nor used)", async () => {
     const m = seedMember(h.db, { shopify_customer_id: "512", last_seen_ip: "1.2.3.4" });
     h.db.seed("points_ledger", { member_id: m.id, action_type: "signup", reference_id: "512", points: 1000, balance_after: 1000 });
     h.db.failNext("members", "update", { code: "X", message: "should not be called" });
-    const r = await enrolFromSignin({ shopifyCustomerId: "512", shop: "s", ip: "1.2.3.4" });
+    const r = await enrolFromSignin({ shopifyCustomerId: "512", shop: "s" });
     expect(r).toEqual({ memberId: m.id, welcomeQueued: false });
+    expect(m.last_seen_ip).toBe("1.2.3.4");
   });
 });
 

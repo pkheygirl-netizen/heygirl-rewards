@@ -2,7 +2,7 @@
 // POST /apps/loyalty/referral {slug} → { ok, status, friendCode? } (contract section 4)
 // GET  /apps/loyalty/referral        → referral summary for the Refer tab (additive)
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
-import { clientIp, guardProxy, proxyJson, readJsonBody } from "../lib/proxy-auth.server";
+import { guardProxy, proxyJson, readJsonBody } from "../lib/proxy-auth.server";
 import { getMemberByCustomerId, getReferralSummary, publicReferralOutcome } from "../lib/widget-data.server";
 import { recordReferralVisit } from "../lib/referrals.service";
 import { effectiveReferralPoints } from "../lib/influencer.service";
@@ -57,14 +57,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return proxyJson({ ok: false, error: "self_referral" });
     }
 
-    // The address and email are taken server-side, never from the client.
-    // `shop` is passed for the friend's free-shipping code (rule 10); it is held
-    // in a variable so the call compiles against either service signature.
+    // The email is taken server-side, never from the client. No network
+    // address is sent: the forwarded address is not the shopper's (see
+    // clientIp). `shop` is passed for the friend's free-shipping code (rule 10).
     const input = {
       referralSlug: slug,
       referredShopifyCustomerId: customerId,
       referredEmail: member.email ?? "",
-      referredIp: clientIp(request) ?? "unknown",
       shop,
     };
     const result = (await recordReferralVisit(input)) as unknown as Record<string, unknown>;

@@ -14,7 +14,7 @@ Set these on **both** Railway services (web and worker). Names only; see `.env.e
 |---|---|---|
 | `SHOPIFY_API_KEY`, `SHOPIFY_API_SECRET` | yes | From the app in the Shopify Dev Dashboard |
 | `SHOPIFY_APP_URL` | yes | Public URL of the web service |
-| `SCOPES` | yes | Must match `[access_scopes]` in `shopify.app.toml` |
+| `SCOPES` | yes | Must match `[access_scopes]` in `shopify.app.toml`. Includes `write_orders` (since 19 Nov 2026), used only to tag a referral order "Rewards: check referral"; after adding it, run `shopify app deploy` and approve the new permission in Shopify admin |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` | yes | Service-role key; never the anon key |
 | `REDIS_URL` | yes | Same Redis for web and worker |
 | `WORKER` | worker only | `1` on the worker service; unset on web |

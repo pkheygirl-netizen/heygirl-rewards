@@ -4,7 +4,7 @@ import { json } from "@remix-run/node";
 import { useFetcher, useLoaderData } from "@remix-run/react";
 import { useState } from "react";
 import {
-  Badge, Banner, BlockStack, Box, Button, Card, IndexTable, InlineStack, Layout, Link, List, Page, Select, Text,
+  Badge, Banner, BlockStack, Box, Button, Card, IndexTable, InlineStack, Layout, Link, List, Page, Select, Text, TextField,
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import { ConfirmModal, Pager, ResultBanner, useActionToast } from "../components/admin-ui";
@@ -13,7 +13,8 @@ import { downloadCsv } from "../lib/csv-download.client";
 import { UUID_RE } from "../lib/admin-db.server";
 import { getSystemHealth } from "../lib/admin-health.server";
 import {
-  getSettingsRow, listGdprRequests, notificationStatus, publishSettings, setGdprRequestStatus, updateSettings,
+  getSettingsRow, listGdprRequests, notificationStatus, parseStaffAlertEmail, publishSettings, setGdprRequestStatus,
+  updateSettings,
 } from "../lib/admin-settings.server";
 import { errorMessage } from "../lib/admin-validate.server";
 import { NO_SCRIPT_SCOPE_TEXT, PROGRAM_OFF_EFFECTS } from "../components/admin-constants";
@@ -32,6 +33,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     programEnabled: settings.program_enabled !== false,
     // Booleans and the "from" address only. No credential ever reaches the browser.
     notifications: notificationStatus(settings),
+    // The staff address for the morning email (store staff, not a customer).
+    staffAlertEmail: typeof settings.staff_alert_email === "string" ? settings.staff_alert_email : "",
     health, gdpr, page,
     // The v2 storefront script tag, if Shopify still has one (never throws).
     legacyScript: "tags" in legacy ? { found: legacy.tags.length, noScope: false } : { found: 0, noScope: legacy.reason === "no_scope" },
@@ -54,6 +57,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       await updateSettings({ whatsapp_enabled: enabled });
       const { warning } = await publishSettings(admin);
       return json({ ok: true as const, message: enabled ? "WhatsApp messages switched on" : "WhatsApp messages switched off", warning });
+    }
+    if (intent === "set_staff_email") {
+      const parsed = parseStaffAlertEmail(form.get("staff_alert_email"));
+      if (!parsed.ok) return json({ ok: false as const, error: parsed.error, errors: { staff_alert_email: parsed.error } }, { status: 400 });
+      await updateSettings({ staff_alert_email: parsed.value });
+      return json({ ok: true as const, message: parsed.value ? "Staff email saved" : "Staff email removed. No morning email will be sent" });
     }
     if (intent === "remove_legacy_script") {
       const res = await removeLegacyScriptTags(admin);
@@ -89,6 +98,10 @@ export default function Settings() {
   const busy = fetcher.state !== "idle";
   const [confirm, setConfirm] = useState<{ kind: "program_off" } | { kind: "gdpr"; id: string } | null>(null);
   const [ledgerPeriod, setLedgerPeriod] = useState("30d");
+  const [staffEmail, setStaffEmail] = useState(d.staffAlertEmail);
+  const staffEmailError = fetcher.data && !fetcher.data.ok && "errors" in fetcher.data
+    ? (fetcher.data.errors as Record<string, string> | undefined)?.staff_alert_email
+    : undefined;
   const n = d.notifications;
   const h = d.health;
   const post = (fields: Record<string, string>) => fetcher.submit(fields, { method: "post" });
@@ -175,6 +188,16 @@ export default function Settings() {
                       {n.whatsappEnabled ? "Switch off" : "Switch on"}
                     </Button>
                   </InlineStack>
+                </InlineStack>
+                <InlineStack gap="200" blockAlign="end" wrap={false}>
+                  <Box minWidth="280px">
+                    <TextField
+                      label="Staff alert email, optional" type="email" autoComplete="email" value={staffEmail}
+                      onChange={setStaffEmail} maxLength={254} error={staffEmailError}
+                      helpText={`We'll email this address each morning when something needs your attention (held referrals, referral orders that match the referrer, review claims, failed background jobs). Sent at 9:00 Pakistan time, only when something is waiting, and only while email is configured.`}
+                    />
+                  </Box>
+                  <Button loading={busy} onClick={() => post({ intent: "set_staff_email", staff_alert_email: staffEmail })}>Save</Button>
                 </InlineStack>
                 <Text as="p" tone="subdued" variant="bodySm">Passwords and tokens are kept on the server and are never shown here.</Text>
               </BlockStack>

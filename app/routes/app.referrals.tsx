@@ -12,7 +12,10 @@ import { ConfirmModal, EmptyBlock, Pager, ResultBanner, useActionToast } from ".
 import { REFERRAL_STATUS_LABELS, REJECT_NOTE_MAX } from "../components/admin-constants";
 import { fmtDate, fmtInt } from "../components/karachi";
 import { actorFromSession } from "../lib/admin-members.server";
-import { approve, listReferrals, parseReferralStatus, referralSummary, reject } from "../lib/admin-referrals.server";
+import {
+  approve, blockReferrer, dismissReferralAlert, listReferrals, parseReferralStatus, referralSummary, reject,
+} from "../lib/admin-referrals.server";
+import { UUID_RE } from "../lib/admin-db.server";
 import { errorMessage } from "../lib/admin-validate.server";
 
 const PAGE_SIZE = 25;
@@ -22,15 +25,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
   const sp = new URL(request.url).searchParams;
   // The queue opens on what needs a decision.
+  // ?referral=<id>: one referral, opened from a Home alert.
+  const one = sp.get("referral");
+  const referralId = one && UUID_RE.test(one) ? one : null;
   const raw = sp.get("status");
-  const status = raw === "all" ? null : parseReferralStatus(raw) ?? "flagged";
+  const status = referralId || raw === "all" ? null : parseReferralStatus(raw) ?? "flagged";
   const pageRaw = Number(sp.get("page") ?? "0");
   const page = Number.isInteger(pageRaw) && pageRaw > 0 ? pageRaw : 0;
   const [list, summary] = await Promise.all([
-    listReferrals({ status, page, pageSize: PAGE_SIZE }),
+    listReferrals({ status, page, pageSize: PAGE_SIZE, referralId }),
     referralSummary(),
   ]);
-  return json({ ...list, summary, status: status ?? "all", page });
+  return json({ ...list, summary, status: status ?? "all", page, referralId });
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -46,6 +52,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
     if (intent === "reject") {
       const res = await reject(id, actor, String(form.get("note") ?? ""));
+      return json(res, { status: res.ok ? 200 : 409 });
+    }
+    if (intent === "block_referrer") {
+      const res = await blockReferrer(id, actor);
+      return json(res, { status: res.ok ? 200 : 409 });
+    }
+    if (intent === "dismiss_referral_alert") {
+      const res = await dismissReferralAlert(id);
       return json(res, { status: res.ok ? 200 : 409 });
     }
     return json({ ok: false as const, error: "Unknown action." }, { status: 400 });
@@ -67,6 +81,7 @@ export default function Referrals() {
   const busy = fetcher.state !== "idle";
   const [approving, setApproving] = useState<{ id: string; referrer: string; friend: string } | null>(null);
   const [rejecting, setRejecting] = useState<{ id: string; referrer: string; friend: string } | null>(null);
+  const [blocking, setBlocking] = useState<{ id: string; referrer: string } | null>(null);
   const [note, setNote] = useState("");
   const selected = Math.max(0, TABS.indexOf(d.status as (typeof TABS)[number]));
   const s = d.summary;
@@ -75,6 +90,7 @@ export default function Referrals() {
     const next = new URLSearchParams(sp);
     next.set("status", status);
     next.delete("page");
+    next.delete("referral");
     setSp(next, { preventScrollReset: true });
   };
 
@@ -90,6 +106,14 @@ export default function Referrals() {
           </InlineGrid>
         </Layout.Section>
         <Layout.Section><ResultBanner data={fetcher.data} /></Layout.Section>
+        {d.referralId ? (
+          <Layout.Section>
+            <InlineStack align="space-between" blockAlign="center">
+              <Text as="p" tone="subdued">Showing the referral from the Home alert.</Text>
+              <Button variant="plain" onClick={() => setStatus("all")}>Show all referrals</Button>
+            </InlineStack>
+          </Layout.Section>
+        ) : null}
         <Layout.Section>
           <Card padding="0">
             <Tabs
@@ -103,7 +127,7 @@ export default function Referrals() {
             {d.rows.length === 0 ? (
               d.status === "flagged" ? (
                 <EmptyBlock heading="Nothing is held for review" action={{ content: "See all referrals", onAction: () => setStatus("all") }}>
-                  <p>A referral is held when the friend signs in from the same network address as the referrer. Held referrals appear here for you to approve or reject.</p>
+                  <p>A referral is held when the friend's email looks like the referrer's, she has the same full name, or her order delivers to the referrer's address. Held referrals appear here for you to approve or reject.</p>
                 </EmptyBlock>
               ) : (
                 <EmptyBlock heading="No referrals here yet" action={{ content: "Check the referral reward", url: "/app/program" }}>
@@ -131,7 +155,11 @@ export default function Referrals() {
                     <IndexTable.Cell><Badge tone={tone(r.status)}>{r.statusLabel}</Badge></IndexTable.Cell>
                     <IndexTable.Cell>
                       <Box maxWidth="320px">
-                        <Text as="span" breakWord>{r.reason || r.reviewedNote || ""}</Text>
+                        <BlockStack gap="050">
+                          <Text as="span" breakWord>{r.reason || r.reviewedNote || ""}</Text>
+                          {r.orderCheckNote ? <Text as="span" tone="subdued" variant="bodySm" breakWord>{r.orderCheckNote}</Text> : null}
+                          {r.referrerReferralsBlocked ? <Text as="span" tone="subdued" variant="bodySm">Referrer's referrals are blocked</Text> : null}
+                        </BlockStack>
                       </Box>
                     </IndexTable.Cell>
                     <IndexTable.Cell>{fmtDate(r.createdAt)}</IndexTable.Cell>
@@ -139,12 +167,20 @@ export default function Referrals() {
                       <Text as="span" alignment="end">{r.rewardPoints !== null && r.status === "completed" ? fmtInt(r.rewardPoints) : ""}</Text>
                     </IndexTable.Cell>
                     <IndexTable.Cell>
-                      {r.status === "flagged" ? (
-                        <InlineStack gap="200" wrap={false}>
-                          <Button size="slim" onClick={() => setApproving({ id: r.id, referrer: r.referrerName, friend: r.friend })}>Approve</Button>
-                          <Button size="slim" tone="critical" onClick={() => { setNote(""); setRejecting({ id: r.id, referrer: r.referrerName, friend: r.friend }); }}>Reject</Button>
-                        </InlineStack>
-                      ) : null}
+                      <InlineStack gap="200" wrap={false}>
+                        {r.status === "flagged" ? (
+                          <>
+                            <Button size="slim" onClick={() => setApproving({ id: r.id, referrer: r.referrerName, friend: r.friend })}>Approve</Button>
+                            <Button size="slim" tone="critical" onClick={() => { setNote(""); setRejecting({ id: r.id, referrer: r.referrerName, friend: r.friend }); }}>Reject</Button>
+                          </>
+                        ) : null}
+                        {(r.status === "flagged" || r.status === "blocked" || r.alertOpen) && !r.referrerReferralsBlocked ? (
+                          <Button size="slim" tone="critical" variant="plain" onClick={() => setBlocking({ id: r.id, referrer: r.referrerName })}>Block this referrer</Button>
+                        ) : null}
+                        {r.alertOpen ? (
+                          <Button size="slim" variant="plain" onClick={() => fetcher.submit({ intent: "dismiss_referral_alert", referral_id: r.id }, { method: "post" })}>Dismiss alert</Button>
+                        ) : null}
+                      </InlineStack>
                     </IndexTable.Cell>
                   </IndexTable.Row>
                 ))}
@@ -154,6 +190,23 @@ export default function Referrals() {
           </Card>
         </Layout.Section>
       </Layout>
+
+      <ConfirmModal
+        open={blocking !== null}
+        title="Block this referrer?"
+        confirmLabel="Block referrer"
+        loading={busy}
+        onClose={() => setBlocking(null)}
+        onConfirm={() => {
+          if (!blocking) return;
+          fetcher.submit({ intent: "block_referrer", referral_id: blocking.id }, { method: "post" });
+          setBlocking(null);
+        }}
+      >
+        <Text as="p">
+          {blocking?.referrer}'s referral link will stop earning, and no referral of hers that is still waiting will be paid. You can allow her referrals again from her profile.
+        </Text>
+      </ConfirmModal>
 
       <ConfirmModal
         open={approving !== null}

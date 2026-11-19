@@ -385,6 +385,24 @@ export async function setBlocked(memberId: string, blocked: boolean, actor: stri
   return true;
 }
 
+/**
+ * Block or allow a member's referrals (members.referrals_blocked): while
+ * blocked her link records nothing new and no referral of hers is paid.
+ * Written to her staff notes. False when no such member exists.
+ */
+export async function setReferralsBlocked(memberId: string, blocked: boolean, actor: string): Promise<boolean> {
+  const { data, error } = await adb().from("members").update({ referrals_blocked: blocked }).eq("id", memberId).select("id");
+  if (error) throw new Error(`could not update the customer: ${error.message}`);
+  if (!data || (data as unknown[]).length === 0) return false;
+  const { error: noteErr } = await adb().from("staff_notes").insert({
+    member_id: memberId,
+    note: blocked ? "Blocked her referrals: her referral link no longer earns" : "Allowed her referrals again",
+    author: actor || "Store staff",
+  });
+  if (noteErr) console.error(`[admin] referral block audit note not written for ${memberId}: ${noteErr.message}`);
+  return true;
+}
+
 export async function listStaffNotes(memberId: string, limit = 50): Promise<StaffNote[]> {
   const { data, error } = await adb()
     .from("staff_notes")

@@ -13,6 +13,7 @@ import { PROGRAM_OFF_EFFECTS, SUGGESTED_FAQS } from "../components/admin-constan
 const escapeHtml = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#x27;");
 
 const ID = "11111111-1111-4111-8111-111111111111";
+const REF_ALERT = "22222222-2222-4222-8222-222222222222";
 const SHOP = "heygirl-pk.myshopify.com";
 let loaderData: unknown = null;
 let fetcherData: unknown = undefined;
@@ -128,7 +129,7 @@ const full: Parameters<typeof fakeDb>[0] = {
       case "admin_tier_counts":
         return { data: { silver: 1869, gold: 34, diamond: 9, near_gold: 12, near_diamond: 1, near_gold_within_pkr: 5000, near_diamond_within_pkr: 10000 } };
       case "admin_attention":
-        return { data: { referrals_flagged: 3, review_claims_pending: 2, expiring_members: 41, expiring_points: 90000, expiring_overdue_members: 2, gdpr_open: 1 } };
+        return { data: { referrals_flagged: 3, review_claims_pending: 2, expiring_members: 41, expiring_points: 90000, expiring_overdue_members: 2, gdpr_open: 1, referral_order_alerts: 1 } };
       case "admin_activity":
         return { data: [
           { id: "l1", at: "2026-11-16T05:00:00Z", kind: "points", action: "purchase", points: 4250, member_id: ID, member_name: "Sana Ahmed", order_id: "5", order_name: "#1042" },
@@ -168,10 +169,17 @@ const full: Parameters<typeof fakeDb>[0] = {
         ] };
       case "staff_notes": return { data: [{ id: "n1", note: "Called about a late parcel", author: "Ayesha", created_at: "2026-11-01T00:00:00Z" }] };
       case "referrals":
-        return { count: 2, data: [
-          { id: "r1", referrer_member_id: ID, referred_email: "friend@example.com", referred_shopify_customer_id: "C1", status: "flagged", block_reason: null, fraud_flags: ["same_network"], reward_points: null, created_at: "2026-11-10T00:00:00Z", completed_at: null, reviewed_note: null, members: MEMBER },
-          { id: "r2", referrer_member_id: ID, referred_email: null, referred_shopify_customer_id: "C2", status: "completed", block_reason: null, fraud_flags: [], reward_points: 12000, created_at: "2026-11-01T00:00:00Z", completed_at: "2026-11-05T00:00:00Z", reviewed_note: null, members: MEMBER },
+        // Home's open order-check alerts (migration 016): only reason codes, never the matched phone or address
+        if (chain.some(([m, a]) => m === "in" && a[0] === "order_check")) {
+          return { data: [{ id: REF_ALERT, referrer_member_id: ID, status: "blocked", order_check: "same_phone", order_checked_order_id: "5", order_tag: "tagged", members: MEMBER }] };
+        }
+        return { count: 3, data: [
+          { id: "r1", referrer_member_id: ID, referred_email: "friend@example.com", referred_shopify_customer_id: "C1", status: "flagged", block_reason: null, fraud_flags: ["similar_email", "same_address_on_order"], reward_points: null, created_at: "2026-11-10T00:00:00Z", completed_at: null, reviewed_note: null, order_check: "same_address", alert_resolved_at: null, members: MEMBER },
+          { id: "r2", referrer_member_id: ID, referred_email: null, referred_shopify_customer_id: "C2", status: "completed", block_reason: null, fraud_flags: [], reward_points: 12000, created_at: "2026-11-01T00:00:00Z", completed_at: "2026-11-05T00:00:00Z", reviewed_note: null, order_check: "not_checked", members: MEMBER },
+          { id: "r3", referrer_member_id: ID, referred_email: "old@example.com", referred_shopify_customer_id: "C3", status: "blocked", block_reason: null, fraud_flags: ["same_phone_on_order"], reward_points: null, created_at: "2026-10-01T00:00:00Z", completed_at: null, reviewed_note: null, order_check: "same_phone", alert_resolved_at: "2026-10-02T00:00:00Z", members: MEMBER },
         ] };
+      case "order_webhook_state":
+        return { data: [{ shopify_order_id: "5", order_name: "#1042" }] };
       case "review_claims":
         return { count: 1, data: [{ id: "k1", member_id: ID, shopify_order_id: "5", points: 3000, claimed_at: "2026-11-15T00:00:00Z", members: MEMBER }] };
       case "bonus_campaigns":
@@ -216,6 +224,18 @@ describe("pages render with data", () => {
     expect(html).toContain('href="/app/referrals?status=flagged"');
   });
 
+  it("Home lists a referral order alert with links to the order and the referral, and Block / Dismiss", async () => {
+    const html = await renderRoute("app._index.tsx", "/app");
+    expect(html).toContain("Order #1042 used a referral free-shipping code but delivers to the referrer&#x27;s phone number");
+    expect(html).toContain("Open order in Shopify");
+    expect(html).toContain("The order is tagged &quot;Rewards: check referral&quot; in Shopify.");
+    expect(html).toContain("https://heygirl-pk.myshopify.com/admin/orders/5");
+    expect(html).toContain(`href="/app/referrals?referral=${REF_ALERT}"`);
+    expect(html).toContain("Block this referrer");
+    expect(html).toContain("Dismiss");
+    expect(html).not.toContain("network address");
+  });
+
   it("Home shows overdue expiries as expiring now (A9)", async () => {
     const html = await renderRoute("app._index.tsx", "/app?view=expiring");
     expect(html).toContain("2 of them have points expiring now");
@@ -253,7 +273,14 @@ describe("pages render with data", () => {
 
   it("Referrals", async () => {
     const html = await renderRoute("app.referrals.tsx", "/app/referrals");
-    expect(html).toContain("Friend signed in from the same network address as the referrer");
+    // the current rules in plain words
+    expect(html).toContain("The friend&#x27;s email looks like the referrer&#x27;s; The friend&#x27;s order delivers to the referrer&#x27;s address");
+    expect(html).toContain("The friend&#x27;s order uses the referrer&#x27;s phone number");
+    expect(html).toContain("Her order was not checked against the referrer&#x27;s phone and address");
+    expect(html).toContain("Block this referrer");
+    expect(html).toContain("Dismiss alert"); // r1's alert is open; r3's was dismissed
+    expect(html.match(/Dismiss alert/g)).toHaveLength(1);
+    expect(html).not.toContain("network address");
     expect(html).toContain("Approve");
     expect(html).toContain("Reject");
     expect(html).not.toMatch(/IP match/i);
@@ -300,7 +327,8 @@ describe("pages render with data", () => {
 
   it("Settings, without any secret", async () => {
     const html = await renderRoute("app.settings.tsx", "/app/settings");
-    for (const text of ["Redeeming", "Notifications", "Not configured", "Data export", "System health", "Healthy", "Privacy requests", "Mark as answered"]) {
+    for (const text of ["Redeeming", "Notifications", "Not configured", "Data export", "System health", "Healthy", "Privacy requests", "Mark as answered",
+      "Staff alert email, optional", "each morning when something needs your attention"]) {
       expect(html, text).toContain(text);
     }
     expect(html).not.toContain("never-shown");

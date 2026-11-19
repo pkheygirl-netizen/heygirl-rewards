@@ -144,6 +144,19 @@ describe("customer profile action", () => {
     expect((await read(res)).error).toContain("no longer exists");
   });
 
+  it("block / allow referrals from the profile sets referrals_blocked and records who did it", async () => {
+    const fake = setup({ from: (t) => (t === "members" ? { data: [{ id: ID }] } : {}) });
+    const { action } = await import("../routes/app.customers.$id");
+    const ok = await read(await action(args(post(`/app/customers/${ID}`, { intent: "block_referrals" }), { id: ID })));
+    expect(ok).toMatchObject({ ok: true, message: "Referrals blocked. Her referral link no longer earns" });
+    expect(fake.firstArg("members", "update")).toEqual({ referrals_blocked: true });
+    expect(fake.firstArg("staff_notes", "insert")).toEqual({ member_id: ID, note: "Blocked her referrals: her referral link no longer earns", author: "Ayesha" });
+    const again = setup({ from: (t) => (t === "members" ? { data: [{ id: ID }] } : {}) });
+    const mod = await import("../routes/app.customers.$id");
+    expect(await read(await mod.action(args(post(`/app/customers/${ID}`, { intent: "allow_referrals" }), { id: ID })))).toMatchObject({ ok: true, message: "Referrals allowed again" });
+    expect(again.firstArg("members", "update")).toEqual({ referrals_blocked: false });
+  });
+
   it("removing influencer status from the profile deletes her Shopify code first and aborts if that fails (A1)", async () => {
     setup({ from: () => ({ data: { id: ID, is_influencer: true, influencer_code: "SANA10" } }) });
     svc.removeInfluencerCode.mockResolvedValueOnce({ ok: false, reason: "shopify_unavailable" });
@@ -395,6 +408,28 @@ describe("referrals, influencers and home actions", () => {
     expect(ok.message).toBe("She is no longer an influencer. Discount code SANA10 was removed from Shopify");
   });
 
+  it("Home and Referrals: 'Block this referrer' blocks the referral's referrer and closes the alert; Dismiss only closes it", async () => {
+    for (const route of ["../routes/app._index", "../routes/app.referrals"] as const) {
+      const fake = setup({
+        from: (t, chain) => (t === "referrals" && chain.some(([m]) => m === "maybeSingle")
+          ? { data: { id: ID, referrer_member_id: CODE } }
+          : t === "members" ? { data: [{ id: CODE }] } : { data: [{ id: ID }] }),
+      });
+      const { action } = await import(route);
+      const ok = await read(await action(args(post("/app", { intent: "block_referrer", referral_id: ID }))));
+      expect(ok, route).toMatchObject({ ok: true, message: "Referrer blocked. Her referral link no longer earns" });
+      expect(fake.firstArg("members", "update")).toEqual({ referrals_blocked: true });
+      expect(fake.tableCalls("members")[0].chain).toContainEqual(["eq", ["id", CODE]]);
+      expect(fake.firstArg("referrals", "update")).toHaveProperty("alert_resolved_at");
+
+      const fake2 = setup({ from: () => ({ data: [{ id: ID }] }) });
+      const mod = await import(route);
+      expect(await read(await mod.action(args(post("/app", { intent: "dismiss_referral_alert", referral_id: ID }))))).toEqual({ ok: true, message: "Alert dismissed" });
+      expect(fake2.tableCalls("members")).toHaveLength(0);
+      expect((await mod.action(args(post("/app", { intent: "dismiss_referral_alert", referral_id: "x" })))).status).toBe(409);
+    }
+  });
+
   it("rejecting a review claim from Home calls the engine once, with a valid id only", async () => {
     setup();
     svc.rejectReviewClaim.mockResolvedValueOnce({ ok: true });
@@ -467,6 +502,25 @@ describe("settings", () => {
     const { action } = await import("../routes/app.settings");
     await action(args(post("/app/settings", { intent: "set_whatsapp", enabled: "true", whatsapp_api_key: "sneaky" })));
     expect(fake.firstArg("app_settings", "update")).toEqual({ whatsapp_enabled: true });
+  });
+
+  it("staff alert email: saved after validation, blank clears it, a bad address is refused and nothing is written", async () => {
+    const fake = setup();
+    const { action } = await import("../routes/app.settings");
+    expect(await read(await action(args(post("/app/settings", { intent: "set_staff_email", staff_alert_email: "  staff@heygirl.pk " }))))).toEqual({ ok: true, message: "Staff email saved" });
+    expect(fake.firstArg("app_settings", "update")).toEqual({ staff_alert_email: "staff@heygirl.pk" });
+
+    const fake2 = setup();
+    const mod = await import("../routes/app.settings");
+    const bad = await mod.action(args(post("/app/settings", { intent: "set_staff_email", staff_alert_email: "a@b, c@d.com" })));
+    expect(bad.status).toBe(400);
+    expect((await read(bad)).errors).toHaveProperty("staff_alert_email");
+    expect(fake2.tableCalls("app_settings")).toHaveLength(0);
+
+    const fake3 = setup();
+    const mod3 = await import("../routes/app.settings");
+    expect((await read(await mod3.action(args(post("/app/settings", { intent: "set_staff_email", staff_alert_email: "" }))))).message).toContain("removed");
+    expect(fake3.firstArg("app_settings", "update")).toEqual({ staff_alert_email: null });
   });
 
   it("the page data never contains a credential", async () => {

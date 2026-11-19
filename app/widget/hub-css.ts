@@ -50,7 +50,7 @@ export const HUB_CSS = `
 .hg-hub__ib .hg-ic{width:24px;height:24px;stroke-width:2.2}
 .hg-tabs{display:flex;flex:none;overflow-x:auto;background:var(--card);border-bottom:1px solid var(--ln);scrollbar-width:none}
 .hg-tabs::-webkit-scrollbar{display:none}
-.hg-tab{flex:1 0 auto;min-height:46px;padding:0 13px;background:none;border:0;border-bottom:3px solid transparent;font-size:14px;font-weight:600;color:var(--mute);cursor:pointer;white-space:nowrap}
+.hg-tab{flex:1 0 auto;min-height:46px;padding:0 8px;background:none;border:0;border-bottom:3px solid transparent;font-size:14px;font-weight:600;color:var(--mute);cursor:pointer;white-space:nowrap}
 .hg-tab[aria-selected=true]{color:var(--ink);border-bottom-color:var(--gd)}
 .hg-msg{flex:none;margin:10px 12px 0;padding:10px 12px;border-radius:10px;background:var(--okb);color:var(--ok);font-size:14px;font-weight:600}
 .hg-msg:empty{display:none}
@@ -74,6 +74,7 @@ export const HUB_CSS = `
 .hg-btn--sm{padding:0 14px;font-size:14px;flex:none}
 .hg-btn--ghost{background:var(--card);color:var(--ink)!important}
 .hg-btn--block{display:flex;width:100%;margin-top:6px}
+.hg-btn .hg-ic{width:20px;height:20px;margin-right:8px;stroke-width:2}
 .hg-btn[disabled]{opacity:.55;cursor:default}
 .hg-signin{text-align:center;font-size:14px;color:var(--mute);margin-top:10px!important}
 .hg-signin a{display:inline-flex;align-items:center;min-height:44px;min-width:44px;padding:0 6px;font-weight:700}
@@ -114,6 +115,10 @@ export const HUB_CSS = `
 .hg-bar{border:1px solid var(--gd)}
 .hg-bar span{display:block;height:100%;background:var(--gd);border-radius:999px}
 .hg-tcard--me{border:2px solid var(--gd)}
+.hg-hub .hg-sec{margin:4px 2px 8px}
+.hg-hub .hg-link{display:flex;align-items:center;gap:2px;min-height:44px;margin:-6px 0 6px;padding:0 4px;background:none;border:0;color:var(--gd);font-size:15px;font-weight:700;cursor:pointer;text-align:left}
+.hg-link .hg-ic{width:18px;height:18px;stroke-width:2.6}
+.hg-link:hover{text-decoration:underline}
 .hg-perks li{display:flex;gap:8px;align-items:flex-start;font-size:14px;padding:4px 0}
 .hg-perks .hg-ic{width:18px;height:18px;color:var(--pos);stroke-width:2.6;margin-top:2px}
 .hg-chips{display:flex;gap:8px;overflow-x:auto;padding-bottom:10px;scrollbar-width:none}
@@ -155,5 +160,7 @@ export const HUB_ICONS =
   P("friends", "M9 11a3.5 3.5 0 100-7 3.5 3.5 0 000 7zM2.5 20a6.5 6.5 0 0113 0M16 4.3a3.5 3.5 0 010 6.4M18 14.5a6.5 6.5 0 013.5 5.5") +
   P("truck", "M2.5 6.5h11v10h-11zM13.5 10h4l3 3v3.5h-7M7 19a2 2 0 100-4 2 2 0 000 4zM17 19a2 2 0 100-4 2 2 0 000 4z") +
   P("clock", "M12 3a9 9 0 100 18 9 9 0 000-18zM12 7.5V12l3 2") +
+  // Share on WhatsApp: a plain chat bubble, never the WhatsApp logo.
+  P("chat", "M5 4.5h14A2.5 2.5 0 0121.5 7v8a2.5 2.5 0 01-2.5 2.5h-8l-5 3.5v-3.5H5A2.5 2.5 0 012.5 15V7A2.5 2.5 0 015 4.5zM8 11v.01M12 11v.01M16 11v.01") +
   P("crown", "M4 18.5h16M4.5 15L3 7l5 3.5L12 5l4 5.5L21 7l-1.5 8h-15z") +
   `</svg>`;

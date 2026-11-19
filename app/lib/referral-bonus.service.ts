@@ -23,6 +23,10 @@ export async function issueReferralFriendCode(
   if (error) throw new Error(`referral lookup failed: ${error.message}`);
   if (!referral || !referral.referred_shopify_customer_id) return { issued: false, reason: "referral_not_found" };
   if (referral.status === "blocked" || referral.status === "rejected") return { issued: false, reason: "referral_closed" };
+  // Held for review (rule 10): the code waits until staff approve, which puts
+  // the referral back to `pending` before calling this. A queued or swept job
+  // for a held referral is refused here as a safety net.
+  if (referral.status === "flagged") return { issued: false, reason: "held_for_review" };
 
   const { data: friend } = await db
     .from("members")

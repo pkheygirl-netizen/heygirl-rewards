@@ -6,6 +6,7 @@ vi.mock("./worker-admin.server", async () => (await import("./testing/harness"))
 
 import { h, opName, resetHarness, seedMember } from "./testing/harness";
 import { bustSettingsCache } from "./settings.server";
+import { ShopifyRateLimitError } from "./shopify-graphql.server";
 import {
   computeEarningBasis,
   fetchGiftCardAmount,
@@ -542,6 +543,102 @@ describe("referral follow-up", () => {
     await processRefundEvent({ refundId: "R2", orderId: "O1", refundedMerchandisePkr: 2000 }); // now refunded in full
     expect(referrer.points_balance).toBe(0);
     expect(ledger("referral_reversal")[0]).toMatchObject({ member_id: referrer.id, points: -6000 });
+  });
+});
+
+describe("referral order-time check runs before the referrer can be paid (rule 10)", () => {
+  type Ship = { address1: string | null; city: string | null; phone: string | null } | null;
+  let ship: Ship = null;
+  const setupReferral = () => {
+    const referrer = seedMember(h.db, { shopify_customer_id: "REF", phone: "+923001234567" });
+    seedMember(h.db, { shopify_customer_id: "C1", referred_by_member_id: referrer.id });
+    const code = h.db.seed("loyalty_codes", { code: "WELCOME-AB12", member_id: "friend", kind: "referral_friend" });
+    const referral = h.db.seed("referrals", { referrer_member_id: referrer.id, referred_shopify_customer_id: "C1", status: "pending", friend_code_id: code.id });
+    return { referrer, referral };
+  };
+  const checks = () => h.graphqlCalls.filter((c) => opName(c.query) === "HgReferralOrderCheck");
+
+  beforeEach(() => {
+    ship = { address1: "Flat 3, Gulberg III", city: "Lahore", phone: "0300 1234567" }; // the referrer's phone
+    h.graphql = (q) => {
+      if (opName(q) === "HgCustomerOrderCount") return { customer: { numberOfOrders: "1" } };
+      if (opName(q) === "HgReferralOrderCheck") {
+        return { order: { shippingAddress: ship }, customer: { defaultPhoneNumber: null, defaultAddress: null, addressesV2: { nodes: [] }, orders: { nodes: [] } } };
+      }
+      return {};
+    };
+  });
+
+  it("orders/create with the friend's code: checked at once, so the later fulfilled+paid event pays nothing (same phone)", async () => {
+    const { referrer, referral } = setupReferral();
+    await processOrderEvent(order({ discountCodes: ["welcome-ab12"] }), "s"); // orders/create, unpaid COD
+    expect(referral).toMatchObject({ status: "blocked", order_check: "same_phone", order_checked_order_id: "O1" });
+    const r = await processOrderEvent(order({ discountCodes: ["welcome-ab12"], fulfillmentStatus: "fulfilled", financialStatus: "paid" }), "s");
+    expect(r.status).toBe("awarded"); // the friend still earns her own purchase points
+    expect(member("C1").points_balance).toBe(3000);
+    expect(referrer.points_balance).toBe(0);
+    expect(checks()).toHaveLength(1); // replays and later events do not ask again
+  });
+
+  it("orders/create missed: the first event already fulfilled AND paid is checked before the award pays the referrer", async () => {
+    const { referrer, referral } = setupReferral();
+    await processOrderEvent(order({ discountCodes: ["WELCOME-AB12"], fulfillmentStatus: "fulfilled", financialStatus: "paid" }), "s");
+    expect(referral.status).toBe("blocked");
+    expect(referrer.points_balance).toBe(0);
+  });
+
+  it("same address only: held, nothing paid; the only change to the order in Shopify is the review tag", async () => {
+    const { referrer, referral } = setupReferral();
+    referrer.phone = null;
+    h.graphql = (q) => {
+      if (opName(q) === "HgCustomerOrderCount") return { customer: { numberOfOrders: "1" } };
+      if (opName(q) === "HgReferralOrderCheck") {
+        return {
+          order: { shippingAddress: { address1: "House 12, Street 5", city: "Karachi", phone: "03117654321" } },
+          customer: { defaultPhoneNumber: null, defaultAddress: { address1: "H 12 St 5", city: "Karachi", phone: null }, addressesV2: { nodes: [] }, orders: { nodes: [] } },
+        };
+      }
+      return {};
+    };
+    await processOrderEvent(order({ discountCodes: ["WELCOME-AB12"], fulfillmentStatus: "fulfilled", financialStatus: "paid" }), "s");
+    expect(referral).toMatchObject({ status: "flagged", order_check: "same_address" });
+    expect(referrer.points_balance).toBe(0);
+    const mutations = h.graphqlCalls.filter((c) => /^\s*(#[^\n]*\n\s*)*mutation\b/.test(c.query));
+    expect(mutations.map((c) => opName(c.query))).toEqual(["HgTagReferralOrder"]);
+    expect(mutations[0].variables).toEqual({ id: "gid://shopify/Order/O1", tags: ["Rewards: check referral"] });
+  });
+
+  it("an order without the friend's code is not checked and pays as before", async () => {
+    const { referrer, referral } = setupReferral();
+    await processOrderEvent(order({ discountCodes: ["SALE10"], fulfillmentStatus: "fulfilled", financialStatus: "paid" }), "s");
+    expect(referral.status).toBe("completed");
+    expect(referrer.points_balance).toBe(6000);
+    expect(checks()).toHaveLength(0);
+  });
+
+  it("Shopify down at orders/create: the order is still recorded; the check runs before payment and nothing is paid until it can", async () => {
+    const { referrer, referral } = setupReferral();
+    const ok = h.graphql;
+    h.graphql = (q) => {
+      if (opName(q) === "HgReferralOrderCheck") throw new ShopifyRateLimitError();
+      return ok(q, {});
+    };
+    expect((await processOrderEvent(order({ discountCodes: ["WELCOME-AB12"] }), "s")).status).toBe("recorded");
+    expect(state()).toBeDefined();
+    // fulfilled + paid while Shopify is still refusing: purchase points are awarded, the referral job is retried
+    await expect(processOrderEvent(order({ discountCodes: ["WELCOME-AB12"], fulfillmentStatus: "fulfilled", financialStatus: "paid" }), "s")).rejects.toThrow();
+    expect(member("C1").points_balance).toBe(3000);
+    expect(referrer.points_balance).toBe(0);
+    h.graphql = ok; // the retried job
+    await processOrderEvent(order({ discountCodes: ["WELCOME-AB12"], fulfillmentStatus: "fulfilled", financialStatus: "paid" }), "s");
+    expect(referral.status).toBe("blocked");
+    expect(referrer.points_balance).toBe(0);
+  });
+
+  it("a customer who was not referred never triggers the check (no extra queries)", async () => {
+    seedMember(h.db, { shopify_customer_id: "C1" });
+    await processOrderEvent(order({ discountCodes: ["WELCOME-AB12"] }), "s");
+    expect(checks()).toHaveLength(0);
   });
 });
 

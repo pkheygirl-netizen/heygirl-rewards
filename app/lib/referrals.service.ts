@@ -1,18 +1,24 @@
 // app/lib/referrals.service.ts
 // Referral programme (rules 10 and 11).
-//   record   - at the friend's first sign-in with a stored ?ref=slug
+//   record   - at the friend's first sign-in with a stored ?ref=slug; same
+//              email/phone is blocked, similar email or same full name is held
+//   check    - the friend's order that used her free-shipping code is compared
+//              with the referrer's phone and addresses BEFORE anything is paid
 //   complete - when the friend's first order is fulfilled and paid
-//   review   - same-network referrals are held (flagged) for approve / reject
+//   review   - held (flagged) referrals wait for staff approve / reject
 //   reverse  - when the qualifying order is fully refunded or cancelled
+// No network address is compared anywhere: behind Shopify's proxy and
+// Railway's edge the app does not see the shopper's address (19 Nov 2026).
 import { db } from "../db.server";
 import type { Database } from "../database.types";
 import { notificationQueue, pointsQueue } from "./queue.server";
-import { shopifyGraphqlWithRetry } from "./shopify-graphql.server";
+import { classifyShopifyError, shopifyGraphqlWithRetry, ShopifyRateLimitError } from "./shopify-graphql.server";
 import { getAdminForShop } from "./worker-admin.server";
 import { getSettings, isEarnRuleEnabled } from "./settings.server";
 import { effectiveReferralPoints } from "./influencer.service";
 import { issueReferralFriendCode } from "./referral-bonus.service";
 import { expiresAtForTier } from "./points.service";
+import { ORDER_FLAGS, orderVerdict, REFERRAL_ORDER_TAG, signInVerdict, type AddressLike, type OrderCheckResult } from "./referral-checks.server";
 
 type ReferralRow = Database["public"]["Tables"]["referrals"]["Row"];
 type MemberRow = Database["public"]["Tables"]["members"]["Row"];
@@ -52,17 +58,6 @@ export async function shopifyOrderCount(shopifyCustomerId: string, shop?: string
   return Number.isFinite(n) ? n : 0;
 }
 
-const sameText = (a: string | null | undefined, b: string | null | undefined): boolean =>
-  !!a && !!b && a.trim().toLowerCase() === b.trim().toLowerCase();
-
-const digits = (v: string | null | undefined): string => (v ?? "").replace(/\D/g, "");
-const samePhone = (a: string | null | undefined, b: string | null | undefined): boolean => {
-  const x = digits(a);
-  const y = digits(b);
-  // Compare the last 10 digits so +92 300... and 0300... match.
-  return x.length >= 10 && y.length >= 10 && x.slice(-10) === y.slice(-10);
-};
-
 async function friendCodeText(codeId: string | null): Promise<string | undefined> {
   if (!codeId) return undefined;
   const { data } = await db.from("loyalty_codes").select("code, status").eq("id", codeId).maybeSingle();
@@ -71,13 +66,14 @@ async function friendCodeText(codeId: string | null): Promise<string | undefined
 
 /**
  * Record a referral when a signed-in friend arrives with a stored ?ref=slug.
- * The friend's address and email are taken server-side by the caller.
+ * The friend's email is taken server-side by the caller. Same email or phone
+ * as the referrer: blocked. Similar email or the same full name: held
+ * (flagged), and the friend's free-shipping code waits for staff approval.
  */
 export async function recordReferralVisit(input: {
   referralSlug: string;
   referredShopifyCustomerId: string;
   referredEmail?: string | null;
-  referredIp?: string | null;
   shop?: string | null;
 }): Promise<ReferralRecordResult> {
   const no = (status: string, reason?: string): ReferralRecordResult => ({
@@ -96,14 +92,14 @@ export async function recordReferralVisit(input: {
 
   const { data: referrer } = await db
     .from("members")
-    .select("id, email, phone, shopify_customer_id, last_seen_ip, is_blocked, opted_out, referrals_blocked")
+    .select("id, email, phone, first_name, last_name, shopify_customer_id, is_blocked, opted_out, referrals_blocked")
     .eq("referral_slug", String(input.referralSlug ?? "").trim().toLowerCase())
     .maybeSingle();
   if (!referrer) return no("invalid_slug");
 
   const { data: friend } = await db
     .from("members")
-    .select("id, email, phone, is_blocked, opted_out, referred_by_member_id")
+    .select("id, email, phone, first_name, last_name, is_blocked, opted_out, referred_by_member_id")
     .eq("shopify_customer_id", friendCustomerId)
     .maybeSingle();
   if (!friend) return no("not_a_member");
@@ -153,22 +149,10 @@ export async function recordReferralVisit(input: {
   if (orderCount > 0) return no("not_eligible", "has_orders");
 
   const friendEmail = friend.email ?? input.referredEmail ?? null;
-  const friendIp = typeof input.referredIp === "string" && input.referredIp.trim() && input.referredIp !== "unknown"
-    ? input.referredIp.trim()
-    : null;
-
-  let status: "pending" | "flagged" | "blocked" = "pending";
-  const flags: string[] = [];
-  let blockReason: string | null = null;
-  if (sameText(friendEmail, referrer.email) || samePhone(friend.phone, referrer.phone)) {
-    status = "blocked";
-    flags.push("same_contact");
-    blockReason = "Same email or phone as the referrer";
-  } else if (friendIp && referrer.last_seen_ip && friendIp === referrer.last_seen_ip) {
-    status = "flagged";
-    flags.push("same_network");
-    blockReason = "Friend signed in from the referrer's network address";
-  }
+  const { status, flags, blockReason } = signInVerdict(
+    { email: friendEmail, phone: friend.phone, first_name: friend.first_name, last_name: friend.last_name },
+    referrer,
+  );
 
   const { data: inserted, error: insertErr } = await db
     .from("referrals")
@@ -176,8 +160,7 @@ export async function recordReferralVisit(input: {
       referrer_member_id: referrer.id,
       referred_shopify_customer_id: friendCustomerId,
       referred_email: friendEmail,
-      referred_ip: friendIp,
-      referrer_ip: referrer.last_seen_ip, // the referrer's own address, not a copy of the friend's
+      // referred_ip / referrer_ip are no longer written (see the file header).
       status,
       block_reason: blockReason,
       fraud_flags: flags,
@@ -220,6 +203,235 @@ export async function recordReferralVisit(input: {
   return { ok: true, recorded: true, blocked: false, status, friendCode };
 }
 
+// ── Order-time check (the friend's order that used her free-shipping code) ──
+
+type ShippingLite = { address1?: string | null; city?: string | null; phone?: string | null } | null;
+
+const REFERRAL_ORDER_CHECK = `#graphql
+  query HgReferralOrderCheck($orderId: ID!, $customerId: ID!) {
+    order(id: $orderId) {
+      shippingAddress { address1 city phone }
+    }
+    customer(id: $customerId) {
+      defaultPhoneNumber { phoneNumber }
+      defaultAddress { address1 city phone }
+      addressesV2(first: 10) { nodes { address1 city phone } }
+      orders(first: 5, sortKey: CREATED_AT, reverse: true) { nodes { shippingAddress { address1 city phone } } }
+    }
+  }`;
+
+type OrderCheckData = {
+  order?: { shippingAddress?: ShippingLite } | null;
+  customer?: {
+    defaultPhoneNumber?: { phoneNumber?: string | null } | null;
+    defaultAddress?: ShippingLite;
+    addressesV2?: { nodes?: ShippingLite[] | null } | null;
+    orders?: { nodes?: Array<{ shippingAddress?: ShippingLite } | null> | null } | null;
+  } | null;
+};
+
+/**
+ * The friend's shipping details and the referrer's phones and addresses, read
+ * from Shopify for an in-memory comparison only (never stored or logged).
+ * Without protected customer data access Shopify returns null for the
+ * address and phone fields with an error beside them: whatever did come back
+ * is used, and a field that did not is simply missing. A throttled or failed
+ * request (5xx, network) throws so the caller can try again later.
+ */
+async function fetchOrderCheckData(
+  shopifyOrderId: string,
+  referrerCustomerId: string,
+  shop?: string | null,
+): Promise<{ data: OrderCheckData | null; note?: string }> {
+  const admin = await getAdminForShop(shop ?? undefined);
+  try {
+    const data = await shopifyGraphqlWithRetry<OrderCheckData>(admin, REFERRAL_ORDER_CHECK, {
+      orderId: `gid://shopify/Order/${shopifyOrderId}`,
+      customerId: `gid://shopify/Customer/${referrerCustomerId}`,
+    });
+    return { data };
+  } catch (err) {
+    if (err instanceof ShopifyRateLimitError) throw err;
+    const kind = classifyShopifyError(err).kind;
+    if (kind === "transient" || kind === "throttled") throw err;
+    // HTTP 200 with GraphQL errors (for example fields the app may not read):
+    // @shopify/shopify-api throws GraphqlQueryError carrying the whole answer
+    // in `body`, so the fields that were allowed are still in body.data.
+    const partial = (err as { body?: { data?: unknown } } | null)?.body?.data;
+    const note = err instanceof Error ? err.message.slice(0, 300) : "unknown error";
+    return { data: partial && typeof partial === "object" ? (partial as OrderCheckData) : null, note };
+  }
+}
+
+export { REFERRAL_ORDER_TAG };
+
+const TAG_ORDER = `#graphql
+  mutation HgTagReferralOrder($id: ID!, $tags: [String!]!) {
+    tagsAdd(id: $id, tags: $tags) {
+      node { id }
+      userErrors { field message }
+    }
+  }`;
+
+let missingScopeLogged = false;
+
+/**
+ * Add REFERRAL_ORDER_TAG to the order (Admin GraphQL tagsAdd; needs the
+ * write_orders scope). The only write the app ever makes to an order: no
+ * cancel, no edit, no other field. Never throws: a tag that could not be added
+ * is reported as "failed" and the Home alert says so.
+ */
+async function tagOrderForReview(shopifyOrderId: string, shop?: string | null): Promise<"tagged" | "failed"> {
+  try {
+    const admin = await getAdminForShop(shop ?? undefined);
+    const data = await shopifyGraphqlWithRetry<{
+      tagsAdd: { node: { id: string } | null; userErrors: Array<{ field: string[] | null; message: string }> } | null;
+    }>(admin, TAG_ORDER, { id: `gid://shopify/Order/${shopifyOrderId}`, tags: [REFERRAL_ORDER_TAG] });
+    const errors = data.tagsAdd?.userErrors ?? [];
+    if (!data.tagsAdd || errors.length > 0) {
+      console.error(`[referral-check] order ${shopifyOrderId} not tagged: ${errors.map((e) => e.message).join("; ") || "no answer"}`);
+      return "failed";
+    }
+    return "tagged";
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/write_orders|access denied|not approved|scope/i.test(msg)) {
+      // Logged once per process: every order would hit the same missing permission.
+      if (!missingScopeLogged) {
+        missingScopeLogged = true;
+        console.error(`[referral-check] orders cannot be tagged: the app needs the write_orders permission (${msg.slice(0, 200)})`);
+      }
+    } else {
+      console.error(`[referral-check] order ${shopifyOrderId} not tagged:`, msg.slice(0, 300));
+    }
+    return "failed";
+  }
+}
+
+/** Test hook. */
+export function resetTagScopeLog(): void {
+  missingScopeLogged = false;
+}
+
+export type ReferralOrderCheck =
+  | { checked: false; reason: "no_open_referral" | "no_friend_code" | "code_not_used" | "already_checked" | "referrer_not_found" }
+  | { checked: true; result: OrderCheckResult; referralId: string };
+
+const appendUnique = (list: unknown, item: string): string[] => {
+  const arr = Array.isArray(list) ? list.map(String) : [];
+  return arr.includes(item) ? arr : [...arr, item];
+};
+
+/**
+ * Rule 10, order-time check. For an order of a referred friend that USED her
+ * referral free-shipping code, compare the order's shipping phone and address
+ * with the referrer's (her phone, default and saved addresses, and the
+ * shipping details of her last 5 orders):
+ *   same phone   -> referral blocked (flag same_phone_on_order); the referrer
+ *                   gets nothing; her right to refer is NOT removed (staff can)
+ *   same address -> referral held (flag same_address_on_order) for staff
+ *   either way the order gets the tag "Rewards: check referral" in Shopify
+ *   (tagsAdd; the only change ever made to an order) and a Home alert is
+ *   raised (order_check, alert_resolved_at null).
+ * Runs once per order (order_checked_order_id), so webhook replays repeat
+ * nothing, the tag included.
+ */
+export async function checkReferralOrder(input: {
+  shopifyOrderId: string;
+  shopifyCustomerId: string;
+  discountCodes: string[];
+  shop?: string | null;
+}): Promise<ReferralOrderCheck> {
+  const orderId = String(input.shopifyOrderId);
+  const { data: open, error } = await db
+    .from("referrals")
+    .select("id, referrer_member_id, status, friend_code_id, fraud_flags, block_reason, order_checked_order_id")
+    .eq("referred_shopify_customer_id", String(input.shopifyCustomerId))
+    .in("status", ["pending", "flagged"])
+    .limit(1);
+  if (error) throw new Error(`referral lookup failed: ${error.message}`);
+  const referral = open?.[0];
+  if (!referral) return { checked: false, reason: "no_open_referral" };
+  if (referral.order_checked_order_id === orderId) return { checked: false, reason: "already_checked" };
+  if (!referral.friend_code_id) return { checked: false, reason: "no_friend_code" };
+
+  const { data: code, error: codeErr } = await db
+    .from("loyalty_codes")
+    .select("code")
+    .eq("id", referral.friend_code_id)
+    .maybeSingle();
+  if (codeErr) throw new Error(`friend code lookup failed: ${codeErr.message}`);
+  const friendCode = code?.code ? String(code.code).toUpperCase() : null;
+  const used = !!friendCode && input.discountCodes.some((c) => String(c).trim().toUpperCase() === friendCode);
+  if (!used) return { checked: false, reason: "code_not_used" };
+
+  const { data: referrer, error: refErr } = await db
+    .from("members")
+    .select("id, phone, shopify_customer_id")
+    .eq("id", referral.referrer_member_id)
+    .maybeSingle();
+  if (refErr) throw new Error(`referrer lookup failed: ${refErr.message}`);
+  if (!referrer) return { checked: false, reason: "referrer_not_found" };
+
+  const fetched = referrer.shopify_customer_id
+    ? await fetchOrderCheckData(orderId, String(referrer.shopify_customer_id), input.shop)
+    : { data: null, note: "referrer has no Shopify customer id" };
+  const d = fetched.data;
+  const ship = d?.order?.shippingAddress ?? null;
+  const c = d?.customer ?? null;
+  const theirAddresses: Array<ShippingLite> = [
+    c?.defaultAddress ?? null,
+    ...(c?.addressesV2?.nodes ?? []),
+    ...(c?.orders?.nodes ?? []).map((o) => o?.shippingAddress ?? null),
+  ];
+  const result = orderVerdict(
+    ship ? { phone: ship.phone, address: ship as AddressLike } : null,
+    {
+      phones: [referrer.phone, c?.defaultPhoneNumber?.phoneNumber, ...theirAddresses.map((a) => a?.phone)],
+      addresses: theirAddresses,
+    },
+  );
+
+  // A match tags the order for staff BEFORE the referral row is written: if the
+  // process stops in between, the check (and the tag) simply runs again.
+  const orderTag = result === "same_phone" || result === "same_address" ? await tagOrderForReview(orderId, input.shop) : null;
+
+  const now = new Date().toISOString();
+  const base = { order_check: result, order_checked_order_id: orderId, order_checked_at: now, ...(orderTag ? { order_tag: orderTag } : {}) };
+  let patch: Database["public"]["Tables"]["referrals"]["Update"] = base;
+  if (result === "same_phone") {
+    patch = {
+      ...base,
+      status: "blocked",
+      fraud_flags: appendUnique(referral.fraud_flags, "same_phone_on_order"),
+      block_reason: ORDER_FLAGS.same_phone_on_order,
+      alert_resolved_at: null,
+    };
+  } else if (result === "same_address") {
+    const earlier = referral.status === "flagged" && referral.block_reason ? `${referral.block_reason}; ` : "";
+    patch = {
+      ...base,
+      status: "flagged",
+      fraud_flags: appendUnique(referral.fraud_flags, "same_address_on_order"),
+      block_reason: `${earlier}${ORDER_FLAGS.same_address_on_order}`,
+      alert_resolved_at: null,
+    };
+  } else if (result === "not_checked") {
+    // Logged once: the order id is recorded, so later events for it skip the check.
+    console.warn(
+      `[referral-check] order ${orderId}, referral ${referral.id}: delivery details not available, not checked` +
+        (fetched.note ? ` (${fetched.note})` : ""),
+    );
+  }
+  const { error: updErr } = await db
+    .from("referrals")
+    .update(patch)
+    .eq("id", referral.id)
+    .in("status", ["pending", "flagged"]);
+  if (updErr) throw new Error(`referral check update failed: ${updErr.message}`);
+  return { checked: true, result, referralId: String(referral.id) };
+}
+
 // ── Completion ────────────────────────────────────────────────────────────
 
 type OrderLite = {
@@ -233,6 +445,7 @@ type OrderLite = {
   refund_basis_at_award_pkr: number;
   points_awarded_amount: number;
   points_reversed_amount: number;
+  discount_codes: string[] | null;
 };
 
 /**
@@ -243,7 +456,7 @@ type OrderLite = {
 export async function firstQualifyingOrder(shopifyCustomerId: string): Promise<OrderLite | null> {
   const { data, error } = await db
     .from("order_webhook_state")
-    .select("shopify_order_id, points_awarded, cancelled_at, placed_at, created_at, earning_basis_pkr, refunded_basis_pkr, refund_basis_at_award_pkr, points_awarded_amount, points_reversed_amount")
+    .select("shopify_order_id, points_awarded, cancelled_at, placed_at, created_at, earning_basis_pkr, refunded_basis_pkr, refund_basis_at_award_pkr, points_awarded_amount, points_reversed_amount, discount_codes")
     .eq("shopify_customer_id", shopifyCustomerId)
     .is("cancelled_at", null)
     .order("created_at", { ascending: true })
@@ -319,15 +532,7 @@ async function payReferral(
   return { paid: awarded, points, reason: awarded ? undefined : "already_paid" };
 }
 
-/**
- * Pay the referrer if this customer was referred and her first order is now
- * fulfilled and paid. Safe to call after every award and every cancellation.
- * A flagged referral is not paid; it remembers the order and waits for review.
- */
-export async function completeReferralForCustomer(
-  shopifyCustomerId: string,
-): Promise<{ paid: boolean; points?: number; reason?: string; orderId?: string }> {
-  const customerId = String(shopifyCustomerId);
+async function openReferralFor(customerId: string): Promise<ReferralRow | undefined> {
   const { data: open, error } = await db
     .from("referrals")
     .select("*")
@@ -335,13 +540,50 @@ export async function completeReferralForCustomer(
     .in("status", ["pending", "flagged"])
     .limit(1);
   if (error) throw new Error(`referral lookup failed: ${error.message}`);
-  const referral = open?.[0] as ReferralRow | undefined;
-  if (!referral) return { paid: false, reason: "no_open_referral" };
+  return open?.[0] as ReferralRow | undefined;
+}
+
+/**
+ * Pay the referrer if this customer was referred and her first order is now
+ * fulfilled and paid. Safe to call after every award and every cancellation.
+ * A flagged referral is not paid; it remembers the order and waits for review.
+ * Before paying, the order-time check runs for the qualifying order if it has
+ * not run yet (orders/create missed, or Shopify was down then); if Shopify
+ * cannot answer now, this throws and nothing is paid (the job is retried).
+ */
+export async function completeReferralForCustomer(
+  shopifyCustomerId: string,
+  shop?: string | null,
+): Promise<{ paid: boolean; points?: number; reason?: string; orderId?: string }> {
+  const customerId = String(shopifyCustomerId);
+  const found = await openReferralFor(customerId);
+  if (!found) return { paid: false, reason: "no_open_referral" };
+  let referral: ReferralRow = found;
 
   const order = await firstQualifyingOrder(customerId);
   if (!order) return { paid: false, reason: "no_order" };
   if (!order.points_awarded) return { paid: false, reason: "first_order_not_delivered_and_paid" };
   if (fullyRefunded(order)) return { paid: false, reason: "first_order_refunded" };
+
+  if (referral.order_checked_order_id !== order.shopify_order_id && (order.discount_codes ?? []).length > 0) {
+    try {
+      const check = await checkReferralOrder({
+        shopifyOrderId: order.shopify_order_id,
+        shopifyCustomerId: customerId,
+        discountCodes: order.discount_codes ?? [],
+        shop,
+      });
+      if (check.checked) {
+        const after = await openReferralFor(customerId);
+        if (!after) return { paid: false, reason: "blocked_by_order_check", orderId: order.shopify_order_id };
+        referral = after;
+      }
+    } catch (err) {
+      // Never pay a referral whose order could not be checked yet.
+      if (referral.status === "pending") throw err;
+      console.error("[completeReferralForCustomer] order check not done yet:", err instanceof Error ? err.message : err);
+    }
+  }
 
   if (referral.status === "flagged") {
     if (referral.shopify_order_id !== order.shopify_order_id) {
@@ -370,6 +612,7 @@ export async function approveReferral(
       status: "pending",
       reviewed_at: new Date().toISOString(),
       reviewed_note: `approved by ${actor || "admin"}`,
+      alert_resolved_at: new Date().toISOString(), // staff have decided: the Home alert is done
     })
     .eq("id", referralId)
     .eq("status", "flagged")
@@ -389,7 +632,7 @@ export async function approveReferral(
   }
 
   if (!referral.referred_shopify_customer_id) return { ok: true, paid: false };
-  const result = await completeReferralForCustomer(referral.referred_shopify_customer_id);
+  const result = await completeReferralForCustomer(referral.referred_shopify_customer_id, shop || null);
   return { ok: true, paid: result.paid, reason: result.paid ? undefined : result.reason };
 }
 
@@ -400,6 +643,7 @@ export async function rejectReferral(referralId: string, actor: string, note?: s
       status: "rejected",
       reviewed_at: new Date().toISOString(),
       reviewed_note: `rejected by ${actor || "admin"}${note && note.trim() ? `: ${note.trim().slice(0, 500)}` : ""}`,
+      alert_resolved_at: new Date().toISOString(),
     })
     .eq("id", referralId)
     .in("status", ["flagged", "pending"])

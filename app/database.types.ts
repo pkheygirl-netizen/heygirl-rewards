@@ -54,6 +54,8 @@ export type Database = {
           social_url_facebook: string | null
           social_url_instagram: string | null
           social_url_youtube: string | null
+          staff_alert_email: string | null
+          staff_digest_sent_on: string
           tagline: string
           terms_and_conditions: string | null
           tier_diamond_threshold_pkr: number
@@ -107,6 +109,8 @@ export type Database = {
           social_url_facebook?: string | null
           social_url_instagram?: string | null
           social_url_youtube?: string | null
+          staff_alert_email?: string | null
+          staff_digest_sent_on?: string
           tagline?: string
           terms_and_conditions?: string | null
           tier_diamond_threshold_pkr?: number
@@ -160,6 +164,8 @@ export type Database = {
           social_url_facebook?: string | null
           social_url_instagram?: string | null
           social_url_youtube?: string | null
+          staff_alert_email?: string | null
+          staff_digest_sent_on?: string
           tagline?: string
           terms_and_conditions?: string | null
           tier_diamond_threshold_pkr?: number
@@ -751,6 +757,7 @@ export type Database = {
       }
       referrals: {
         Row: {
+          alert_resolved_at: string | null
           block_reason: string | null
           completed_at: string | null
           created_at: string
@@ -758,6 +765,10 @@ export type Database = {
           fraud_flags: string[]
           friend_code_id: string | null
           id: string
+          order_check: string | null
+          order_checked_at: string | null
+          order_checked_order_id: string | null
+          order_tag: string | null
           points_awarded: boolean
           referred_email: string | null
           referred_ip: string | null
@@ -772,6 +783,7 @@ export type Database = {
           status: string
         }
         Insert: {
+          alert_resolved_at?: string | null
           block_reason?: string | null
           completed_at?: string | null
           created_at?: string
@@ -779,6 +791,10 @@ export type Database = {
           fraud_flags?: string[]
           friend_code_id?: string | null
           id?: string
+          order_check?: string | null
+          order_checked_at?: string | null
+          order_checked_order_id?: string | null
+          order_tag?: string | null
           points_awarded?: boolean
           referred_email?: string | null
           referred_ip?: string | null
@@ -793,6 +809,7 @@ export type Database = {
           status?: string
         }
         Update: {
+          alert_resolved_at?: string | null
           block_reason?: string | null
           completed_at?: string | null
           created_at?: string
@@ -800,6 +817,10 @@ export type Database = {
           fraud_flags?: string[]
           friend_code_id?: string | null
           id?: string
+          order_check?: string | null
+          order_checked_at?: string | null
+          order_checked_order_id?: string | null
+          order_tag?: string | null
           points_awarded?: boolean
           referred_email?: string | null
           referred_ip?: string | null

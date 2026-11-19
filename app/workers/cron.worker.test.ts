@@ -33,7 +33,7 @@ describe("schedules", () => {
     await registerCronJobs();
     const jobs = h.cron.jobs;
     expect(jobs.map((j) => j.name).sort()).toEqual([
-      "cron_birthday", "cron_expiry", "cron_expiry_warning", "cron_heartbeat", "cron_pending_codes", "cron_social_sweep", "cron_storefront_config",
+      "cron_birthday", "cron_expiry", "cron_expiry_warning", "cron_heartbeat", "cron_pending_codes", "cron_social_sweep", "cron_staff_digest", "cron_storefront_config",
     ]);
     for (const j of jobs) expect((j.opts as { repeat: { tz: string } }).repeat.tz).toBe("Asia/Karachi");
     const pattern = (n: string) => (jobs.find((j) => j.name === n)!.opts as { repeat: { pattern: string } }).repeat.pattern;
@@ -41,6 +41,12 @@ describe("schedules", () => {
     expect(pattern("cron_birthday")).toBe("0 9 * * *"); // M2: every day, not only the 1st
     expect(pattern("cron_pending_codes")).toBe("*/10 * * * *"); // H3
     expect(pattern("cron_storefront_config")).toBe("5 * * * *");
+    expect(pattern("cron_staff_digest")).toBe("0 9 * * *"); // 09:00 Pakistan time
+  });
+
+  it("cron_staff_digest runs the staff morning email (no address set: nothing sent)", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    expect(await runCronJob("cron_staff_digest")).toEqual({ sent: false, reason: "no_address" });
   });
 
   it("review claims are never released automatically: the old 15-minute schedule is removed and a leftover run pays nothing", async () => {

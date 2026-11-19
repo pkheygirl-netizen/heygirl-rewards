@@ -1,7 +1,7 @@
 // app/lib/proxy-auth.server.test.ts
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import crypto from "node:crypto";
-import { extractProxyCustomerId, proxySignatureMessage } from "./proxy-auth.server";
+import { clientIp, extractProxyCustomerId, proxySignatureMessage } from "./proxy-auth.server";
 
 function makeSignedUrl(params: Record<string, string>, secret: string): URL {
   const sp = new URLSearchParams(params);
@@ -81,5 +81,25 @@ describe("item 7: signature message is sorted as Shopify documents", () => {
     expect(wrong).not.toBe(proxySignatureMessage(sp));
     const bad = new URL(`https://app.example/proxy/customer?${sp}&signature=${sign(wrong)}`);
     expect(() => extractProxyCustomerId(bad, secret)).toThrow("invalid_proxy_signature");
+  });
+});
+
+describe("clientIp (rate-limit key only; not the shopper's address)", () => {
+  afterEach(() => {
+    delete process.env.DEBUG_PROXY_IP;
+    vi.restoreAllMocks();
+  });
+
+  it("returns the first forwarded entry, then X-Real-IP, else null", () => {
+    expect(clientIp(new Request("https://x/", { headers: { "x-forwarded-for": "104.23.204.9, 169.150.224.1" } }))).toBe("104.23.204.9");
+    expect(clientIp(new Request("https://x/", { headers: { "x-real-ip": "10.0.0.1" } }))).toBe("10.0.0.1");
+    expect(clientIp(new Request("https://x/"))).toBeNull();
+  });
+
+  it("the temporary header logging is gone: nothing is logged even with DEBUG_PROXY_IP=1", () => {
+    process.env.DEBUG_PROXY_IP = "1";
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    clientIp(new Request("https://x/", { headers: { "x-forwarded-for": "104.23.204.9", "cf-connecting-ip": "1.2.3.4" } }));
+    expect(log).not.toHaveBeenCalled();
   });
 });

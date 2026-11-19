@@ -338,7 +338,7 @@ declare const __HG_LINE_CSS__: string;
       if (ss.getItem("hg_n5")) return;
       ss.setItem("hg_n5", "1");
     } catch { return; }
-    toast(`Almost ${TIER_NAME[p.next]}`, `Spend ${rs(p.remaining)} more to reach ${TIER_NAME[p.next]}.`, { label: "View tiers", screen: "tiers" });
+    toast(`Almost ${TIER_NAME[p.next]}`, `Spend ${rs(p.remaining)} more to reach ${TIER_NAME[p.next]}.`, { label: "See VIP levels", screen: "tiers" });
   }
 
   // ── Referral: remember ?ref= for guests, record it once signed in ──────────

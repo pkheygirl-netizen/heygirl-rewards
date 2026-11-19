@@ -4,6 +4,21 @@ Purpose: everything a capable model needs to carry this build to launch with a t
 
 Section 12 is the live status. Update it whenever work lands.
 
+## 0. Start here when resuming (updated 19 Nov 2026)
+
+- **Repo:** `pkheygirl-netizen/heygirl-rewards`, branch `v3-rebuild` (Railway web and worker auto-deploy pushes to this branch; never push to `main`). Last pushed commit `ea2dd6c`. The working tree holds two finished but **uncommitted** rounds: the v6 panel layout and the new referral rules (migration 016, order tag, staff morning email). If a new session starts in a fresh container, these changes exist only if they were committed; check `git log` first.
+- **Where we are:** dev-store acceptance testing (section 10). Passed 1–7. Test 8 (referral) found that the "same network" check never worked, so it was replaced (19 Nov). Next: tests 8 (re-run), 9–16.
+- **Next steps, in order:**
+  1. Panel change agreed 19 Nov: the "Other VIP levels" section at the bottom of the Rewards tab shows **every level except her own**, in level order (Silver member → Gold, Diamond; Diamond member → Silver, Gold), so she can compare where she stands. (v6 currently shows only the levels above hers.)
+  2. Independent UI specialist review of the v6 panel (owner asked for one, to confirm it is good UI and not only neat).
+  3. Independent code review of the uncommitted work (v6 + referral round + 016). Fix findings, then commit.
+  4. Owner applies `7 - 016_referral_checks.sql` in the Supabase SQL editor → lead pushes → owner runs `Update - commands to paste.txt` → owner opens the app in the dev store admin and approves the new `write_orders` permission. The owner's `shopify.app.toml` (in BOTH `D:\Heygirlpk Rewards\Dev setup` and the clone `D:\Heygirlpk Rewards\heygirl-rewards-v3`) must first be replaced with the version that includes `write_orders`.
+  5. Re-run test 8 with the new rules, then tests 9–16.
+- **Owner's computer:** `D:\Heygirlpk Rewards\Dev setup` (numbered SQL files 1–6 applied; 7 = 016 to come; `shopify.app.toml` for the dev app; `Update - commands to paste.txt` = one line `cd "D:\Heygirlpk Rewards\heygirl-rewards-v3"; git pull; npx shopify app deploy`). Clone used for deploy: `D:\Heygirlpk Rewards\heygirl-rewards-v3`.
+- **Dev store:** `heygirl-dev.myshopify.com`. Dev database: Supabase project `heygirl-rewards-dev` (Free plan, no backup, test data only). Railway `STOREFRONT_URL` = the dev store address while testing.
+- **Confidence (owner's 95 target):** last reviewer overall 71 (engine 81, storefront 73, admin 77, import 66). Expected: about 80–85 after tests 2–7 are reflected in a fresh review, about 90 after tests 8–16, about 95 after a Smile import rehearsal and live checks.
+- **Claude's memory:** not available in these sessions (memory is off in the owner's settings, and project memory is not served). This playbook, `docs/v3-contract.md` and the project copy `claude/HeyGirl_Rewards_v3_Playbook.md` are the only record. Keep them current.
+
 ## 1. What is being built and for whom
 
 - **Store:** heygirl.pk, beauty and skincare, Pakistan. Shoppers are women 18–45, mostly on phones, many with WhatsApp and no email.
@@ -35,7 +50,7 @@ Section 12 is the live status. Update it whenever work lands.
 - Whether Shopify frees a single-use code when its order is cancelled.
 - How the bank-transfer discount app (no code, embed) combines with a reward code.
 - `logged_in_customer_id` on app-proxy requests with new customer accounts.
-- Whether `X-Forwarded-For` through the proxy is the shopper's address.
+- ~~Whether `X-Forwarded-For` through the proxy is the shopper's address.~~ Answered 19 Nov 2026 on the dev store: it is NOT (Cloudflare egress `104.23.204.x`, changing every request, then `169.150.224.x`). The app no longer uses it except as a guest rate-limit key.
 - The exact theme-editor deep link for enabling the embed.
 - Whether the existing app's distribution type allows install on heygirl.pk (owner must send the Dev Dashboard Distribution card).
 - Customer-account extensions and admin blocks on Basic for a custom app.
@@ -49,9 +64,9 @@ All are encoded as rules 1–19 in `docs/v3-contract.md` section 1. The ones mos
 - Balance never goes negative. Refunds and cancellations always reverse, capped per order.
 - All Silver points expire after 365 days; deductions use oldest points first.
 - Tiers are never taken away.
-- Same-network referrals are **held for approval**, not rejected.
+- Referral fraud (19 Nov 2026, replaces "same network"): same email/phone at sign-in → blocked; similar email or same full name → **held for approval**; the friend's order that used her free-shipping code and ships to the referrer's phone → blocked (option A), to her address → held; the order is tagged "Rewards: check referral" and Home shows an alert. See contract rule 10.
 - Influencers get a **multiplier** of the standard referral reward, optional dates, pause, and their own Shopify discount code whose orders are attributed to them.
-- Review claims: one per delivered and paid order, released after 72 hours. The storefront never says it is unverified.
+- Review claims: one per delivered and paid order; points are added only when staff press Approve (changed 18 Nov 2026; the old 72-hour automatic release is removed). The storefront shows "Pending approval".
 - Smile import: match by email only; zero-point records import at zero; imported points expire one year from import. The Smile export has no phone column and writes points with thousands separators.
 - Emails are sent by the app (SMTP). WhatsApp is built behind a switch and stays off until the store has a WhatsApp Business API account.
 
@@ -64,6 +79,21 @@ Owner answers, 17 Nov 2026:
 - "Ways to earn" icons (item 4 of `coding changes.txt`): no specific list; owner wants them clear and easy to tap, in the style of Smile's panel.
 - Owner states the app will be owned by heygirl.pk's own organization and installed only on that store (so exempt from the IP allowlist rule). NOT verified: the Dev Dashboard screenshot has not been seen.
 - Copying `shopify.app.example.toml` into the real `shopify.app.toml` and making the GitHub repo private: done together with the owner after the build is complete.
+
+Owner decisions, 17–19 Nov 2026 (storefront panel and operations):
+- **Program switch (rule 20, final):** switching it off pauses **redeeming only**; earning continues (used during flat sales so codes are not stacked on sale prices).
+- **Earning basis:** order total minus shipping, tax and gift cards (points on the amount actually paid).
+- **Panel look:** Dark is the default panel style; everything should stay closest to "Option A": black pill launcher with a thin gold border and gold line gift, visitor label "Shop & Earn" (editable on the On-site page); guest nudges in black; gold balance card in Dark; History shows order numbers; the balance is fetched fresh every time the panel opens.
+- **Icons:** camera for "Post your order review & tag @heygirl.pk", generic heart for Instagram (no brand logos), banknotes for redeem rows. Diamond line: "Bonus points on orders during your birthday month".
+- **Reviews:** 3,000 points, issued only when staff press Approve (no automatic release).
+- **Reward table:** social follows 500 each; 50,000 → Rs.2,500 added back; keep Rs.5,000 (100,000) and Rs.10,000 (180,000) with a per-reward Hide switch; no minimum order amounts ("doesn't fit a premium brand").
+- **Old Smile points:** not wiped on a fixed date; they keep the built-in Silver expiry from the import date.
+- **Wording:** "level" instead of "tier" everywhere customers see it ("level is perfect").
+- **Panel tabs (v6):** Rewards · Refer & Earn · Shop & Earn · History. No VIP tab.
+- **Rewards tab order (v6):** gold balance card → Your progress → her current level card → "View all VIP perks ›" (scrolls to the bottom) → Your rewards → Redeem points → pending / expiring lines → Refer & Earn card → "Other VIP levels" (every level except hers, in level order).
+- **Refer & Earn tab:** "Share on WhatsApp" is the main gold button with a chat icon; Copy link is the outlined second button.
+- **Referral fraud:** see rule 10; a friend's order shipped to the referrer's phone = self-referral, no points (option A). Staff are told by the order tag "Rewards: check referral" plus a morning email only when something is waiting (email set up on the live store).
+- **Previews first:** the owner wants a screenshot preview before any visual change is published.
 
 Still open with the owner: cutover date (to be set together after the build); Dev Dashboard screenshot showing which organization owns the app and whether it has a Distribution or an Installs card.
 
@@ -120,6 +150,18 @@ Practical notes from running this:
 - One agent staged a deletion with `git rm --cached`. Tell agents not to touch the index at all.
 - Reviewers must be fresh agents that did not write the code, told to disprove it, and given file:line evidence requirements.
 
+Lessons from the dev-store rounds (keep applying them):
+
+- **The owner is not technical.** Give numbered steps, say exactly where to click, and give commands as ONE line to paste. A two-line instruction was once run in the wrong order (`git pull` before `cd`), so an old version was deployed.
+- **Order of a release:** new migration file into the Dev setup folder → owner applies it → lead pushes → owner runs the update line → owner approves any new permission. Never push code that reads columns the database does not have yet.
+- **Verify on the real theme.** Dawn's `base.css` overrode panel heading colours, so the Dark panel had invisible titles that the preview did not show. The preview server now loads Dawn's base.css; screenshot both Light and Dark, Silver/Gold/Diamond.
+- **Run `npm run build`** as part of verification, not only `tsc` and tests (a route file exporting a helper broke the build).
+- **Never claim a result you have not seen.** Once I told the owner Test 1 made zero app requests when an old v2 script tag still did; corrected openly. Check the network tab or logs before saying so.
+- **Do not trust request IPs through the app proxy** on Railway: they are Cloudflare addresses (see section 2).
+- **Saved vs typed:** the owner can type rows and forget to save; the editor now warns, but ask "did you press Save?" when something "doesn't show".
+- **Agents** hit usage limits mid-task: resume them with a message; ask them to write files early. Two agents editing the same tree must have separate file ownership; `npm run build` regenerates the widget bundles from whatever sources are on disk.
+- **Privacy rules in force:** never print secrets; never change the live store (read-only queries only); never print Smile CSV rows (counts only); never put database dumps on GitHub; no customer addresses or phones in alerts or referral rows; no brand logos drawn.
+
 ## 7. Deliverables by stream
 
 **A engine**
@@ -169,7 +211,7 @@ Each returns: findings with file:line and a concrete failure scenario, severity,
 
 ## 10. Dev-store acceptance test (needed before any claim above 90)
 
-Deploy the branch to the dev store, in this order: (a) back up `heygirl-rewards-dev`; (b) confirm Railway `SUPABASE_SERVICE_KEY` is the service-role key (done: `sb_secret_`); (c) apply migrations 010, 011, 012, 013, 014, 015 in order BEFORE the new code starts (010 drops old function signatures; 014 adds `panel_theme` and 015 adds `launcher_label`, which the On-site save needs); (d) set env (`STOREFRONT_URL` must be the address of the store being tested — the dev store's address while testing on the dev store, `https://www.heygirl.pk` only for live); (e) deploy the branch on Railway (web and worker); (f) copy the example toml changes into `shopify.app.toml`, `shopify app deploy`; (g) enable the embed and blocks in the theme editor; (h) make one admin save (e.g. On-site) so the storefront config is republished with `redeemPaused` and `panelTheme`. Then:
+Deploy the branch to the dev store, in this order: (a) back up `heygirl-rewards-dev`; (b) confirm Railway `SUPABASE_SERVICE_KEY` is the service-role key (done: `sb_secret_`); (c) apply migrations 010, 011, 012, 013, 014, 015, 016 in order BEFORE the new code starts (010 drops old function signatures; 014 adds `panel_theme` and 015 adds `launcher_label`, which the On-site save needs; 016 adds the referral-check columns Home reads and the staff email settings); (d) set env (`STOREFRONT_URL` must be the address of the store being tested — the dev store's address while testing on the dev store, `https://www.heygirl.pk` only for live); (e) deploy the branch on Railway (web and worker); (f) copy the example toml changes into `shopify.app.toml`, `shopify app deploy`; (g) enable the embed and blocks in the theme editor; (h) make one admin save (e.g. On-site) so the storefront config is republished with `redeemPaused` and `panelTheme`. Then:
 
 1. Guest: launcher shows; network tab shows no request to `/apps/loyalty`.
 2. Sign in as a new customer: member created, +welcome bonus once; reload does not add again.
@@ -178,7 +220,7 @@ Deploy the branch to the dev store, in this order: (a) back up `heygirl-rewards-
 5. Redeem: code created in Shopify, locked to the customer, applies from the drawer link; second redeem with insufficient points is refused.
 6. Refund part of a delivered order: proportional reversal. Cancel it: remainder reversed, never below zero, no double reversal.
 7. Cancel an unfulfilled order that used a reward code: redeemed points returned.
-8. Referral: friend signs in from a link and gets the free-shipping code; referrer paid only after the friend's first order is fulfilled and paid; same network → held; approve → paid.
+8. Referral: friend signs in from a link and gets the free-shipping code; referrer paid only after the friend's first order is fulfilled and paid. Fraud rules (contract rule 10): friend with the referrer's email written differently (dots/+tag/googlemail) → blocked; similar email or same full name → held, no code until Approve; friend's order with her code shipped to the referrer's phone → blocked, no points, order tagged "Rewards: check referral", Home alert; shipped to the referrer's address (other phone) → held + tag + alert; Approve → paid; "Block this referrer" from the alert. Check the referral shows "not checked" if Shopify gives no shipping details. Staff morning email: set a staff address in Settings, leave something waiting, check one email arrives at 09:00 Pakistan time (and none the next day if nothing is waiting).
 9. Influencer: set 2×; create her code; a new customer orders with it → order attributed, she earns after delivery and payment.
 10. Birthday: set once from the storefront; second attempt refused; run the birthday job → one code; rerun → no second code.
 11. Review claim: refused with no delivered order; accepted after one and shown as "Pending approval"; nothing is added on its own (wait past the old 72 hours or check the worker log: no `cron_review_release` run); Approve on Home adds the points once and sends the email; a second Approve is refused; Reject on another claim adds nothing.
@@ -261,3 +303,9 @@ Deploy the branch to the dev store, in this order: (a) back up `heygirl-rewards-
 - Known Low items from the sixth pass, not fixed: an approved review claim can be left unpaid if the process dies between approval and award, or paid-but-pending if the award errors after committing (fix: one SQL function, or a "Pay now" list); unsaved-rewards warning misses in-app navigation (use App Bridge save bar); script-tag GraphQL shapes unverified for 2026-10 (fails safe); the old script tag on the dev store is answered with an empty cached script but not removed (needs temporary script-tag scopes).
 - Update procedure for the owner: `D:\Heygirlpk Rewards\Dev setup\Update - commands to paste.txt` (git pull, then `npx shopify app deploy`). Any new migration is placed in the Dev setup folder, numbered, and applied by the owner in the Supabase SQL editor right before the lead pushes.
 - 2026-11-18 (dev store, acceptance test progress): PASSED 1 (guest, new code; leftover v2 script answered empty), 2 (welcome bonus once, shown at first open after fix), 3 (COD: pending, then awarded on fulfilled+paid; basis matched subtotal), 4 and 5 (admin adjustment, redeem Rs.250 code locked to customer, used at checkout, points on amount paid after discount: 775), 6 (partial refund reversed proportionally; marked passed by the owner; the refunded amount was not reported to the lead, and the "cancel after partial refund" step was not run), 7 (cancel unfulfilled order with a reward code: 3,000 points returned). Remaining: 8-16. Commit 68a5f7c deployed to Railway (order numbers in History, gold Dark balance card, fresh balance on panel open, stale-answer guard; seventh pass: no High/Medium).
+- 2026-11-19: **Referral fraud rules replaced (not committed; engine + admin).** Diagnosis on the dev store: `/proxy` requests carry a Cloudflare egress address in `X-Forwarded-For`, so the "same network" rule caught nobody and could hold unrelated shoppers. Removed: the IP comparison, every write of `last_seen_ip`/`referred_ip`/`referrer_ip` (columns kept; GDPR redact still clears them), the temporary `DEBUG_PROXY_IP` logging (`clientIp` is now only the guest rate-limit key). New (contract rule 10): sign-in block on normalised same email or same phone; sign-in hold on similar email or same full name; order-time check of the friend's order that used her free-shipping code against the referrer's phone, saved addresses and last 5 orders (same phone → blocked, option A; address → held), run before the referrer can be paid and once per order; the matched order is tagged "Rewards: check referral" (`tagsAdd`); Home "Needs your attention" alert with links to the order and the referral, "Block this referrer" and "Dismiss"; plain-word reasons on the Referrals page; Block/Allow referrals on the customer profile. Staff morning email (`cron_staff_digest`, 09:00 Asia/Karachi, heartbeat `cron:staff_digest`) to a new optional Settings address, only when something is waiting, at most once a day. Migration `016_referral_checks.sql` (safe to apply twice; Postgres harness 174/174 on 18.6 with 016 applied three times on a populated database; 011 SQL test passes).
+  - **Owner actions before testing:** (1) apply `016_referral_checks.sql` in the Supabase SQL editor (dev setup folder file `7 - 016_referral_checks.sql`) BEFORE the new code starts (the admin Home reads the new columns); (2) the scopes now include `write_orders` (used only to add the tag): `shopify app deploy` with the updated dev `shopify.app.toml`, then open the app in Shopify admin and approve the new permission; until then orders are not tagged and the alert says so; (3) Protected customer data: the order-time check reads shipping and saved addresses and phone numbers (Level 2 fields). shopify.dev ("Work with protected customer data") says Level 1 and Level 2 are "Always available" for custom apps without review, and that apps installed only on development stores can use the data after saving the request. If a referral shows "not checked" on the dev store, request it in the Dev Dashboard: Apps → the app → Settings → Access requests → "Protected customer data" → Manage → select "Customer data" and give reasons → select the fields **Name, Email, Phone, Address** with reasons → Apply reasons → complete "Data protection details" → Save. NOT confirmed which of these screens a custom-distribution app on heygirl.pk shows; (4) optional: set the staff alert email on the Settings page.
+  - Not confirmed: that a live `tagsAdd` with `write_orders` keeps the order's other tags (the docs only say "Adds tags to a resource") and that adding the same tag twice is harmless (the app tags each order once); the exact Shopify error text for a missing scope (matched loosely: "write_orders", "access denied", "not approved", "scope"); the staff-email link `https://<shop>/admin/apps/<client id>` (opens the app from admin; not found on shopify.dev); `customer.orders` returns only the last 60 days without `read_all_orders`.
+- 2026-11-19: **Test 8 (referral) on the dev store:** link, friend's free-shipping code (used at checkout) and the referrer's +6,000 after the friend's order all worked, but the hold did NOT trigger although the owner used the same laptop and Chrome (one window incognito) within 5 minutes; the two requests showed different Cloudflare addresses (`172.69.x`, `104.23.x`). Led to the new rules above. Owner note: History does not list the friend's free-shipping coupon being used (not required).
+- 2026-11-19: **v6 panel built (not committed):** tabs Rewards · Refer & Earn · Shop & Earn · History; Rewards tab order as in section 3; "level" wording; "View all VIP perks ›" scroll; WhatsApp main gold button with chat icon; tab padding 8 px. Bundles core 5.56 KB, hub 13.46 KB gzip. Full suite with the referral round: tsc clean, 55 files / 1,075 tests pass, build OK, harness 174/174. Owner reviewed the screenshots: "looks neat and beautiful"; asked for (a) "Other VIP levels" to show every level except hers, (b) an independent UI specialist review before release.
+- Open small items (not urgent): History could show "free-shipping code used" for the friend; "Used rewards" list (wish list); known Lows from passes 6–7 (approved-but-unpaid review claim edge, App Bridge save bar, focus after repaint, armed Confirm reset); remove the leftover v2 script tag on the dev store (optional).

@@ -25,6 +25,8 @@ class El {
   tabIndex = 0;
   scrollTop = 0;
   offsetWidth = 0;
+  /** Distance from the top of the page, for getBoundingClientRect(). */
+  rectTop = 0;
   style: Record<string, string> = {};
   htmlWrites = 0;
   private html = "";
@@ -50,6 +52,9 @@ class El {
   addEventListener(t: string, fn: Listener) { (this.listeners[t] = this.listeners[t] || []).push(fn); }
   appendChild(n: El) { n.parentNode = this; this.children.push(n); return n; }
   focus() { activeElement = this; }
+  scrollCalls: Array<{ top: number; behavior?: string }> = [];
+  scrollTo(o: { top: number; behavior?: string }) { this.scrollCalls.push(o); this.scrollTop = o.top; }
+  getBoundingClientRect() { return { top: this.rectTop - (this.parentNode ? this.parentNode.scrollTop : 0) }; }
   contains(e: El | null): boolean { for (let x = e; x; x = x.parentNode) if (x === this) return true; return false; }
   closest(sel: string): El | null {
     const m = /^\[([a-z-]+)\]$/.exec(sel);
@@ -70,15 +75,16 @@ type Harness = {
   body: () => El; // .hg-hub__body
   setHeld: (d: MemberData | null) => void;
   clickTab: (key: string) => void;
+  clickAct: (act: string) => void;
 };
 
 const HELD = makeMember({ pointsBalance: 4500 });
 
-async function load(opts: { held?: MemberData | null; member?: () => Promise<MemberData | null>; state?: MemberState } = {}): Promise<Harness> {
+async function load(opts: { held?: MemberData | null; member?: () => Promise<MemberData | null>; state?: MemberState; guest?: boolean } = {}): Promise<Harness> {
   let held: MemberData | null = opts.held === undefined ? HELD : opts.held;
   const data: BootData = {
     config: makeConfig(),
-    customer: { id: "42" },
+    customer: opts.guest ? null : { id: "42" },
     page: "index",
     urls: { login: "/customer_authentication/login", hub: "", rewards: "/pages/rewards", shop: "/collections/all" },
     cart: { total: 0, count: 0, codes: [] },
@@ -123,6 +129,11 @@ async function load(opts: { held?: MemberData | null; member?: () => Promise<Mem
       t.setAttribute("data-tab", key);
       for (const fn of panel().listeners.click || []) fn({ target: t });
     },
+    clickAct: (act) => {
+      const b = new El("button");
+      b.setAttribute("data-act", act);
+      for (const fn of panel().listeners.click || []) fn({ target: b });
+    },
   };
 }
 
@@ -151,11 +162,11 @@ describe("hub.ts: fresh member data on every open", () => {
     expect(h.body().scrollTop).toBe(240);
 
     // On another tab the tab is kept too.
-    h.clickTab("tiers");
-    expect(h.body().getAttribute("aria-labelledby")).toBe("hg-tab-tiers");
+    h.clickTab("earn");
+    expect(h.body().getAttribute("aria-labelledby")).toBe("hg-tab-earn");
     h.body().scrollTop = 90;
     h.api._upd!(makeMember({ pointsBalance: 5200, tier: "gold", lifetimeSpendPkr: 60000 }));
-    expect(h.body().getAttribute("aria-labelledby")).toBe("hg-tab-tiers");
+    expect(h.body().getAttribute("aria-labelledby")).toBe("hg-tab-earn");
     expect(h.body().scrollTop).toBe(90);
   });
 
@@ -232,5 +243,84 @@ describe("hub.ts: fresh member data on every open", () => {
     h.api._hub!("history", null); // reopen on the same page
     await flush();
     expect(historyCalls()).toBe(2);
+  });
+});
+
+describe("hub.ts: panel v5 tabs (owner, 19 Nov 2026)", () => {
+  /** The tier section inside the body, placed `top` px below the top of the body's content. */
+  const tiersAt = (h: Harness, top: number) => {
+    const t = h.body().querySelector("#hg-tiers") as El;
+    t.rectTop = top;
+    return t;
+  };
+
+  it("member tabs are exactly Rewards, Refer & Earn, Shop & Earn, History (no VIP tiers tab)", async () => {
+    const h = await load();
+    h.api._hub!("", null);
+    const html = h.panel().innerHTML;
+    const tabs = [...html.matchAll(/<button type="button" class="hg-tab" role="tab" id="hg-tab-([a-z]+)"[^>]*>([^<]*)<\/button>/g)].map((m) => [m[1], m[2]]);
+    expect(tabs).toEqual([["rewards", "Rewards"], ["refer", "Refer &amp; Earn"], ["earn", "Shop &amp; Earn"], ["history", "History"]]);
+    expect(html).not.toContain("VIP tiers");
+    expect(html).not.toContain("hg-tab-tiers");
+  });
+
+  it("a \"tiers\" target (#hg-rewards-tiers, the level nudge) opens Rewards scrolled to the other levels at once", async () => {
+    const h = await load();
+    h.api._hub!("", null); // builds the panel
+    h.api._hub!("", document.getElementById("hg-launcher") as unknown as HTMLElement); // close
+    tiersAt(h, 900);
+    h.api._hub!("tiers", null);
+    expect(h.body().getAttribute("aria-labelledby")).toBe("hg-tab-rewards");
+    expect(h.body().innerHTML).toContain('id="hg-tiers"');
+    expect(h.body().scrollTop).toBe(892); // 8px above the section
+    expect(h.body().scrollCalls).toEqual([]); // a jump on open, not an animation
+    // Fresh data keeps that position; a later plain open starts at the top.
+    await flush();
+    h.api._upd!(makeMember({ pointsBalance: 5200 }));
+    expect(h.body().scrollTop).toBe(892);
+    h.api._hub!("", document.getElementById("hg-launcher") as unknown as HTMLElement); // close
+    h.api._hub!("rewards", null);
+    expect(h.body().scrollTop).toBe(0);
+  });
+
+  it("with nothing held, the scroll to the tiers happens when the data arrives (not undone by the repaint)", async () => {
+    const h = await load({ held: null, member: () => new Promise(() => undefined) });
+    h.api._hub!("tiers", null);
+    expect(h.body().innerHTML).toContain("Loading your rewards");
+    tiersAt(h, 640);
+    h.api._upd!(makeMember({ pointsBalance: 5200 }));
+    expect(h.body().getAttribute("aria-labelledby")).toBe("hg-tab-rewards");
+    expect(h.body().scrollTop).toBe(632);
+  });
+
+  it("guests still get the VIP levels screen for a \"tiers\" target, with no request", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const h = await load({ guest: true });
+    h.api._hub!("tiers", null);
+    expect(h.body().innerHTML).toContain("Everyone starts here.");
+    expect(h.body().innerHTML).not.toContain("hg-tiers");
+    expect((h.panel().querySelector(".hg-hub__title") as El).textContent).toBe("VIP levels");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(h.api.member).not.toHaveBeenCalled();
+  });
+
+  it("View all VIP perks scrolls smoothly to the other levels and moves focus to their heading", async () => {
+    const h = await load();
+    h.api._hub!("", null);
+    tiersAt(h, 1500);
+    h.clickAct("perks");
+    expect(h.body().scrollCalls).toEqual([{ top: 1492, behavior: "smooth" }]);
+    expect(activeElement).toBe(h.body().querySelector("#hg-tiers .hg-sec"));
+  });
+
+  it("with reduced motion asked for, the perks line jumps instead of animating", async () => {
+    const h = await load();
+    (window as unknown as { matchMedia: (q: string) => { matches: boolean } }).matchMedia = (q) => ({ matches: q.indexOf("reduce") >= 0 });
+    h.api._hub!("", null);
+    tiersAt(h, 700);
+    h.clickAct("perks");
+    expect(h.body().scrollCalls).toEqual([]);
+    expect(h.body().scrollTop).toBe(692);
   });
 });

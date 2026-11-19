@@ -50,6 +50,7 @@ export const EDITABLE_KEYS = [
   "tier_progress_diamond_threshold_pkr",
   "panel_theme",
   "launcher_label",
+  "staff_alert_email",
 ] as const;
 
 /** Never sent to the browser, whatever a loader does with the row. */
@@ -190,6 +191,22 @@ export function notificationStatus(
     whatsappEnabled: settings.whatsapp_enabled === true,
     whatsappCredentialsPresent: Boolean(env.WHATSAPP_TOKEN && env.WHATSAPP_PHONE_NUMBER_ID),
   };
+}
+
+// ── staff alert email (016) ──────────────────────────────────────────────────
+
+/** Same rule as the database check app_settings_staff_alert_email_check. */
+const STAFF_EMAIL_RE = /^[^@\s<>,;"]+@[^@\s<>,;"]+\.[^@\s<>,;"]+$/;
+
+/**
+ * The optional staff address for the morning email. Blank clears it (no
+ * email is sent). Returns the value to save, or an error for the field.
+ */
+export function parseStaffAlertEmail(raw: unknown): { ok: true; value: string | null } | { ok: false; error: string } {
+  const v = typeof raw === "string" ? raw.trim() : "";
+  if (v === "") return { ok: true, value: null };
+  if (v.length > 254 || !STAFF_EMAIL_RE.test(v)) return { ok: false, error: "Enter one email address, like staff@heygirl.pk, or leave it blank." };
+  return { ok: true, value: v };
 }
 
 // ── privacy requests ─────────────────────────────────────────────────────────

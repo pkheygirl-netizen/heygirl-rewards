@@ -81,14 +81,17 @@ export function proxyJson(data: unknown, status = 200, extra: Record<string, str
   });
 }
 
-/** Client address as forwarded by Shopify's proxy; null when absent. */
+/**
+ * The first X-Forwarded-For entry (or X-Real-IP); null when absent. Used ONLY
+ * as the rate-limit key for a request without a signed-in customer.
+ *
+ * This is NOT the shopper's address. Behind Shopify's app proxy and Railway's
+ * edge, X-Forwarded-For on /proxy requests carries a Cloudflare egress address
+ * that changes on every request plus a second edge address (seen on the dev
+ * store, 19 Nov 2026). Never use it to tell shoppers apart (the old
+ * "same network" referral rule was removed for this reason) and never store it.
+ */
 export function clientIp(request: Request): string | null {
-  // TEMPORARY (dev store, 19 Nov 2026): find which header carries the shopper's
-  // address. Logged only while DEBUG_PROXY_IP=1 is set on the service.
-  if (process.env.DEBUG_PROXY_IP === "1") {
-    const pick = ["x-forwarded-for", "cf-connecting-ip", "true-client-ip", "x-real-ip", "x-envoy-external-address", "x-client-ip", "forwarded"];
-    console.log("[debug-proxy-ip]", JSON.stringify(Object.fromEntries(pick.map((h) => [h, request.headers.get(h)]))));
-  }
   const fwd = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
   return fwd || request.headers.get("x-real-ip") || null;
 }

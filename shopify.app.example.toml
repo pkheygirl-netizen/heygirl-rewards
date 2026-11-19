@@ -13,7 +13,9 @@ embedded = true
 [access_scopes]
 # The script-tag scopes are gone (the storefront is a theme app extension).
 # Removing scopes changes the permission list: the store must accept it again.
-scopes = "read_customers,write_customers,read_orders,read_discounts,write_discounts,read_products,write_products,read_content,write_content"
+# write_orders (added 19 Nov 2026) is used ONLY to tag an order "Rewards: check referral"
+# when a referral order matches the referrer; the app never cancels or edits orders.
+scopes = "read_customers,write_customers,read_orders,write_orders,read_discounts,write_discounts,read_products,write_products,read_content,write_content"
 
 [auth]
 redirect_urls = ["https://app.heygirl.pk/auth/callback"]

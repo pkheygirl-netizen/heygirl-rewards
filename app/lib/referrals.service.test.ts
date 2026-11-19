@@ -6,9 +6,13 @@ vi.mock("./worker-admin.server", async () => (await import("./testing/harness"))
 
 import { h, opName, resetHarness, seedMember } from "./testing/harness";
 import { bustSettingsCache } from "./settings.server";
+import { issueReferralFriendCode } from "./referral-bonus.service";
 import {
   approveReferral,
+  checkReferralOrder,
   completeReferralForCustomer,
+  REFERRAL_ORDER_TAG,
+  resetTagScopeLog,
   recordReferralVisit,
   rejectReferral,
   resolveReferrer,
@@ -30,12 +34,14 @@ function shopify(q: string) {
 }
 
 const setup = (referrerOver = {}, friendOver = {}) => {
-  const referrer = seedMember(h.db, { shopify_customer_id: "REF", referral_slug: "aisha-1234", email: "aisha@example.com", last_seen_ip: "10.0.0.1", ...referrerOver });
+  const referrer = seedMember(h.db, { shopify_customer_id: "REF", referral_slug: "aisha-1234", email: "aisha@example.com", ...referrerOver });
   const friend = seedMember(h.db, { shopify_customer_id: "FR", email: "friend@example.com", ...friendOver });
   return { referrer, friend };
 };
 const visit = (over = {}) =>
-  recordReferralVisit({ referralSlug: "aisha-1234", referredShopifyCustomerId: "FR", referredEmail: "friend@example.com", referredIp: "20.0.0.2", shop: "s", ...over });
+  recordReferralVisit({ referralSlug: "aisha-1234", referredShopifyCustomerId: "FR", referredEmail: "friend@example.com", shop: "s", ...over });
+/** A referral held at sign-in: friend and referrer have the same full name. */
+const heldSetup = () => setup({ first_name: "Aisha", last_name: "Khan" }, { first_name: "aisha ", last_name: "KHAN" });
 const referral = () => h.db.table("referrals")[0];
 const awardedOrder = (id = "O1", over = {}) =>
   h.db.seed("order_webhook_state", { shopify_order_id: id, shopify_customer_id: "FR", points_awarded: true, earning_basis_pkr: 2000, placed_at: "2026-11-10T00:00:00Z", ...over });
@@ -56,7 +62,7 @@ describe("recordReferralVisit (friend's first sign-in with a stored ref)", () =>
     expect(r.friendCode).toMatch(/^WELCOME-/);
     expect(referral()).toMatchObject({
       referrer_member_id: referrer.id, referred_shopify_customer_id: "FR", status: "pending",
-      referred_ip: "20.0.0.2", referrer_ip: "10.0.0.1", // R5: the referrer's own address
+      referred_ip: null, referrer_ip: null, // no network address is written any more (19 Nov 2026)
     });
     expect(friend.referred_by_member_id).toBe(referrer.id);
     const code = h.db.table("loyalty_codes")[0];
@@ -86,19 +92,12 @@ describe("recordReferralVisit (friend's first sign-in with a stored ref)", () =>
     expect(h.db.table("referrals")).toHaveLength(0);
   });
 
-  it("same network address as the referrer's last_seen_ip: flagged and held, no code yet", async () => {
-    setup();
-    const r = await visit({ referredIp: "10.0.0.1" });
-    expect(r).toMatchObject({ ok: true, recorded: true, status: "flagged" });
-    expect(r.friendCode).toBeUndefined();
-    expect(referral()).toMatchObject({ status: "flagged", fraud_flags: ["same_network"] });
-    expect(h.db.table("loyalty_codes")).toHaveLength(0);
-  });
-
-  it("a different address is NOT held, even if another friend used it before (L8)", async () => {
-    const { referrer } = setup();
-    h.db.seed("referrals", { referrer_member_id: referrer.id, referred_shopify_customer_id: "OTHER", referred_ip: "20.0.0.2", status: "completed" });
-    expect((await visit()).status).toBe("pending");
+  it("the network address is not compared any more: a referrer who once had the friend's old address is NOT held", async () => {
+    // The old rule held these; on the dev store the forwarded address was a proxy's, so it caught nobody real.
+    setup({ last_seen_ip: "10.0.0.1" });
+    const r = await visit();
+    expect(r).toMatchObject({ ok: true, status: "pending" });
+    expect(referral().fraud_flags).toEqual([]);
   });
 
   it("same email as the referrer: blocked, and the referrer loses the right to refer", async () => {
@@ -106,12 +105,46 @@ describe("recordReferralVisit (friend's first sign-in with a stored ref)", () =>
     const r = await visit();
     expect(r).toMatchObject({ ok: false, recorded: true, blocked: true, status: "blocked" });
     expect(referrer.referrals_blocked).toBe(true);
+    expect(referral()).toMatchObject({ fraud_flags: ["same_email"], block_reason: "The friend's email is the referrer's email" });
     expect(h.db.table("loyalty_codes")).toHaveLength(0);
+  });
+
+  it("same Gmail mailbox written differently (dots, +tag, googlemail.com) is the same email: blocked", async () => {
+    const { referrer } = setup({ email: "Ayesha.Khan@gmail.com" }, { email: "ayeshakhan+shop@googlemail.com" });
+    const r = await visit({ referredEmail: null });
+    expect(r).toMatchObject({ blocked: true, status: "blocked" });
+    expect(referrer.referrals_blocked).toBe(true);
+    expect(referral().fraud_flags).toEqual(["same_email"]);
   });
 
   it("same phone (different formatting) counts as the same person", async () => {
     setup({ phone: "+92 300 1234567" }, { email: null, phone: "03001234567" });
     expect((await visit({ referredEmail: null })).status).toBe("blocked");
+    expect(referral().fraud_flags).toEqual(["same_phone"]);
+  });
+
+  it("similar email (same name part, any domain, trailing digits ignored): held, no code yet", async () => {
+    const { referrer } = setup({ email: "ayeshakhan@gmail.com" }, { email: "ayesha.khan1@yahoo.com" });
+    const r = await visit({ referredEmail: null });
+    expect(r).toMatchObject({ ok: true, recorded: true, blocked: false, status: "flagged" });
+    expect(r.friendCode).toBeUndefined();
+    expect(referral()).toMatchObject({ status: "flagged", fraud_flags: ["similar_email"], block_reason: "The friend's email looks like the referrer's" });
+    expect(referrer.referrals_blocked).toBe(false); // a hold never removes the right to refer
+    expect(h.db.table("loyalty_codes")).toHaveLength(0);
+  });
+
+  it("same first and last name: held, no code yet", async () => {
+    heldSetup();
+    const r = await visit();
+    expect(r).toMatchObject({ ok: true, status: "flagged" });
+    expect(r.friendCode).toBeUndefined();
+    expect(referral()).toMatchObject({ status: "flagged", fraud_flags: ["same_name"] });
+    expect(h.db.table("loyalty_codes")).toHaveLength(0);
+  });
+
+  it("a short email name part (under 6 letters) or a first name alone is not enough to hold", async () => {
+    setup({ email: "sara@gmail.com", first_name: "Sara", last_name: null }, { email: "sara1@yahoo.com", first_name: "Sara", last_name: "Ali" });
+    expect((await visit({ referredEmail: null })).status).toBe("pending");
   });
 
   it("a friend can be referred only once, by anyone", async () => {
@@ -237,8 +270,8 @@ describe("completion: the friend's FIRST order, fulfilled and paid", () => {
 
 describe("held referrals: approve / reject", () => {
   it("flagged referral is not paid when the order qualifies; it remembers the order and waits", async () => {
-    const { referrer } = setup();
-    await visit({ referredIp: "10.0.0.1" });
+    const { referrer } = heldSetup();
+    await visit();
     awardedOrder();
     expect(await completeReferralForCustomer("FR")).toMatchObject({ paid: false, reason: "held_for_review" });
     expect(referrer.points_balance).toBe(0);
@@ -246,8 +279,8 @@ describe("held referrals: approve / reject", () => {
   });
 
   it("approve when the order already qualifies: paid immediately (L5), friend code queued", async () => {
-    const { referrer } = setup();
-    await visit({ referredIp: "10.0.0.1" });
+    const { referrer } = heldSetup();
+    await visit();
     awardedOrder();
     const r = await approveReferral(String(referral().id), "staff@heygirl.pk", "s");
     expect(r).toMatchObject({ ok: true, paid: true });
@@ -259,8 +292,8 @@ describe("held referrals: approve / reject", () => {
   });
 
   it("approve before any qualifying order: back to pending, paid later when the order qualifies", async () => {
-    const { referrer } = setup();
-    await visit({ referredIp: "10.0.0.1" });
+    const { referrer } = heldSetup();
+    await visit();
     const r = await approveReferral(String(referral().id), "staff", "s");
     expect(r).toMatchObject({ ok: true, paid: false });
     expect(referral().status).toBe("pending");
@@ -277,8 +310,8 @@ describe("held referrals: approve / reject", () => {
   });
 
   it("reject closes it for good with the note; a rejected referral never pays", async () => {
-    const { referrer } = setup();
-    await visit({ referredIp: "10.0.0.1" });
+    const { referrer } = heldSetup();
+    await visit();
     expect(await rejectReferral(String(referral().id), "staff", "same household")).toEqual({ ok: true });
     expect(referral()).toMatchObject({ status: "rejected", reviewed_note: "rejected by staff: same household" });
     awardedOrder();
@@ -309,8 +342,8 @@ describe("reversal", () => {
 
 describe("fix round", () => {
   it("H3: approving while Shopify is down leaves a pending code row and queues a retry; nothing is swallowed", async () => {
-    setup();
-    await visit({ referredIp: "10.0.0.1" });
+    heldSetup();
+    await visit();
     h.graphql = () => { throw new Error("503"); };
     expect((await approveReferral(String(referral().id), "staff", "s")).ok).toBe(true);
     expect(h.db.table("loyalty_codes")[0]).toMatchObject({ kind: "referral_friend", status: "pending" });
@@ -344,5 +377,262 @@ describe("rule 20: the program switch only pauses redeeming", () => {
     expect(r).toMatchObject({ ok: true, recorded: true, status: "pending" });
     expect(r.friendCode).toMatch(/^WELCOME-/);
     expect(h.db.table("loyalty_codes")).toHaveLength(1);
+  });
+});
+
+describe("order-time check: the friend's order that used her free-shipping code", () => {
+  const HOME = { address1: "House 12, Street 5, DHA Phase 6", city: "Karachi", phone: null };
+  type Ship = { address1?: string | null; city?: string | null; phone?: string | null } | null;
+  let ship: Ship = null;
+  let theirs: { phone?: string | null; addresses?: Ship[]; orders?: Ship[]; defaultAddress?: Ship } = {};
+  const checkReply = () => ({
+    order: { shippingAddress: ship },
+    customer: {
+      defaultPhoneNumber: theirs.phone === undefined ? null : { phoneNumber: theirs.phone },
+      defaultAddress: theirs.defaultAddress ?? null,
+      addressesV2: { nodes: theirs.addresses ?? [] },
+      orders: { nodes: (theirs.orders ?? []).map((a) => ({ shippingAddress: a })) },
+    },
+  });
+  let tagReply: () => unknown = () => ({ tagsAdd: { node: { id: "gid://shopify/Order/O1" }, userErrors: [] } });
+  const withCheck = (q: string) =>
+    opName(q) === "HgReferralOrderCheck" ? checkReply() : opName(q) === "HgTagReferralOrder" ? tagReply() : shopify(q);
+  const tagCalls = () => h.graphqlCalls.filter((c) => opName(c.query) === "HgTagReferralOrder");
+  const checkCalls = () => h.graphqlCalls.filter((c) => opName(c.query) === "HgReferralOrderCheck");
+  const codeText = () => String(h.db.table("loyalty_codes")[0].code);
+  /** The friend's first order, stored as the order worker stores it. */
+  const friendOrder = (over = {}) => awardedOrder("O1", { order_name: "#1007", discount_codes: [codeText()], ...over });
+  const run = (codes = [codeText()]) => checkReferralOrder({ shopifyOrderId: "O1", shopifyCustomerId: "FR", discountCodes: codes, shop: "s" });
+
+  beforeEach(() => {
+    ship = { address1: "Flat 3, Gulberg III", city: "Lahore", phone: "+92 311 7654321" };
+    theirs = { phone: "+923001234567", defaultAddress: HOME, addresses: [HOME], orders: [] };
+    tagReply = () => ({ tagsAdd: { node: { id: "gid://shopify/Order/O1" }, userErrors: [] } });
+    h.graphql = withCheck;
+    resetTagScopeLog();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  });
+
+  it("a match tags the order \"Rewards: check referral\" once (tagsAdd, nothing else changed); replays do not tag again", async () => {
+    setup();
+    await visit();
+    ship = { address1: "Flat 3, Gulberg III", city: "Lahore", phone: "0300-1234567" };
+    await run();
+    expect(REFERRAL_ORDER_TAG).toBe("Rewards: check referral");
+    expect(tagCalls()).toHaveLength(1);
+    expect(tagCalls()[0].query).toMatch(/mutation HgTagReferralOrder\(\$id: ID!, \$tags: \[String!\]!\)/);
+    expect(tagCalls()[0].query).toContain("tagsAdd(id: $id, tags: $tags)");
+    expect(tagCalls()[0].query).toContain("userErrors { field message }");
+    expect(tagCalls()[0].variables).toEqual({ id: "gid://shopify/Order/O1", tags: ["Rewards: check referral"] });
+    expect(referral()).toMatchObject({ status: "blocked", order_tag: "tagged" });
+    await run();
+    friendOrder();
+    await completeReferralForCustomer("FR", "s");
+    expect(tagCalls()).toHaveLength(1);
+    // the only mutation ever sent for the order is the tag
+    const mutations = h.graphqlCalls.filter((c) => /^\s*(#[^\n]*\n\s*)*mutation\b/.test(c.query) && !/DiscountCode/.test(c.query));
+    expect(mutations.map((c) => opName(c.query))).toEqual(["HgTagReferralOrder"]);
+  });
+
+  it("an address match is tagged too; a clear order is never tagged", async () => {
+    setup();
+    await visit();
+    await run(); // clear
+    expect(tagCalls()).toHaveLength(0);
+    expect(referral().order_tag).toBeNull();
+    resetHarness(); bustSettingsCache(); h.graphql = withCheck;
+    setup();
+    await visit();
+    ship = { address1: "House 12 Street 5 DHA Phase 6", city: "Karachi", phone: null };
+    await run();
+    expect(referral()).toMatchObject({ status: "flagged", order_tag: "tagged" });
+  });
+
+  it("without the write_orders permission: not tagged ('failed'), logged once, the referral is still blocked and nothing crashes", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    tagReply = () => { throw new Error("Access denied for tagsAdd field. Required access: `write_orders` access scope."); };
+    setup();
+    await visit();
+    ship = { address1: "Flat 3", city: "Lahore", phone: "03001234567" };
+    expect(await run()).toMatchObject({ checked: true, result: "same_phone" });
+    expect(referral()).toMatchObject({ status: "blocked", order_tag: "failed" });
+    // a second matching order (another friend) logs nothing new
+    referral().order_checked_order_id = null;
+    referral().status = "pending";
+    await run();
+    expect(err.mock.calls.filter((c) => String(c[0]).includes("write_orders"))).toHaveLength(1);
+  });
+
+  it("userErrors from tagsAdd: 'failed', and the message is logged", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    tagReply = () => ({ tagsAdd: { node: null, userErrors: [{ field: ["tags"], message: "Tags are invalid" }] } });
+    setup();
+    await visit();
+    ship = { address1: "Flat 3", city: "Lahore", phone: "03001234567" };
+    await run();
+    expect(referral().order_tag).toBe("failed");
+    expect(err.mock.calls.some((c) => String(c[0]).includes("Tags are invalid"))).toBe(true);
+  });
+
+  it("asks Shopify for the order's shipping details and the referrer's phone, saved addresses and last 5 orders", async () => {
+    setup({ phone: null });
+    await visit();
+    await run();
+    const call = checkCalls()[0];
+    expect(call.variables).toEqual({ orderId: "gid://shopify/Order/O1", customerId: "gid://shopify/Customer/REF" });
+    for (const f of ["shippingAddress { address1 city phone }", "defaultPhoneNumber { phoneNumber }", "defaultAddress { address1 city phone }",
+      "addressesV2(first: 10)", "orders(first: 5, sortKey: CREATED_AT, reverse: true)"]) {
+      expect(call.query).toContain(f);
+    }
+  });
+
+  it("same shipping phone as the referrer (option A): blocked, no points, the referrer may still refer, Home alert raised", async () => {
+    const { referrer } = setup();
+    await visit();
+    ship = { address1: "Flat 3, Gulberg III", city: "Lahore", phone: "0300-1234567" };
+    expect(await run()).toMatchObject({ checked: true, result: "same_phone" });
+    expect(referral()).toMatchObject({
+      status: "blocked", fraud_flags: ["same_phone_on_order"], block_reason: "The friend's order uses the referrer's phone number",
+      order_check: "same_phone", order_checked_order_id: "O1", alert_resolved_at: null,
+    });
+    expect(referrer.referrals_blocked).toBe(false); // staff decide from the alert
+    friendOrder();
+    expect(await completeReferralForCustomer("FR", "s")).toMatchObject({ paid: false, reason: "no_open_referral" });
+    expect(referrer.points_balance).toBe(0);
+    // nothing about the phone or address is written anywhere
+    expect(JSON.stringify(h.db.table("referrals"))).not.toMatch(/1234567|Gulberg|Lahore/);
+  });
+
+  it("the referrer's phone can come from her member row, her Shopify default phone, a saved address or a recent order", async () => {
+    for (const where of ["member", "default", "address", "order"] as const) {
+      resetHarness(); bustSettingsCache(); h.graphql = withCheck;
+      setup({ phone: where === "member" ? "+923009990000" : null });
+      await visit();
+      theirs = {
+        phone: where === "default" ? "03009990000" : undefined,
+        addresses: where === "address" ? [{ ...HOME, phone: "0300 9990000" }] : [HOME],
+        orders: where === "order" ? [{ address1: "x", city: "y", phone: "+92-300-9990000" }] : [],
+      };
+      ship = { address1: "Flat 3, Gulberg III", city: "Lahore", phone: "03009990000" };
+      expect((await run()).checked && referral().order_check, where).toBe("same_phone");
+    }
+  });
+
+  it("same address (strict) without the phone: held for staff; approve pays when the order qualifies", async () => {
+    const { referrer } = setup();
+    await visit();
+    ship = { address1: "H# 12 St 5 DHA Phase 6", city: "karachi", phone: "03117654321" };
+    expect(await run()).toMatchObject({ checked: true, result: "same_address" });
+    expect(referral()).toMatchObject({ status: "flagged", fraud_flags: ["same_address_on_order"], order_check: "same_address" });
+    friendOrder();
+    expect(await completeReferralForCustomer("FR", "s")).toMatchObject({ paid: false, reason: "held_for_review" });
+    expect(referrer.points_balance).toBe(0);
+    const r = await approveReferral(String(referral().id), "staff", "s");
+    expect(r).toMatchObject({ ok: true, paid: true });
+    expect(referrer.points_balance).toBe(6000);
+    expect(referral().alert_resolved_at).not.toBeNull(); // the decision closes the Home alert
+    expect(checkCalls()).toHaveLength(1); // the approval did not check the same order again
+  });
+
+  it("an address match on a referral already held at sign-in keeps both reasons", async () => {
+    heldSetup();
+    await visit();
+    // a held referral has no code yet; approve-less test: give it one directly
+    h.db.seed("loyalty_codes", { id: "code-1", code: "WELCOME-HELD", member_id: "x", kind: "referral_friend" });
+    referral().friend_code_id = "code-1";
+    ship = { address1: "House 12 Street 5 DHA Phase 6", city: "Karachi", phone: null };
+    expect((await run(["welcome-held"])).checked).toBe(true);
+    expect(referral()).toMatchObject({ status: "flagged", fraud_flags: ["same_name", "same_address_on_order"] });
+    expect(referral().block_reason).toBe("The friend has the same first and last name as the referrer; The friend's order delivers to the referrer's address");
+  });
+
+  it("nothing in common: clear, and the referrer is paid as before", async () => {
+    const { referrer } = setup();
+    await visit();
+    friendOrder();
+    expect(await completeReferralForCustomer("FR", "s")).toMatchObject({ paid: true });
+    expect(referral()).toMatchObject({ status: "completed", order_check: "clear", order_checked_order_id: "O1" });
+    expect(referrer.points_balance).toBe(6000);
+  });
+
+  it("an order that did not use the friend's code is not checked (no Shopify call)", async () => {
+    setup();
+    await visit();
+    expect(await run(["SOMEOTHERCODE"])).toEqual({ checked: false, reason: "code_not_used" });
+    friendOrder({ discount_codes: ["SOMEOTHERCODE"] });
+    expect((await completeReferralForCustomer("FR", "s")).paid).toBe(true);
+    expect(checkCalls()).toHaveLength(0);
+    expect(referral().order_check).toBeNull();
+  });
+
+  it("runs once per order: replays do not ask Shopify again", async () => {
+    setup();
+    await visit();
+    await run();
+    expect(await run()).toEqual({ checked: false, reason: "already_checked" });
+    expect(checkCalls()).toHaveLength(1);
+  });
+
+  it("no shipping details (protected customer data not granted, or no shipping line): 'not checked', logged once, never crashes, paid", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { referrer } = setup();
+    await visit();
+    ship = null;
+    expect(await run()).toMatchObject({ checked: true, result: "not_checked" });
+    expect(referral()).toMatchObject({ status: "pending", order_check: "not_checked", order_checked_order_id: "O1" });
+    await run();
+    friendOrder();
+    expect((await completeReferralForCustomer("FR", "s")).paid).toBe(true);
+    expect(referrer.points_balance).toBe(6000);
+    expect(warn.mock.calls.filter((c) => String(c[0]).includes("[referral-check]"))).toHaveLength(1);
+    expect(String(warn.mock.calls[0][0])).not.toMatch(/Gulberg|1234567/);
+  });
+
+  it("Shopify answers with errors for fields the app may not read: the fields that came back are still compared", async () => {
+    const { referrer } = setup({ phone: null });
+    await visit();
+    // shape of @shopify/shopify-api's GraphqlQueryError: the whole answer is in `body`
+    h.graphql = (q) => {
+      if (opName(q) !== "HgReferralOrderCheck") return shopify(q);
+      const err = Object.assign(new Error("This app is not approved to access the phone field"), {
+        body: { data: { order: { shippingAddress: { address1: "House 12 Street 5 DHA Phase 6", city: "Karachi", phone: null } }, customer: { defaultPhoneNumber: null, defaultAddress: HOME, addressesV2: { nodes: [] }, orders: { nodes: [] } } } },
+      });
+      throw err;
+    };
+    expect(await run()).toMatchObject({ checked: true, result: "same_address" });
+    expect(referrer.points_balance).toBe(0);
+  });
+
+  it("Shopify down when the order is paid: nothing is paid until the check has run, then it pays", async () => {
+    const { referrer } = setup();
+    await visit();
+    friendOrder();
+    h.graphql = (q) => {
+      if (opName(q) === "HgReferralOrderCheck") throw Object.assign(new Error("502"), { response: { code: 502 } });
+      return shopify(q);
+    };
+    await expect(completeReferralForCustomer("FR", "s")).rejects.toThrow();
+    expect(referrer.points_balance).toBe(0);
+    expect(referral()).toMatchObject({ status: "pending", order_check: null });
+    h.graphql = withCheck; // Shopify is back: the retried job checks, then pays
+    expect((await completeReferralForCustomer("FR", "s")).paid).toBe(true);
+    expect(referrer.points_balance).toBe(6000);
+  });
+
+  it("the friend's code matches without regard to case", async () => {
+    setup();
+    await visit();
+    expect((await run([codeText().toLowerCase()])).checked).toBe(true);
+  });
+});
+
+describe("friend's code while a referral is held (safety net)", () => {
+  it("issueReferralFriendCode refuses a flagged referral; approval still issues it", async () => {
+    heldSetup();
+    await visit();
+    expect(await issueReferralFriendCode(String(referral().id), "s")).toEqual({ issued: false, reason: "held_for_review" });
+    expect(h.db.table("loyalty_codes")).toHaveLength(0);
+    await approveReferral(String(referral().id), "staff", "s");
+    expect(h.db.table("loyalty_codes")[0]).toMatchObject({ kind: "referral_friend", status: "active" });
   });
 });

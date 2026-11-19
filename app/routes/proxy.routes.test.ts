@@ -137,12 +137,12 @@ describe("every route: HMAC first, shop from the verified query, no-store", () =
 describe("GET /proxy/customer", () => {
   const PAYLOAD = { member: { firstName: "Aisha", optedOut: false, blocked: false }, codes: [], social: {}, review: {}, nextExpiry: null };
 
-  it("enrols on sign-in with the verified shop and forwarded address, then returns the payload", async () => {
+  it("enrols on sign-in with the verified shop and NO network address (the forwarded one is a proxy's), then returns the payload", async () => {
     h.getCustomerPayload.mockResolvedValue(PAYLOAD);
     h.enrolFromSignin.mockResolvedValue({ memberId: "m1", welcomeQueued: true });
     const res = await customerLoader(args(signedRequest("customer", { customerId: "42" })));
     expect(res.status).toBe(200);
-    expect(h.enrolFromSignin).toHaveBeenCalledWith({ shopifyCustomerId: "42", shop: TEST_SHOP, ip: "203.0.113.7" });
+    expect(h.enrolFromSignin).toHaveBeenCalledWith({ shopifyCustomerId: "42", shop: TEST_SHOP });
     expect(await json(res)).toMatchObject({ enabled: true, member: { firstName: "Aisha" }, welcomeQueued: true });
     expect(res.headers.get("Cache-Control")).toBe("no-store");
     expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
@@ -161,7 +161,7 @@ describe("GET /proxy/customer", () => {
     h.getCustomerPayload.mockResolvedValue(PAYLOAD);
     h.enrolFromSignin.mockResolvedValue({ memberId: "m1", welcomeQueued: true });
     const res = await customerLoader(args(signedRequest("customer", { customerId: "42" })));
-    expect(h.enrolFromSignin).toHaveBeenCalledWith({ shopifyCustomerId: "42", shop: TEST_SHOP, ip: "203.0.113.7" });
+    expect(h.enrolFromSignin).toHaveBeenCalledWith({ shopifyCustomerId: "42", shop: TEST_SHOP });
     const body = await json(res);
     expect(body).toMatchObject({ enabled: true, member: { firstName: "Aisha" }, welcomeQueued: true });
     expect(body).not.toHaveProperty("state");
@@ -310,12 +310,12 @@ describe("POST /proxy/birthday", () => {
 });
 
 describe("/proxy/referral", () => {
-  it("POST records with server-side email and address, and returns only the public outcome", async () => {
+  it("POST records with the server-side email (no network address), and returns only the public outcome", async () => {
     const raw = { ok: true, recorded: true, blocked: false, status: "pending", friendCode: "FRIEND-XY12" };
     h.recordReferralVisit.mockResolvedValueOnce(raw);
     h.publicReferralOutcome.mockReturnValueOnce({ ok: true, status: "recorded", friendCode: "FRIEND-XY12" });
     const res = await referralAction(args(signedRequest("referral", { customerId: "42", body: { slug: "sara-9999", email: "evil@x.com", ip: "1.1.1.1" } })));
-    expect(h.recordReferralVisit).toHaveBeenCalledWith({ referralSlug: "sara-9999", referredShopifyCustomerId: "42", referredEmail: "a@example.com", referredIp: "203.0.113.7", shop: TEST_SHOP });
+    expect(h.recordReferralVisit).toHaveBeenCalledWith({ referralSlug: "sara-9999", referredShopifyCustomerId: "42", referredEmail: "a@example.com", shop: TEST_SHOP });
     expect(h.publicReferralOutcome).toHaveBeenCalledWith(raw);
     expect(await json(res)).toEqual({ ok: true, status: "recorded", friendCode: "FRIEND-XY12" });
   });

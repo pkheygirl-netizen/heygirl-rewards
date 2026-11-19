@@ -18,7 +18,7 @@ import { ReviewClaimConfirm, type ClaimDecision } from "../components/review-cla
 import {
   actorFromSession, addStaffNote, adjustBalance, codeBelongsTo, deleteStaffNote,
   getCustomerProfile, listRewardCodes, listStaffNotes, parseAdjustment, parseBirthday,
-  referralLink, setBlocked, shopifyCustomerUrl, tierProgress,
+  referralLink, setBlocked, setReferralsBlocked, shopifyCustomerUrl, tierProgress,
 } from "../lib/admin-members.server";
 import { ADJUST_LIMITS, NOTE_MAX, previewBalance } from "../components/admin-constants";
 import { getSettingsRow } from "../lib/admin-settings.server";
@@ -108,6 +108,12 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         if (!found) return fail("That customer no longer exists. Nothing was changed.", 404);
         return done(intent === "block" ? "Customer blocked" : "Customer unblocked");
       }
+      case "block_referrals":
+      case "allow_referrals": {
+        const found = await setReferralsBlocked(id, intent === "block_referrals", actor);
+        if (!found) return fail("That customer no longer exists. Nothing was changed.", 404);
+        return done(intent === "block_referrals" ? "Referrals blocked. Her referral link no longer earns" : "Referrals allowed again");
+      }
       case "opt_out":
       case "opt_in":
         await setOptOut(id, intent === "opt_out");
@@ -173,7 +179,7 @@ const FILTERS = [
 
 type Confirm =
   | { kind: "cancel_code"; codeId: string; code: string; points: number }
-  | { kind: "block" } | { kind: "opt_out" } | { kind: "influencer_off" }
+  | { kind: "block" } | { kind: "opt_out" } | { kind: "influencer_off" } | { kind: "block_referrals" }
   | { kind: "delete_note"; noteId: string };
 
 export default function CustomerProfilePage() {
@@ -248,6 +254,9 @@ export default function CustomerProfilePage() {
           p.isBlocked
             ? { content: "Unblock customer", onAction: () => post({ intent: "unblock" }) }
             : { content: "Block customer", destructive: true, onAction: () => setConfirm({ kind: "block" }) },
+          p.referralsBlocked
+            ? { content: "Allow referrals again", onAction: () => post({ intent: "allow_referrals" }) }
+            : { content: "Block referrals", destructive: true, onAction: () => setConfirm({ kind: "block_referrals" }) },
           p.optedOut
             ? { content: "Opt back in", onAction: () => post({ intent: "opt_in" }) }
             : { content: "Opt out of the program", destructive: true, onAction: () => setConfirm({ kind: "opt_out" }) },
@@ -273,7 +282,7 @@ export default function CustomerProfilePage() {
             ) : null}
             {p.referralsBlocked ? (
               <Banner tone="warning" title="Referrals are blocked for this customer">
-                <p>A friend she referred used her own email or phone number, so her link no longer earns.</p>
+                <p>Her referral link no longer earns, and no referral of hers that is still waiting will be paid. This happens when a friend she referred signed in with her own email or phone number, or when staff block her referrals.</p>
               </Banner>
             ) : null}
 
@@ -610,6 +619,7 @@ export default function CustomerProfilePage() {
             : confirm?.kind === "block" ? "Block this customer?"
             : confirm?.kind === "opt_out" ? "Opt this customer out?"
             : confirm?.kind === "influencer_off" ? "Remove influencer status?"
+            : confirm?.kind === "block_referrals" ? "Block her referrals?"
             : "Delete this note?"
         }
         confirmLabel={
@@ -617,6 +627,7 @@ export default function CustomerProfilePage() {
             : confirm?.kind === "block" ? "Block customer"
             : confirm?.kind === "opt_out" ? "Opt out"
             : confirm?.kind === "influencer_off" ? "Remove status"
+            : confirm?.kind === "block_referrals" ? "Block referrals"
             : "Delete note"
         }
         onClose={() => setConfirm(null)}
@@ -637,7 +648,9 @@ export default function CustomerProfilePage() {
                 ? "She will stop earning and redeeming, and new orders will not enrol her again. Her balance is kept."
                 : confirm?.kind === "influencer_off"
                   ? `Her referrals go back to the standard reward.${p.influencer.code ? ` Her discount code ${p.influencer.code} is deleted in Shopify first and stops working at checkout; if Shopify cannot delete it, nothing is changed.` : ""}`
-                  : "The note is removed for everyone on your team."}
+                  : confirm?.kind === "block_referrals"
+                    ? "Her referral link will stop earning, and no referral of hers that is still waiting will be paid. Her own points and orders are not changed. You can allow her referrals again here."
+                    : "The note is removed for everyone on your team."}
         </Text>
       </ConfirmModal>
     </Page>
