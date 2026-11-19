@@ -163,7 +163,7 @@ export type ReferralOrderAlert = {
   orderName: string | null;
   kind: "phone" | "address";
   status: string;
-  /** "Order #1007 used a referral free-shipping code but delivers to the referrer's phone number" */
+  /** "Order #1007 from a referred friend delivers to the referrer's phone number" */
   title: string;
   detail: string;
 };
@@ -175,7 +175,9 @@ export function shopifyOrderUrl(shop: string, orderId: string): string | null {
 }
 
 export function alertTitle(orderName: string | null, kind: "phone" | "address"): string {
-  return `${orderName ? `Order ${orderName}` : "An order"} used a referral free-shipping code but delivers to the referrer's ${kind === "phone" ? "phone number" : "address"}`;
+  // Not "used a referral code": the order checked is also her first delivered
+  // and paid order when she left the code out (owner decision, 19 Nov 2026).
+  return `${orderName ? `Order ${orderName}` : "An order"} from a referred friend delivers to the referrer's ${kind === "phone" ? "phone number" : "address"}`;
 }
 
 /**

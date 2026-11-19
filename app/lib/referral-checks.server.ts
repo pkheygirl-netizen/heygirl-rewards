@@ -5,7 +5,8 @@
 //
 //   at the friend's sign-in   same email / same phone      -> blocked
 //                             similar email / same name    -> held (flagged)
-//   on an order that used the friend's free-shipping code
+//   on the friend's first qualifying order (fulfilled + paid), code or no
+//   code, and earlier on an order that used her free-shipping code
 //                             same shipping phone          -> blocked
 //                             same shipping address        -> held (flagged)
 

@@ -608,12 +608,99 @@ describe("referral order-time check runs before the referrer can be paid (rule 1
     expect(mutations[0].variables).toEqual({ id: "gid://shopify/Order/O1", tags: ["Rewards: check referral"] });
   });
 
-  it("an order without the friend's code is not checked and pays as before", async () => {
+  // ── owner decision 19 Nov 2026: the friend's first qualifying order is checked, code or no code ──
+  const tags = () => h.graphqlCalls.filter((c) => opName(c.query) === "HgTagReferralOrder");
+  const withTag = () => {
+    const base = h.graphql;
+    h.graphql = (q, v) => (opName(q) === "HgTagReferralOrder" ? { tagsAdd: { node: { id: "gid://shopify/Order/O1" }, userErrors: [] } } : base(q, v));
+  };
+
+  it("self-referral WITHOUT the code, shipped to the referrer's phone: not checked at orders/create, checked when it qualifies -> blocked, no points, tagged, alert", async () => {
     const { referrer, referral } = setupReferral();
+    withTag();
+    await processOrderEvent(order({ discountCodes: [] }), "s"); // orders/create, COD, no code
+    expect(checks()).toHaveLength(0);
+    expect(referral.order_check ?? null).toBeNull();
+    const r = await processOrderEvent(order({ discountCodes: [], fulfillmentStatus: "fulfilled", financialStatus: "paid" }), "s");
+    expect(r.status).toBe("awarded");
+    expect(member("C1").points_balance).toBe(3000); // the friend keeps her own purchase points
+    expect(referrer.points_balance).toBe(0);
+    expect(referral).toMatchObject({
+      status: "blocked", order_check: "same_phone", order_checked_order_id: "O1", order_tag: "tagged", alert_resolved_at: null,
+      fraud_flags: ["same_phone_on_order"],
+    });
+    expect(tags()).toHaveLength(1);
+    expect(referrer.referrals_blocked).toBe(false);
+    expect(JSON.stringify(h.db.table("referrals"))).not.toMatch(/1234567|Gulberg|Lahore/);
+  });
+
+  it("self-referral WITHOUT the code, shipped to the referrer's address: held, nothing paid, tagged", async () => {
+    const { referrer, referral } = setupReferral();
+    referrer.phone = null;
+    h.graphql = (q) => {
+      if (opName(q) === "HgCustomerOrderCount") return { customer: { numberOfOrders: "1" } };
+      if (opName(q) === "HgReferralOrderCheck") {
+        return {
+          order: { shippingAddress: { address1: "House 12, Street 5", city: "Karachi", phone: "03117654321" } },
+          customer: { defaultPhoneNumber: null, defaultAddress: { address1: "H 12 St 5", city: "Karachi", phone: null }, addressesV2: { nodes: [] }, orders: { nodes: [] } },
+        };
+      }
+      return {};
+    };
+    withTag();
     await processOrderEvent(order({ discountCodes: ["SALE10"], fulfillmentStatus: "fulfilled", financialStatus: "paid" }), "s");
+    expect(referral).toMatchObject({ status: "flagged", order_check: "same_address", order_checked_order_id: "O1", order_tag: "tagged", shopify_order_id: "O1" });
+    expect(referrer.points_balance).toBe(0);
+    expect(tags()).toHaveLength(1);
+  });
+
+  it("innocent friend without the code (different phone and address): checked once on the qualifying order, paid", async () => {
+    const { referrer, referral } = setupReferral();
+    ship = { address1: "Flat 3, Gulberg III", city: "Lahore", phone: "0311 7654321" };
+    await processOrderEvent(order({ discountCodes: ["SALE10"], fulfillmentStatus: "fulfilled", financialStatus: "paid" }), "s");
+    expect(referral).toMatchObject({ status: "completed", points_awarded: true, order_check: "clear", order_checked_order_id: "O1" });
+    expect(referrer.points_balance).toBe(6000);
+    expect(checks()).toHaveLength(1);
+  });
+
+  it("fulfilled + paid in ONE event (orders/create missed), no code, then replays: checked once, blocked, never paid", async () => {
+    const { referrer, referral } = setupReferral();
+    withTag();
+    const paid = order({ discountCodes: [], fulfillmentStatus: "fulfilled", financialStatus: "paid" });
+    await processOrderEvent(paid, "s");
+    expect(referral.status).toBe("blocked");
+    await processOrderEvent(paid, "s"); // replay
+    await processOrderEvent({ ...paid, updatedAt: at(5) }, "s"); // a later orders/updated
+    expect(checks()).toHaveLength(1);
+    expect(tags()).toHaveLength(1);
+    expect(referrer.points_balance).toBe(0);
+  });
+
+  it("the code order checked at orders/create is NOT checked again when it qualifies (once per order)", async () => {
+    const { referrer, referral } = setupReferral();
+    ship = { address1: "Flat 3, Gulberg III", city: "Lahore", phone: "0311 7654321" };
+    await processOrderEvent(order({ discountCodes: ["WELCOME-AB12"] }), "s");
+    expect(referral).toMatchObject({ status: "pending", order_check: "clear", order_checked_order_id: "O1" });
+    await processOrderEvent(order({ discountCodes: ["WELCOME-AB12"], fulfillmentStatus: "fulfilled", financialStatus: "paid" }), "s");
     expect(referral.status).toBe("completed");
     expect(referrer.points_balance).toBe(6000);
-    expect(checks()).toHaveLength(0);
+    expect(checks()).toHaveLength(1);
+  });
+
+  it("no code and Shopify cannot answer when the order qualifies: nothing paid, the job retries; on the final attempt the referral is held", async () => {
+    const { referrer, referral } = setupReferral();
+    const ok = h.graphql;
+    h.graphql = (q, v) => {
+      if (opName(q) === "HgReferralOrderCheck") throw Object.assign(new Error("Bad Request"), { response: { code: 400 } });
+      return ok(q, v);
+    };
+    const paid = order({ discountCodes: [], fulfillmentStatus: "fulfilled", financialStatus: "paid" });
+    await expect(processOrderEvent(paid, "s")).rejects.toThrow();
+    expect(referral).toMatchObject({ status: "pending", order_check: null });
+    expect(referrer.points_balance).toBe(0);
+    await processOrderEvent(paid, "s", { finalAttempt: true });
+    expect(referral).toMatchObject({ status: "flagged", order_check: "not_checked", order_checked_order_id: "O1", fraud_flags: ["order_check_failed"] });
+    expect(referrer.points_balance).toBe(0);
   });
 
   it("Shopify down at orders/create: the order is still recorded; the check runs before payment and nothing is paid until it can", async () => {

@@ -2,8 +2,11 @@
 // Referral programme (rules 10 and 11).
 //   record   - at the friend's first sign-in with a stored ?ref=slug; same
 //              email/phone is blocked, similar email or same full name is held
-//   check    - the friend's order that used her free-shipping code is compared
-//              with the referrer's phone and addresses BEFORE anything is paid
+//   check    - the friend's first qualifying order (fulfilled + paid, not
+//              cancelled) is compared with the referrer's phone and addresses
+//              BEFORE anything is paid, whether or not she used her
+//              free-shipping code; an order that used the code is also
+//              checked as soon as it is seen (orders/create), once per order
 //   complete - when the friend's first order is fulfilled and paid
 //   review   - held (flagged) referrals wait for staff approve / reject
 //   reverse  - when the qualifying order is fully refunded or cancelled
@@ -206,7 +209,7 @@ export async function recordReferralVisit(input: {
   return { ok: true, recorded: true, blocked: false, status, friendCode };
 }
 
-// ── Order-time check (the friend's order that used her free-shipping code) ──
+// ── Order-time check (her first qualifying order; earlier when it used her code) ──
 
 type ShippingLite = { address1?: string | null; address2?: string | null; city?: string | null; phone?: string | null } | null;
 
@@ -397,6 +400,25 @@ const appendUnique = (list: unknown, item: string): string[] => {
   return arr.includes(item) ? arr : [...arr, item];
 };
 
+/**
+ * The referral already records a match (same phone / same address) on ANOTHER
+ * order of the friend, e.g. her code order matched the referrer's address and
+ * a different, earlier order then became her qualifying order. A clean or
+ * unreadable result for this order must not overwrite that earlier finding
+ * (it carries the Home alert and the order link), so nothing is written: the
+ * referral keeps its status and reasons. Possible only since the check also
+ * runs on orders that did not use the code (owner decision, 19 Nov 2026).
+ */
+function keepsEarlierMatch(
+  referral: { order_check?: unknown; order_checked_order_id?: unknown },
+  orderId: string,
+  result: OrderCheckResult,
+): boolean {
+  const earlier = referral.order_check === "same_phone" || referral.order_check === "same_address";
+  const other = !!referral.order_checked_order_id && String(referral.order_checked_order_id) !== orderId;
+  return earlier && other && (result === "clear" || result === "not_checked");
+}
+
 
 /**
  * Options for the order-time check. `finalAttempt` is true on the background
@@ -407,10 +429,18 @@ const appendUnique = (list: unknown, item: string): string[] => {
 export type ReferralCheckOptions = { finalAttempt?: boolean };
 
 /**
- * Rule 10, order-time check. For an order of a referred friend that USED her
- * referral free-shipping code, compare the order's shipping phone and address
- * with the referrer's (her phone, default and saved addresses, and the
- * shipping details of her last 5 orders):
+ * Rule 10, order-time check (owner decision 19 Nov 2026). Runs on:
+ *   - the friend's FIRST QUALIFYING order (the one that would pay the
+ *     referrer: fulfilled + paid, not cancelled), whether or not she used her
+ *     free-shipping code: `qualifyingOrder: true`, called by
+ *     completeReferralForCustomer before anything is paid, also for a referral
+ *     held at sign-in (so a later Approve still cannot pay a self-referral);
+ *   - any order that USED her referral free-shipping code, as soon as it is
+ *     seen (orders/create, or the first event if that was missed), so the tag
+ *     and the Home alert come early (`qualifyingOrder` absent).
+ * The order's shipping phone and address are compared with the referrer's
+ * (her phone, default and saved addresses, and the shipping details of her
+ * last 5 orders):
  *   same phone   -> referral blocked (flag same_phone_on_order); the referrer
  *                   gets nothing; her right to refer is NOT removed (staff can)
  *   same address -> referral held (flag same_address_on_order) for staff
@@ -418,7 +448,10 @@ export type ReferralCheckOptions = { finalAttempt?: boolean };
  *   (tagsAdd; the only change ever made to an order) and a Home alert is
  *   raised (order_check, alert_resolved_at null).
  * Runs once per order (order_checked_order_id), so webhook replays repeat
- * nothing; only a tag that could not be added yet (throttled) is tried again.
+ * nothing, and an order already checked when it was placed is not checked
+ * again when it qualifies; only a tag that could not be added yet
+ * (throttled) is tried again. A match already recorded on another order of
+ * hers is never overwritten by a clean result (keepsEarlierMatch).
  * If Shopify cannot answer (throttled, 5xx, unknown error, no data) this
  * throws and the job is retried; on the job's final attempt the referral is
  * held instead (order_check not_checked, flag order_check_failed), so it is
@@ -427,9 +460,12 @@ export type ReferralCheckOptions = { finalAttempt?: boolean };
 export async function checkReferralOrder(input: {
   shopifyOrderId: string;
   shopifyCustomerId: string;
-  discountCodes: string[];
+  /** The order's discount codes; only read when `qualifyingOrder` is not set. */
+  discountCodes?: string[];
   shop?: string | null;
   finalAttempt?: boolean;
+  /** The friend's first qualifying order: checked whether or not she used her code. */
+  qualifyingOrder?: boolean;
 }): Promise<ReferralOrderCheck> {
   const orderId = String(input.shopifyOrderId);
   await retryOrderTag(orderId, String(input.shopifyCustomerId), input.shop).catch((err) =>
@@ -437,7 +473,7 @@ export async function checkReferralOrder(input: {
   );
   const { data: open, error } = await db
     .from("referrals")
-    .select("id, referrer_member_id, status, friend_code_id, fraud_flags, block_reason, order_checked_order_id")
+    .select("id, referrer_member_id, status, friend_code_id, fraud_flags, block_reason, order_check, order_checked_order_id")
     .eq("referred_shopify_customer_id", String(input.shopifyCustomerId))
     .in("status", ["pending", "flagged"])
     .limit(1);
@@ -445,17 +481,20 @@ export async function checkReferralOrder(input: {
   const referral = open?.[0];
   if (!referral) return { checked: false, reason: "no_open_referral" };
   if (referral.order_checked_order_id === orderId) return { checked: false, reason: "already_checked" };
-  if (!referral.friend_code_id) return { checked: false, reason: "no_friend_code" };
 
-  const { data: code, error: codeErr } = await db
-    .from("loyalty_codes")
-    .select("code")
-    .eq("id", referral.friend_code_id)
-    .maybeSingle();
-  if (codeErr) throw new Error(`friend code lookup failed: ${codeErr.message}`);
-  const friendCode = code?.code ? String(code.code).toUpperCase() : null;
-  const used = !!friendCode && input.discountCodes.some((c) => String(c).trim().toUpperCase() === friendCode);
-  if (!used) return { checked: false, reason: "code_not_used" };
+  if (!input.qualifyingOrder) {
+    // Early check at orders/create: only for the order that used her code.
+    if (!referral.friend_code_id) return { checked: false, reason: "no_friend_code" };
+    const { data: code, error: codeErr } = await db
+      .from("loyalty_codes")
+      .select("code")
+      .eq("id", referral.friend_code_id)
+      .maybeSingle();
+    if (codeErr) throw new Error(`friend code lookup failed: ${codeErr.message}`);
+    const friendCode = code?.code ? String(code.code).toUpperCase() : null;
+    const used = !!friendCode && (input.discountCodes ?? []).some((c) => String(c).trim().toUpperCase() === friendCode);
+    if (!used) return { checked: false, reason: "code_not_used" };
+  }
 
   const { data: referrer, error: refErr } = await db
     .from("members")
@@ -489,6 +528,12 @@ export async function checkReferralOrder(input: {
       addresses: theirAddresses,
     },
   );
+
+  if (keepsEarlierMatch(referral, orderId, result)) {
+    // Nothing written (the earlier finding stays on the row); a pending
+    // (approved) referral is then paid, a held one keeps waiting for staff.
+    return { checked: true, result, referralId: String(referral.id) };
+  }
 
   // A match tags the order for staff BEFORE the referral row is written: if the
   // process stops in between, the check (and the tag) simply runs again.
@@ -541,7 +586,7 @@ export async function checkReferralOrder(input: {
  * so approval pays without asking Shopify again. No tag (nothing matched).
  */
 async function holdUncheckedReferral(
-  referral: { id: unknown; status: unknown; fraud_flags: unknown; block_reason: unknown },
+  referral: { id: unknown; status: unknown; fraud_flags: unknown; block_reason: unknown; order_check?: unknown; order_checked_order_id?: unknown },
   orderId: string,
   err: unknown,
 ): Promise<ReferralOrderCheck> {
@@ -549,6 +594,11 @@ async function holdUncheckedReferral(
     `[referral-check] order ${orderId}, referral ${String(referral.id)}: Shopify did not answer on the last try; referral held for staff:`,
     err instanceof Error ? err.message.slice(0, 300) : String(err).slice(0, 300),
   );
+  // Already held because another order of hers matched the referrer: it stays
+  // held with that finding (and its alert); nothing to add.
+  if (referral.status === "flagged" && keepsEarlierMatch(referral, orderId, "not_checked")) {
+    return { checked: true, result: "not_checked", referralId: String(referral.id) };
+  }
   const earlier = referral.status === "flagged" && referral.block_reason ? `${String(referral.block_reason)}; ` : "";
   const { error } = await db
     .from("referrals")
@@ -761,9 +811,13 @@ async function openReferralFor(customerId: string): Promise<ReferralRow | undefi
  * Pay the referrer if this customer was referred and her first order is now
  * fulfilled and paid. Safe to call after every award and every cancellation.
  * A flagged referral is not paid; it remembers the order and waits for review.
- * Before paying, the order-time check runs for the qualifying order if it has
- * not run yet (orders/create missed, or Shopify was down then); if Shopify
- * cannot answer now, this throws and nothing is paid (the job is retried).
+ * Before paying, the order-time check runs on the qualifying order if it has
+ * not run on that order yet, whether or not she used her free-shipping code
+ * (owner decision 19 Nov 2026: a self-referrer cannot dodge it by leaving the
+ * code out). It runs for a held referral too, so a referral held at sign-in
+ * and approved later is still checked (or already blocked) before payment.
+ * If Shopify cannot answer now, a pending referral is not paid: this throws
+ * and the job is retried (final attempt: held, see holdUncheckedReferral).
  */
 export async function completeReferralForCustomer(
   shopifyCustomerId: string,
@@ -788,7 +842,7 @@ export async function completeReferralForCustomer(
   if (!order.points_awarded) return { paid: false, reason: "first_order_not_delivered_and_paid" };
   if (fullyRefunded(order)) return { paid: false, reason: "first_order_refunded" };
 
-  if (referral.order_checked_order_id !== order.shopify_order_id && (order.discount_codes ?? []).length > 0) {
+  if (referral.order_checked_order_id !== order.shopify_order_id) {
     try {
       const check = await checkReferralOrder({
         shopifyOrderId: order.shopify_order_id,
@@ -796,6 +850,7 @@ export async function completeReferralForCustomer(
         discountCodes: order.discount_codes ?? [],
         shop,
         finalAttempt: opts.finalAttempt,
+        qualifyingOrder: true,
       });
       if (check.checked) {
         const after = await openReferralFor(customerId);
@@ -823,7 +878,17 @@ export async function completeReferralForCustomer(
 
 /**
  * Approve a held referral: back to `pending`, the friend gets her code, and the
- * referrer is paid at once if the friend's first order already qualifies.
+ * referrer is paid at once if the friend's first order already qualifies AND
+ * the order-time check has run on that order. Approve never skips that check:
+ *   - approved before she has ordered: the check runs when her first order
+ *     qualifies (completeReferralForCustomer), code or no code;
+ *   - the qualifying order was already checked while the referral was held
+ *     (a same-phone result blocked it, so it cannot be approved at all; a
+ *     clean, unreadable or same-address result, or a check Shopify never
+ *     answered, is recorded on the order): paid without asking Shopify again,
+ *     because staff have looked;
+ *   - not checked yet (Shopify was down): checked now; if Shopify still cannot
+ *     answer, a complete_referral job finishes it with retries.
  */
 export async function approveReferral(
   referralId: string,

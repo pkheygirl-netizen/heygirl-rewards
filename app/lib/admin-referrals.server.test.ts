@@ -188,9 +188,9 @@ describe("one referral, and Home alerts from the order-time check (016)", () => 
     const alerts = await mod.listReferralOrderAlerts(10);
     expect(alerts[0]).toMatchObject({
       referralId: ID, kind: "phone", orderName: "#1007", referrerName: "Sara K", referrerReferralsBlocked: false,
-      title: "Order #1007 used a referral free-shipping code but delivers to the referrer's phone number",
+      title: "Order #1007 from a referred friend delivers to the referrer's phone number",
     });
-    expect(alerts[1]).toMatchObject({ kind: "address", orderName: null, referrerReferralsBlocked: true, title: "An order used a referral free-shipping code but delivers to the referrer's address" });
+    expect(alerts[1]).toMatchObject({ kind: "address", orderName: null, referrerReferralsBlocked: true, title: "An order from a referred friend delivers to the referrer's address" });
     expect(alerts[1].detail).toContain("held");
     // the alert says whether the order carries the review tag in Shopify
     expect(alerts[0].detail).toContain('The order is tagged "Rewards: check referral" in Shopify.');

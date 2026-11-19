@@ -237,7 +237,7 @@ describe("pages render with data", () => {
 
   it("Home lists a referral order alert with links to the order and the referral, and Block / Dismiss", async () => {
     const html = await renderRoute("app._index.tsx", "/app");
-    expect(html).toContain("Order #1042 used a referral free-shipping code but delivers to the referrer&#x27;s phone number");
+    expect(html).toContain("Order #1042 from a referred friend delivers to the referrer&#x27;s phone number");
     expect(html).toContain("Open order in Shopify");
     expect(html).toContain("The order is tagged &quot;Rewards: check referral&quot; in Shopify.");
     expect(html).toContain("https://heygirl-pk.myshopify.com/admin/orders/5");

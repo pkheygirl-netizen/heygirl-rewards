@@ -456,10 +456,13 @@ export async function processOrderEvent(ev: OrderEvent, shop?: string | null, op
 
   // Rule 10: a referred friend's order that used her free-shipping code is
   // compared with the referrer's phone and addresses as soon as the order is
-  // seen (orders/create, or the first event if that was missed), before
-  // awardOrder below could pay the referrer. Once per order; read-only in
-  // Shopify. A failure here never stops the order: completeReferralForCustomer
-  // runs the check again before paying and refuses to pay without it.
+  // seen (orders/create, or the first event if that was missed), so the tag
+  // and the Home alert come early. Every other order is checked when it
+  // becomes her first qualifying order: awardOrder -> completeReferralForCustomer
+  // runs the check on that order (code or no code) before paying the referrer,
+  // and skips it when it already ran here. Once per order; the tag is the only
+  // write to Shopify. A failure here never stops the order:
+  // completeReferralForCustomer refuses to pay without the check.
   if (member.referred_by_member_id && !ev.cancelledAt && !state.cancelled_at) {
     const codes = [...new Set([...ev.discountCodes, ...(state.discount_codes ?? [])])];
     if (codes.length > 0) {
