@@ -484,23 +484,24 @@ describe("panel v6 (owner, 19 Nov 2026): her level near the top, other levels at
     expect(h.endsWith("</section></div>")).toBe(true);
   });
 
-  it("Gold: her Gold card on top; only Diamond (the level above her) at the bottom", () => {
+  it("Gold: her Gold card on top; Silver then Diamond at the bottom, in level order", () => {
     const h = rewardsTab(ctx({ member: makeMember({ tier: "gold", lifetimeSpendPkr: 60000 }) }));
-    order(h, ["Your progress</h3>", 'id="hg-level"><h3 class="hg-h"><span class="hg-tier hg-tier--gold">Gold</span><span class="hg-chip">Your level</span>', "Points never expire", PERKS_LINK_TEXT, "Your rewards</h3>", 'id="hg-tiers"', "hg-tier--diamond"]);
+    order(h, ["Your progress</h3>", 'id="hg-level"><h3 class="hg-h"><span class="hg-tier hg-tier--gold">Gold</span><span class="hg-chip">Your level</span>', "Points never expire", PERKS_LINK_TEXT, "Your rewards</h3>", 'id="hg-tiers"', "hg-tier--silver", "Everyone starts here.", "hg-tier--diamond"]);
     const bottom = h.slice(h.indexOf('id="hg-tiers"'));
     expect(bottom).not.toContain("hg-tier--gold");
-    expect(bottom).not.toContain("Everyone starts here.");
-    expect(h).not.toContain("Everyone starts here.");
+    expect(bottom).not.toContain("hg-tcard--me");
+    expect(h.match(/Your level</g)!.length).toBe(1);
   });
 
-  it("Diamond: top-level line, her Diamond card, and no perks line or bottom section (nothing above her)", () => {
+  it("Diamond: top-level line, her Diamond card, then Silver and Gold at the bottom for comparison", () => {
     const h = rewardsTab(ctx({ member: makeMember({ tier: "diamond", lifetimeSpendPkr: 150000 }) }));
     expect(TOP_LEVEL_TEXT).toBe("You're at our top level.");
-    order(h, ["Your progress</h3>", TOP_LEVEL_TEXT, 'id="hg-level"><h3 class="hg-h"><span class="hg-tier hg-tier--diamond">Diamond</span><span class="hg-chip">Your level</span>', "Your rewards</h3>"]);
+    order(h, ["Your progress</h3>", TOP_LEVEL_TEXT, 'id="hg-level"><h3 class="hg-h"><span class="hg-tier hg-tier--diamond">Diamond</span><span class="hg-chip">Your level</span>', PERKS_LINK_TEXT, "Your rewards</h3>", `<h3 class="hg-h hg-sec" tabindex="-1">${OTHER_LEVELS_TITLE}</h3>`, "hg-tier--silver", "Everyone starts here.", "hg-tier--gold", "Spend Rs. 50,000 in total."]);
     expect(h).toContain('aria-label="Progress to top level"');
-    expect(h).not.toContain(PERKS_LINK_TEXT);
-    expect(h).not.toContain('id="hg-tiers"');
-    expect(h).not.toContain(OTHER_LEVELS_TITLE);
+    const bottom = h.slice(h.indexOf('id="hg-tiers"'));
+    expect(bottom).not.toContain("hg-tier--diamond");
+    expect(bottom).not.toContain("hg-tcard--me");
+    expect(h.match(/Your level</g)!.length).toBe(1);
   });
 
   it("the notices sit just above Refer & Earn, and the bottom section stays without a referral card", () => {

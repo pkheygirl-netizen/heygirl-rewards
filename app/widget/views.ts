@@ -309,9 +309,10 @@ export const TOP_LEVEL_TEXT = "You're at our top level.";
 /**
  * Member home tab, top to bottom: balance card, "Your progress", her own level
  * card (#hg-level), the "View all VIP perks" line, codes, redeem, the pending
- * and expiry notices, Refer & Earn, then the levels above hers (#hg-tiers: where
- * the perks line, "tiers" deep links and the level nudge land). A Diamond member
- * has none above her, so the line and the bottom section are left out.
+ * and expiry notices, Refer & Earn, then every other level in level order
+ * (#hg-tiers: where the perks line, "tiers" deep links and the level nudge land),
+ * so she can compare where she stands: Silver sees Gold and Diamond, Gold sees
+ * Silver and Diamond, Diamond sees Silver and Gold (owner, 19 Nov 2026).
  */
 export function rewardsTab(c: Ctx): string {
   const m = c.member!;
@@ -410,11 +411,11 @@ export function levelCard(c: Ctx, t: Tier): string {
 const LEVELS: Tier[] = ["silver", "gold", "diamond"];
 
 /**
- * The level cards in order: all three (guests), or with `above` only the levels
- * higher than that one (the Rewards tab's bottom section: none for Diamond).
+ * The level cards in level order: all three (guests), or with `except` every
+ * level but that one (the Rewards tab's bottom section).
  */
-export function tierCards(c: Ctx, above?: Tier): string {
-  return LEVELS.slice(above ? LEVELS.indexOf(above) + 1 : 0).map((t) => levelCard(c, t)).join("");
+export function tierCards(c: Ctx, except?: Tier): string {
+  return LEVELS.filter((t) => t !== except).map((t) => levelCard(c, t)).join("");
 }
 
 export const HISTORY_FILTERS: Array<{ key: string; label: string }> = [
