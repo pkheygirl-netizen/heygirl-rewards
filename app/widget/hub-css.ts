@@ -97,6 +97,11 @@ export const HUB_CSS = `
 .hg-bal__l{font-size:14px;color:var(--ball)}
 .hg-bal__n{font-size:34px;font-weight:800;line-height:1.15;color:var(--baln);margin:2px 0 8px!important}
 .hg-bal__n span{font-size:15px;font-weight:600;color:var(--balt)}
+.hg-bal__now{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px;padding-top:12px;border-top:1px solid rgba(128,128,128,.35)}
+.hg-bal__now p{font-size:14px;color:var(--balt)}
+.hg-bal__now strong{color:var(--baln)}
+.hg-hub .hg-bal__go{background:var(--baln);color:var(--balb)!important}
+.hg-hub--dark .hg-bal__go{color:var(--ht)!important}
 .hg-tier{display:inline-block;padding:3px 12px;border-radius:999px;font-size:13px;font-weight:700;background:#e4e4e4;color:#1a1a1a}
 .hg-tier{border:1px solid #595959}
 .hg-tier--gold{background:#f3bd1c;border-color:var(--gd)}

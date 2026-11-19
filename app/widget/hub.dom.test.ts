@@ -317,12 +317,12 @@ describe("hub.ts: panel v5 tabs (owner, 19 Nov 2026)", () => {
     return t;
   };
 
-  it("member tabs are exactly Rewards, Refer & Earn, Shop & Earn, History (no VIP tiers tab)", async () => {
+  it("member tabs are exactly Rewards, Refer & Earn, Earn Points, History (no VIP tiers tab)", async () => {
     const h = await load();
     h.api._hub!("", null);
     const html = h.panel().innerHTML;
     const tabs = [...html.matchAll(/<button type="button" class="hg-tab" role="tab" id="hg-tab-([a-z]+)"[^>]*>([^<]*)<\/button>/g)].map((m) => [m[1], m[2]]);
-    expect(tabs).toEqual([["rewards", "Rewards"], ["refer", "Refer &amp; Earn"], ["earn", "Shop &amp; Earn"], ["history", "History"]]);
+    expect(tabs).toEqual([["rewards", "Rewards"], ["refer", "Refer &amp; Earn"], ["earn", "Earn Points"], ["history", "History"]]);
     expect(html).not.toContain("VIP tiers");
     expect(html).not.toContain("hg-tab-tiers");
   });
@@ -375,6 +375,17 @@ describe("hub.ts: panel v5 tabs (owner, 19 Nov 2026)", () => {
     h.clickAct("perks");
     expect(h.body().scrollCalls).toEqual([{ top: 1492, behavior: "smooth" }]);
     expect(activeElement).toBe(h.body().querySelector("#hg-tiers .hg-sec"));
+  });
+
+  it("Redeem on the balance card scrolls to the Redeem points list and focuses its heading", async () => {
+    const h = await load();
+    h.api._hub!("", null);
+    const r = h.body().querySelector("#hg-redeem") as El;
+    expect(r).toBeTruthy();
+    r.rectTop = 900;
+    h.clickAct("to-redeem");
+    expect(h.body().scrollCalls).toEqual([{ top: 892, behavior: "smooth" }]);
+    expect(activeElement).toBe(r);
   });
 
   it("with reduced motion asked for, the perks line jumps instead of animating", async () => {

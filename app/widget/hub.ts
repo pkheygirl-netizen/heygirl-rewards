@@ -19,7 +19,7 @@ import { earnTab, errorText, REVIEW_PENDING_TEXT, guestHome, guestSub, historyFi
   const TABS: Array<{ key: string; label: string }> = [
     { key: "rewards", label: "Rewards" },
     { key: "refer", label: "Refer &amp; Earn" },
-    { key: "earn", label: "Shop &amp; Earn" },
+    { key: "earn", label: "Earn Points" },
     { key: "history", label: "History" },
   ];
   const GUEST_TITLES: Record<string, string> = { earn: "Ways to earn", redeem: "Ways to redeem", tiers: "VIP levels" };
@@ -243,7 +243,11 @@ import { earnTab, errorText, REVIEW_PENDING_TEXT, guestHome, guestSub, historyFi
    * shopper asked for reduced motion.
    */
   function toLevels(smooth: boolean) {
-    const t = body.querySelector<HTMLElement>("#hg-tiers") || body.querySelector<HTMLElement>("#hg-level");
+    scrollToEl(body.querySelector<HTMLElement>("#hg-tiers") || body.querySelector<HTMLElement>("#hg-level"), smooth);
+  }
+
+  /** Scrolls the panel body so `t` sits at the top (smooth only for a tap, never with reduced motion). */
+  function scrollToEl(t: HTMLElement | null, smooth: boolean) {
     if (!t) return;
     const top = Math.max(0, t.getBoundingClientRect().top - body.getBoundingClientRect().top + body.scrollTop - 8);
     const still = !!window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -429,6 +433,12 @@ import { earnTab, errorText, REVIEW_PENDING_TEXT, guestHome, guestSub, historyFi
       toLevels(true);
       // Keyboard and screen-reader users land on the section heading too.
       const h = body.querySelector<HTMLElement>("#hg-tiers .hg-sec");
+      if (h) h.focus({ preventScroll: true });
+    }
+    else if (a === "to-redeem") {
+      // "Redeem" on the balance card: jump to the Redeem points list and put focus on its heading.
+      const h = body.querySelector<HTMLElement>("#hg-redeem");
+      scrollToEl(h, true);
       if (h) h.focus({ preventScroll: true });
     }
     else if (a === "retry") { member = null; api!.invalidate(); openMember(screen); }

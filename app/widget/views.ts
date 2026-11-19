@@ -321,21 +321,24 @@ export function rewardsTab(c: Ctx): string {
   if (mm.pendingPoints > 0) {
     notes.push(`<p class="hg-note">${ico("clock")}<span><strong>${pts(mm.pendingPoints)}</strong> pending. They are added once your order is delivered and paid.</span></p>`);
   }
-  if (m.nextExpiry && m.nextExpiry.points > 0) {
-    notes.push(`<p class="hg-note hg-note--warn">${ico("clock")}<span><strong>${pts(m.nextExpiry.points)}</strong> will expire on ${esc(fmtDate(m.nextExpiry.at))}.</span></p>`);
-  }
+  // Owner, 19 Nov 2026: only the expiry warning sits at the top (under the balance card); pending stays lower.
+  const expiry =
+    m.nextExpiry && m.nextExpiry.points > 0
+      ? `<p class="hg-note hg-note--warn">${ico("clock")}<span><strong>${pts(m.nextExpiry.points)}</strong> will expire on ${esc(fmtDate(m.nextExpiry.at))}.</span></p>`
+      : "";
   const refer =
     on(c.cfg, "referral") && referralUrl(c)
       ? `<section class="hg-card"><h3 class="hg-h">Refer &amp; Earn</h3><p class="hg-p">Share your link. You earn when a friend's first order is delivered and paid.</p>${referBox(c)}</section>`
       : "";
   const others = tierCards(c, mm.tier);
   return (
-    `<section class="hg-bal"><p class="hg-bal__l">Hi ${esc(mm.firstName || "there")}, you have</p><p class="hg-bal__n">${fmt(mm.pointsBalance)} <span>points</span></p><span class="hg-tier hg-tier--${mm.tier}">${TIER_NAME[mm.tier]} member</span></section>` +
+    `<section class="hg-bal"><p class="hg-bal__l">Hi ${esc(mm.firstName || "there")}, you have</p><p class="hg-bal__n">${fmt(mm.pointsBalance)} <span>points</span></p><span class="hg-tier hg-tier--${mm.tier}">${TIER_NAME[mm.tier]} member</span>${canGetNow(c)}</section>` +
+    expiry +
     progressCard(c) +
     levelCard(c, mm.tier) +
     (others ? `<button type="button" class="hg-link" data-act="perks">${PERKS_LINK_TEXT}${ico("chev")}</button>` : "") +
     `<section class="hg-card"><h3 class="hg-h">Your rewards</h3>${codesList(c)}</section>` +
-    `<section class="hg-card"><h3 class="hg-h">Redeem points</h3>${redeemList(c)}</section>` +
+    `<section class="hg-card"><h3 class="hg-h" id="hg-redeem" tabindex="-1">Redeem points</h3>${redeemList(c)}</section>` +
     notes.join("") +
     refer +
     (others ? `<div class="hg-tiers" id="hg-tiers"><h3 class="hg-h hg-sec" tabindex="-1">${OTHER_LEVELS_TITLE}</h3>${others}</div>` : "")
@@ -371,13 +374,26 @@ export function referTab(c: Ctx, summary: ReferralSummary | null): string {
   return `<section class="hg-card"><h3 class="hg-h">Refer &amp; Earn</h3><p class="hg-p">Invite a friend. You are rewarded when their first order is delivered and paid.</p>${referPerks(c, youGet)}${referBox(c, !!share)}${share}</section>${influencerBox(c)}${stats}`;
 }
 
+/**
+ * Balance card line (UI review, owner 19 Nov 2026): the biggest reward she can
+ * take now, with a Redeem button that jumps to the list. Nothing when she can't
+ * afford any reward yet or redeeming is paused.
+ */
+export function canGetNow(c: Ctx): string {
+  if (!c.member || c.cfg.redeemPaused) return "";
+  const bal = c.member.member.pointsBalance;
+  const best = c.cfg.redemptionTiers.filter((t) => t.points <= bal).reduce((a, t) => Math.max(a, t.discountPkr), 0);
+  if (best <= 0) return "";
+  return `<div class="hg-bal__now"><p>You can get up to <strong>${rs(best)} off</strong> now</p><button type="button" class="hg-btn hg-btn--sm hg-bal__go" data-act="to-redeem">Redeem${ico("chev")}</button></div>`;
+}
+
 /** "Your progress" card: tier, progress bar and what is left to the next tier ("" for guests). */
 export function progressCard(c: Ctx): string {
   const mm = c.member ? c.member.member : null;
   if (!mm) return "";
   const p = tierProgress(mm.lifetimeSpendPkr, mm.tier, c.cfg.tiers);
   return (
-    `<section class="hg-card hg-prog"><h3 class="hg-h">Your progress</h3><p class="hg-p">You are a <strong>${TIER_NAME[p.tier]}</strong> member.</p>` +
+    `<section class="hg-card hg-prog"><h3 class="hg-h">Your progress</h3>` +
     `<div class="hg-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${p.pct}" aria-label="Progress to ${p.next ? TIER_NAME[p.next] : "top level"}"><span style="width:${p.pct}%"></span></div>` +
     (p.next
       ? `<p class="hg-row__s">Spend ${rs(p.remaining)} more to reach ${TIER_NAME[p.next]} (${rs(p.target)} in total).</p>`

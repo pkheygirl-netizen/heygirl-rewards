@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { EARN_ICON, REDEEM_ICON, REVIEW_PENDING_TEXT, reviewTitle, earnList, earnTab, errorText, guestHome, guestSub, historyRows, influencerBox, instagramHandle, REDEEM_PAUSED_TEXT, redeemList, referralReward, OTHER_LEVELS_TITLE, PERKS_LINK_TEXT, progressCard, referTab, rewardsTab, stateMessage, tierCards, TOP_LEVEL_TEXT, type Ctx } from "./views";
+import { EARN_ICON, REDEEM_ICON, REVIEW_PENDING_TEXT, reviewTitle, earnList, earnTab, errorText, guestHome, guestSub, historyRows, influencerBox, instagramHandle, REDEEM_PAUSED_TEXT, redeemList, referralReward, OTHER_LEVELS_TITLE, PERKS_LINK_TEXT, progressCard, referTab, rewardsTab, stateMessage, tierCards, canGetNow, TOP_LEVEL_TEXT, type Ctx } from "./views";
 import { makeConfig, makeMember } from "./test-fixtures";
 import { HUB_CSS, HUB_ICONS } from "./hub-css";
 
@@ -360,7 +360,9 @@ describe("rule 20: redeeming paused (the program switch)", () => {
     const m = makeMember({ pointsBalance: 9000 }, { codes: [CODE] });
     const h = rewardsTab(ctx({ cfg: paused(), member: m }));
     expect(h).toContain("9,000 <span>points</span>");
-    expect(h).toContain('<h3 class="hg-h">Redeem points</h3>');
+    expect(h).toContain('<h3 class="hg-h" id="hg-redeem" tabindex="-1">Redeem points</h3>');
+    // Paused: no "You can get up to …" line on the balance card.
+    expect(h).not.toContain("hg-bal__now");
     expect(h).toContain(REDEEM_PAUSED_TEXT);
     expect(REDEEM_PAUSED_TEXT).toContain("You are still earning points");
     expect(REDEEM_PAUSED_TEXT).not.toMatch(/code/i); // it does not claim issued codes are blocked
@@ -453,19 +455,22 @@ describe("panel v6 (owner, 19 Nov 2026): her level near the top, other levels at
   };
   const silverAt = (spend: number) => makeMember({ pendingPoints: 1200, lifetimeSpendPkr: spend }, { nextExpiry: { points: 800, at: "2026-12-01T10:00:00Z" } });
 
-  it("Silver, top to bottom: balance, progress, her Silver card, View all VIP perks, rewards, redeem, notices, Refer & Earn, Other VIP levels (Gold, Diamond)", () => {
+  it("Silver, top to bottom: balance (with what she can get now), expiry warning, progress, her Silver card, View all VIP perks, rewards, redeem, pending, Refer & Earn, Other VIP levels (Gold, Diamond)", () => {
     const h = rewardsTab(ctx({ member: silverAt(1300) }));
     order(h, [
       '<section class="hg-bal">',
+      "Silver member</span>",
+      'You can get up to <strong>Rs. 100 off</strong> now</p><button type="button" class="hg-btn hg-btn--sm hg-bal__go" data-act="to-redeem">Redeem',
+      "</section>",
+      "800 points</strong> will expire on",
       "Your progress</h3>",
       "Spend Rs. 48,700 more to reach Gold (Rs. 50,000 in total).",
       '<section class="hg-card hg-tcard hg-tcard--me" id="hg-level"><h3 class="hg-h"><span class="hg-tier hg-tier--silver">Silver</span><span class="hg-chip">Your level</span></h3>',
       "Everyone starts here.",
       `<button type="button" class="hg-link" data-act="perks">${PERKS_LINK_TEXT}<svg class="hg-ic" aria-hidden="true" focusable="false"><use href="#hg-i-chev"/></svg></button>`,
       "Your rewards</h3>",
-      "Redeem points</h3>",
+      'id="hg-redeem" tabindex="-1">Redeem points</h3>',
       "1,200 points</strong> pending",
-      "800 points</strong> will expire on",
       "Refer &amp; Earn</h3>",
       'id="hg-ref-link"',
       `<div class="hg-tiers" id="hg-tiers"><h3 class="hg-h hg-sec" tabindex="-1">Other VIP levels</h3>`,
@@ -474,6 +479,8 @@ describe("panel v6 (owner, 19 Nov 2026): her level near the top, other levels at
       "hg-tier--diamond",
       "Spend Rs. 100,000 in total.",
     ]);
+    // "Silver" is no longer repeated as a sentence in Your progress (UI review).
+    expect(h).not.toContain("You are a <strong>");
     // Her level appears once (at the top); the bottom holds only the others.
     expect((h.match(/hg-tier--silver/g) || []).length).toBe(2); // balance badge + her card
     expect(h.match(/Everyone starts here\./g)!.length).toBe(1);
@@ -502,6 +509,13 @@ describe("panel v6 (owner, 19 Nov 2026): her level near the top, other levels at
     expect(bottom).not.toContain("hg-tier--diamond");
     expect(bottom).not.toContain("hg-tcard--me");
     expect(h.match(/Your level</g)!.length).toBe(1);
+  });
+
+  it("balance card: the biggest reward she can afford now; nothing when she can afford none", () => {
+    expect(canGetNow(ctx({ member: makeMember({ pointsBalance: 14250 }) }))).toContain("<strong>Rs. 250 off</strong>");
+    expect(canGetNow(ctx({ member: makeMember({ pointsBalance: 2999 }) }))).toBe("");
+    expect(canGetNow(ctx({ member: makeMember({ pointsBalance: 999999 }), cfg: makeConfig({ redeemPaused: true }) }))).toBe("");
+    expect(canGetNow(ctx())).toBe("");
   });
 
   it("the notices sit just above Refer & Earn, and the bottom section stays without a referral card", () => {
