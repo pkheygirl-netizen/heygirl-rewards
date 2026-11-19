@@ -12,7 +12,9 @@ import {
   ConfirmModal, CopyButton, Pager, ResultBanner, TierBadge, fieldError, newIdempotencyKey, useActionToast,
 } from "../components/admin-ui";
 import { MONTH_NAMES, fmtDate, fmtDateTime, fmtInt, fmtPkr, fmtSigned, tierLabel } from "../components/karachi";
-import { getActivity, parseActivityFilter } from "../lib/admin-data.server";
+import { getActivity, listPendingReviewClaims, parseActivityFilter } from "../lib/admin-data.server";
+import { handleReviewClaimIntent } from "../lib/admin-review-claims.server";
+import { ReviewClaimConfirm, type ClaimDecision } from "../components/review-claim-confirm";
 import {
   actorFromSession, addStaffNote, adjustBalance, codeBelongsTo, deleteStaffNote,
   getCustomerProfile, listRewardCodes, listStaffNotes, parseAdjustment, parseBirthday,
@@ -40,18 +42,19 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const pageRaw = Number(sp.get("apage") ?? "0");
   const activityPage = Number.isInteger(pageRaw) && pageRaw > 0 ? pageRaw : 0;
 
-  const [codes, notes, activity, settings] = await Promise.all([
+  const [codes, notes, activity, settings, claims] = await Promise.all([
     listRewardCodes(id),
     listStaffNotes(id),
     getActivity({ filter, memberId: id, page: activityPage, pageSize: ACTIVITY_PAGE }),
     getSettingsRow(),
+    listPendingReviewClaims(0, 20, id),
   ]);
   const thresholds = {
     gold: Number(settings.tier_gold_threshold_pkr ?? 50000),
     diamond: Number(settings.tier_diamond_threshold_pkr ?? 100000),
   };
   return json({
-    profile, codes, notes, activity, filter, activityPage,
+    profile, codes, notes, activity, filter, activityPage, claims: claims.rows,
     progress: tierProgress(profile.lifetimeSpendPkr, profile.tier, thresholds),
     expiryDays: Number(settings.silver_expiry_days ?? 365),
     referralUrl: referralLink(profile.referralSlug, session.shop),
@@ -70,6 +73,13 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const done = (message: string) => json({ ok: true as const, message, intent });
 
   try {
+    if (intent === "approve_claim" || intent === "reject_claim") {
+      // Only this customer's own waiting claims can be decided here.
+      const mine = (await listPendingReviewClaims(0, 100, id)).rows.map((c) => c.id);
+      const res = await handleReviewClaimIntent(intent, form.get("claim_id"), actor, mine);
+      if (res && !res.ok) return fail(res.error, res.status);
+      if (res && res.ok) return done(res.message);
+    }
     switch (intent) {
       case "adjust": {
         const parsed = parseAdjustment(form);
@@ -186,6 +196,7 @@ export default function CustomerProfilePage() {
   const [bDay, setBDay] = useState(String(p.birthdayDay ?? 1));
   const [note, setNote] = useState("");
   const [confirm, setConfirm] = useState<Confirm | null>(null);
+  const [deciding, setDeciding] = useState<ClaimDecision | null>(null);
 
   // Close forms and clear them once the server says the change was applied.
   useEffect(() => {
@@ -293,6 +304,32 @@ export default function CustomerProfilePage() {
                 </Text>
               </BlockStack>
             </Card>
+
+            {d.claims.length > 0 ? (
+              <Card>
+                <BlockStack gap="300">
+                  <Text as="h2" variant="headingMd">Review claims waiting</Text>
+                  <Text as="p" tone="subdued">
+                    Points are added only when you approve. Check that she posted a public review of her order and tagged @heygirl.pk.
+                  </Text>
+                  {d.claims.map((c, i) => (
+                    <BlockStack gap="300" key={c.id}>
+                      {i > 0 ? <Divider /> : null}
+                      <InlineStack align="space-between" blockAlign="center" gap="300" wrap>
+                        <BlockStack gap="050">
+                          <Text as="span" fontWeight="semibold">{fmtInt(c.points)} points</Text>
+                          <Text as="span" tone="subdued" variant="bodySm">Claimed {fmtDateTime(c.claimedAt)}</Text>
+                        </BlockStack>
+                        <ButtonGroup>
+                          <Button variant="primary" loading={busy} onClick={() => setDeciding({ kind: "approve", id: c.id, name: p.name, points: c.points })}>Approve</Button>
+                          <Button tone="critical" loading={busy} onClick={() => setDeciding({ kind: "reject", id: c.id, name: p.name, points: c.points })}>Reject</Button>
+                        </ButtonGroup>
+                      </InlineStack>
+                    </BlockStack>
+                  ))}
+                </BlockStack>
+              </Card>
+            ) : null}
 
             <Card padding="0">
               <Box padding="400">
@@ -554,6 +591,16 @@ export default function CustomerProfilePage() {
           </BlockStack>
         </Modal.Section>
       </Modal>
+
+      <ReviewClaimConfirm
+        decision={deciding}
+        loading={busy}
+        onClose={() => setDeciding(null)}
+        onConfirm={(c) => {
+          post({ intent: c.kind === "approve" ? "approve_claim" : "reject_claim", claim_id: c.id });
+          setDeciding(null);
+        }}
+      />
 
       <ConfirmModal
         open={confirm !== null}

@@ -6,6 +6,7 @@ import {
   shopifyApp,
 } from "@shopify/shopify-app-remix/server";
 import { SupabaseSessionStorage } from "./supabase-session-storage.server";
+import { removeLegacyScriptTags } from "./lib/legacy-scripttags.server";
 import { ensureRewardsPage } from "./lib/rewards-page.server";
 
 // Billing plan definitions — activate by passing `billing` to shopifyApp() and
@@ -63,6 +64,9 @@ const shopify = shopifyApp({
     afterAuth: async ({ session, admin }) => {
       await shopify.registerWebhooks({ session });
       await ensureRewardsPage(admin);
+      // v2 left a script tag on every storefront page; remove it (non-fatal,
+      // reports "no_scope" while the script-tag scopes are not granted).
+      await removeLegacyScriptTags(admin);
     },
   },
 });

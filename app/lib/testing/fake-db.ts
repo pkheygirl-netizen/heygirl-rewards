@@ -502,6 +502,12 @@ export function fakeQueue() {
       jobs.push({ name, data, opts });
       return { id: String(jobs.length) };
     },
+    /** Repeatable schedules removed with removeRepeatable(name, repeat, jobId). */
+    removedRepeatables: [] as Array<{ name: string; repeat: Row; jobId?: string }>,
+    async removeRepeatable(name: string, repeat: Row, jobId?: string) {
+      this.removedRepeatables.push({ name, repeat, jobId });
+      return true;
+    },
     getFailedCount: async () => 0,
     /** Jobs a test wants to exist already (e.g. a failed job with a fixed id). */
     existing: new Map<string, { failed: boolean; removed: boolean }>(),

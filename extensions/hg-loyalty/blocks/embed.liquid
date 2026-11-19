@@ -5,6 +5,8 @@
   Renders nothing only when the config is missing (not yet published). The
   program switch does not hide anything: it only pauses redeeming (contract
   rule 20, `redeemPaused`).
+  The toast (nudges) follows the panel style: hg-core.js adds hg-toast--dark
+  unless the style is Light; its colours are the Dark panel tokens.
   The cart line's CSS is printed once per page: by the product or cart app
   block when present, otherwise by hg-core.js (never twice).
   Guests cause no request to the app server.
@@ -12,22 +14,26 @@
 {%- assign cfg = app.metafields.hg_loyalty.config.value -%}
 {%- if cfg -%}
   <style>
-    .hg-launcher{position:fixed;z-index:2147483000;bottom:20px;{{ block.settings.position }}:16px;display:inline-flex;align-items:center;gap:8px;min-height:52px;padding:4px 16px 4px 4px;border:2px solid #7a5c00;border-radius:999px;background:#e8ad00;color:#1a1a1a;font:inherit;font-size:15px;font-weight:700;line-height:1;letter-spacing:normal;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.22)}
-    .hg-launcher:focus-visible{outline:3px solid #1a1a1a;outline-offset:3px}
+    .hg-launcher{position:fixed;z-index:2147483000;bottom:20px;{{ block.settings.position }}:16px;display:inline-flex;align-items:center;gap:9px;height:48px;min-height:48px;padding:0 20px 0 16px;border:1px solid #c99a12;border-radius:999px;background:#0e0e0e;color:#f3bd1c;font:inherit;font-size:15px;font-weight:600;line-height:1;letter-spacing:.2px;text-transform:none;white-space:nowrap;cursor:pointer;box-shadow:0 6px 18px rgba(0,0,0,.25)}
+    .hg-launcher:focus-visible{outline:3px solid #f3bd1c;outline-offset:2px;box-shadow:0 0 0 7px #0e0e0e,0 6px 18px rgba(0,0,0,.25)}
     .hg-launcher[aria-busy=true]{opacity:.8}
-    .hg-launcher__ic{display:flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:50%;background:#fff}
-    .hg-launcher__ic .hg-ico{width:26px;height:26px}
-    .hg-launcher__label{display:inline-block;min-width:84px;text-align:center;white-space:nowrap}
+    .hg-launcher .hg-ico{width:22px;height:22px;flex:none;color:#f3bd1c}
+    .hg-launcher__label{display:inline-block;min-width:84px;text-align:left;white-space:nowrap}
     .hg-toast{position:fixed;z-index:2147482999;bottom:84px;{{ block.settings.position }}:16px;width:300px;max-width:calc(100vw - 32px);padding:14px 44px 14px 14px;border:1px solid #e9e2cc;border-radius:14px;background:#fff;color:#1a1a1a;font-size:14px;line-height:1.4;letter-spacing:normal;box-shadow:0 8px 28px rgba(0,0,0,.18)}
     .hg-toast p{margin:0}
     .hg-toast__t{font-weight:700;font-size:15px}
     .hg-toast__b{color:#595959;margin-top:2px!important}
     .hg-toast__x{position:absolute;top:0;right:0;width:44px;height:44px;border:0;background:none;color:#1a1a1a;font-size:22px;line-height:1;cursor:pointer}
+    .hg-toast--dark{border-color:#3a3a3a;border-top:2px solid #f3bd1c;background:#121212;color:#f5f5f5;box-shadow:0 8px 28px rgba(0,0,0,.6)}
+    .hg-toast--dark .hg-toast__b{color:#bdbdbd}
+    .hg-toast--dark .hg-toast__x{color:#f5f5f5}
+    .hg-toast--dark :focus-visible{outline:3px solid #f5f5f5;outline-offset:2px;box-shadow:none}
     .hg-toast__cta{display:inline-flex;align-items:center;min-height:44px;margin-top:8px;padding:0 16px;border:2px solid #7a5c00;border-radius:999px;background:#e8ad00;color:#1a1a1a;font:inherit;font-weight:700;text-decoration:none;cursor:pointer}
     @media (prefers-reduced-motion:no-preference){.hg-launcher{transition:transform .15s ease}.hg-launcher:hover{transform:translateY(-2px)}}
     @media print{.hg-launcher,.hg-toast{display:none}}
   </style>
-  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><symbol id="hg-i-gift" viewBox="0 0 24 24"><path fill="#d62839" d="M12 6.6C10.3 2.3 5.2 3.3 7.3 6.6zM12 6.6c1.7-4.3 6.8-3.3 4.7 0z"/><rect x="3.5" y="10" width="17" height="11" rx="1.5" fill="#f7c531" stroke="#8a5d00" stroke-width=".7"/><rect x="2.5" y="6.5" width="19" height="4.5" rx="1.2" fill="#ffd95a" stroke="#8a5d00" stroke-width=".7"/><path fill="#d62839" d="M10.5 6.5h3V21h-3z"/></symbol></svg>
+  {%- comment -%} Line gift (stroke = currentColor): gold on the black launcher, dark gold on the cart/product lines. {%- endcomment -%}
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><symbol id="hg-i-gift" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="8.5" width="17" height="4" rx="1"/><path d="M5 12.5v7a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-7"/><path d="M12 8.5v12"/><path d="M12 8.5c-1.2-2.6-4.8-3.6-5.6-1.6-.6 1.5 1.6 1.6 5.6 1.6zM12 8.5c1.2-2.6 4.8-3.6 5.6-1.6.6 1.5-1.6 1.6-5.6 1.6z"/></symbol></svg>
   <button
     type="button"
     id="hg-launcher"
@@ -36,10 +42,11 @@
     data-pos="{{ block.settings.position }}"
     aria-haspopup="dialog"
     aria-expanded="false"
-    aria-label="{{ cfg.programName | escape }}: open rewards"
+    aria-label="{{ cfg.launcherLabel | default: 'Shop & Earn' | escape }}: open {{ cfg.programName | escape }}"
   >
-    <span class="hg-launcher__ic"><svg class="hg-ico" aria-hidden="true" focusable="false"><use href="#hg-i-gift"/></svg></span>
-    <span class="hg-launcher__label">Rewards</span>
+    <svg class="hg-ico" aria-hidden="true" focusable="false"><use href="#hg-i-gift"/></svg>
+    {%- comment -%} Visitors: the On-site text (plain text, escaped). Members: hg-core.js writes the balance. {%- endcomment -%}
+    <span class="hg-launcher__label">{{ cfg.launcherLabel | default: 'Shop & Earn' | escape }}</span>
   </button>
   {%- liquid
     assign hg_rewards_url = block.settings.rewards_page.url | default: routes.account_login_url

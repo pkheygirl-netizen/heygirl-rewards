@@ -2,7 +2,6 @@ import { Worker } from "bullmq";
 import { makeRedis, cronQueue, pointsQueue, notificationQueue, failedJobCounts } from "../lib/queue.server";
 import { awardOverdueSocialActions, expireSilverPoints } from "../lib/points.service";
 import { listBirthdayMemberIds } from "../lib/birthday.service";
-import { releaseDueReviewClaims } from "../lib/review-claims.service";
 import { sweepPendingCodes } from "../lib/redemption.service";
 import { getAdminForShop } from "../lib/worker-admin.server";
 import { syncStorefrontConfig } from "../lib/storefront-config.server";
@@ -16,7 +15,6 @@ const TZ = "Asia/Karachi";
 const SCHEDULE: Array<{ name: string; pattern: string }> = [
   { name: "cron_heartbeat", pattern: "* * * * *" }, // every minute: "the worker is alive"
   { name: "cron_pending_codes", pattern: "*/10 * * * *" }, // finish or undo codes left half-made
-  { name: "cron_review_release", pattern: "*/15 * * * *" },
   { name: "cron_social_sweep", pattern: "7,37 * * * *" }, // award social claims whose delayed job was lost
   { name: "cron_storefront_config", pattern: "5 * * * *" }, // see runStorefrontConfig
   { name: "cron_expiry", pattern: "0 2 * * *" },
@@ -26,9 +24,26 @@ const SCHEDULE: Array<{ name: string; pattern: string }> = [
   { name: "cron_birthday", pattern: "0 9 * * *" },
 ];
 
+/**
+ * Schedules that no longer exist. A repeatable job stays in Redis until it is
+ * removed, so each one is removed with the exact options it was added with.
+ * cron_review_release paid review claims automatically; since 18 Nov 2026
+ * staff approve every claim (rule 14), so it must never run again.
+ */
+export const RETIRED_SCHEDULES: Array<{ name: string; pattern: string }> = [
+  { name: "cron_review_release", pattern: "*/15 * * * *" },
+];
+
 export async function registerCronJobs() {
   for (const job of SCHEDULE) {
     await cronQueue.add(job.name, {}, { repeat: { pattern: job.pattern, tz: TZ }, jobId: job.name });
+  }
+  for (const old of RETIRED_SCHEDULES) {
+    try {
+      await cronQueue.removeRepeatable(old.name, { pattern: old.pattern, tz: TZ }, old.name);
+    } catch (err) {
+      console.error(`[cronWorker] could not remove retired schedule ${old.name}:`, err instanceof Error ? err.message : err);
+    }
   }
 }
 
@@ -178,7 +193,9 @@ export async function runCronJob(name: string): Promise<unknown> {
     case "cron_birthday":
       return runBirthday();
     case "cron_review_release":
-      return releaseDueReviewClaims();
+      // Retired (rule 14: staff approve every review claim). A run already
+      // queued before the schedule was removed does nothing.
+      return { retired: true };
     case "cron_pending_codes":
       return sweepPendingCodes();
     case "cron_social_sweep":

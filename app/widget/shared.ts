@@ -4,8 +4,9 @@
 import type { PublicCampaign, StorefrontConfig } from "../lib/storefront-config.server";
 import type { CustomerPayload } from "../lib/widget-data.server";
 
-// The embed prints every config key except the long page texts.
-export type Config = Omit<StorefrontConfig, "terms" | "faqs" | "reviewReleaseHours" | "codeExpiryDays">;
+// The embed prints every config key except the long page texts and the
+// launcher text (Liquid prints that straight into the button).
+export type Config = Omit<StorefrontConfig, "terms" | "faqs" | "codeExpiryDays" | "launcherLabel">;
 export type MemberData = CustomerPayload & { enabled?: boolean; welcomeQueued?: boolean };
 /**
  * Why there is no member payload: "" while unknown or when there is one. The

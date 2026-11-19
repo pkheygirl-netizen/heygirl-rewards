@@ -33,6 +33,8 @@ export type StorefrontConfig = {
   /** Colour scheme of the rewards panel (`app_settings.panel_theme`). */
   panelTheme: PanelTheme;
   programName: string;
+  /** Launcher button text for visitors (`app_settings.launcher_label`); members see their balance. */
+  launcherLabel: string;
   tagline: string;
   pointsRate: number;
   signupPoints: number;
@@ -65,7 +67,6 @@ export type StorefrontConfig = {
   // in Liquid or the widget).
   expiryDays: number;
   codeExpiryDays: number;
-  reviewReleaseHours: number;
   friendFreeShipping: boolean;
   tierRewards: { goldFreeShipping: boolean; diamondPkr: number };
 };
@@ -93,6 +94,14 @@ function bool(v: unknown, fallback: boolean): boolean {
 function safeUrl(v: unknown): string {
   const s = str(v);
   return /^https?:\/\/[^\s"'<>]+$/i.test(s) ? s : "";
+}
+
+export const DEFAULT_LAUNCHER_LABEL = "Shop & Earn";
+
+/** Plain text, 1-24 characters: markup and control characters removed, else the default. */
+export function launcherLabel(v: unknown): string {
+  const s = str(v).replace(/[<>\u0000-\u001f\u007f]/g, "").replace(/\s+/g, " ").trim().slice(0, 24).trim();
+  return s || DEFAULT_LAUNCHER_LABEL;
 }
 
 /** Only the two known values are published; anything else is the default dark look (owner, 17 Nov 2026). */
@@ -171,6 +180,7 @@ export function buildStorefrontConfig(settings: Loose, campaign: CampaignRow | n
     redeemPaused: bool(s.program_enabled, true) === false,
     panelTheme: panelTheme(s.panel_theme),
     programName: str(s.program_name) || "Rewards",
+    launcherLabel: launcherLabel(s.launcher_label),
     tagline: str(s.tagline),
     pointsRate: num(s.purchase_points_rate, 1),
     signupPoints: int(s.signup_points),
@@ -199,7 +209,6 @@ export function buildStorefrontConfig(settings: Loose, campaign: CampaignRow | n
     faqs: faqs(s.faqs),
     expiryDays: int(s.silver_expiry_days),
     codeExpiryDays: int(s.reward_code_expiry_days, 30),
-    reviewReleaseHours: int(s.review_release_hours, 72),
     friendFreeShipping: bool(s.referral_friend_free_shipping, true),
     tierRewards: {
       goldFreeShipping: bool(s.tier_reward_gold_free_shipping, true),

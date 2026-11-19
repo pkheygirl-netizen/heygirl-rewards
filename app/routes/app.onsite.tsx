@@ -23,6 +23,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     values: {
       program_name: String(s.program_name ?? ""),
       tagline: String(s.tagline ?? ""),
+      launcher_label: String(s.launcher_label ?? "Shop & Earn"),
       terms_and_conditions: String(s.terms_and_conditions ?? ""),
       nudge_account_creation_enabled: s.nudge_account_creation_enabled !== false,
       nudge_points_spending_enabled: s.nudge_points_spending_enabled !== false,
@@ -102,7 +103,7 @@ function OnsiteForm({ d }: { d: ReturnType<typeof useLoaderData<typeof loader>> 
   useActionToast(fetcher.data);
   const result = fetcher.data;
   const [text, setText] = useState({
-    program_name: d.values.program_name, tagline: d.values.tagline, terms_and_conditions: d.values.terms_and_conditions,
+    program_name: d.values.program_name, tagline: d.values.tagline, launcher_label: d.values.launcher_label, terms_and_conditions: d.values.terms_and_conditions,
     tier_progress_gold_threshold_pkr: d.values.tier_progress_gold_threshold_pkr,
     tier_progress_diamond_threshold_pkr: d.values.tier_progress_diamond_threshold_pkr,
   });
@@ -113,7 +114,7 @@ function OnsiteForm({ d }: { d: ReturnType<typeof useLoaderData<typeof loader>> 
   const set = (k: keyof typeof text) => (v: string) => setText((s) => ({ ...s, [k]: v }));
   const reset = () => {
     setText({
-      program_name: d.values.program_name, tagline: d.values.tagline, terms_and_conditions: d.values.terms_and_conditions,
+      program_name: d.values.program_name, tagline: d.values.tagline, launcher_label: d.values.launcher_label, terms_and_conditions: d.values.terms_and_conditions,
       tier_progress_gold_threshold_pkr: d.values.tier_progress_gold_threshold_pkr,
       tier_progress_diamond_threshold_pkr: d.values.tier_progress_diamond_threshold_pkr,
     });
@@ -192,7 +193,12 @@ function OnsiteForm({ d }: { d: ReturnType<typeof useLoaderData<typeof loader>> 
                       <TextField
                         name="program_name" label="Program name" autoComplete="off" maxLength={ONSITE_LIMITS.programName}
                         value={text.program_name} onChange={set("program_name")} error={fieldError(result, "program_name")}
-                        helpText="Shown on the launcher button and at the top of the rewards panel."
+                        helpText="Shown at the top of the rewards panel, and read out to screen readers on the launcher button."
+                      />
+                      <TextField
+                        name="launcher_label" label="Launcher button text for visitors" autoComplete="off" maxLength={ONSITE_LIMITS.launcherLabel}
+                        value={text.launcher_label} onChange={set("launcher_label")} error={fieldError(result, "launcher_label")}
+                        helpText={`Shown on the floating button to shoppers who are not signed in, for example "Shop & Earn". Signed-in members see their points balance instead. 1 to ${ONSITE_LIMITS.launcherLabel} characters, plain text.`}
                       />
                       <TextField
                         name="tagline" label="Tagline" autoComplete="off" maxLength={ONSITE_LIMITS.tagline}

@@ -44,7 +44,7 @@ export const DEFAULT_REDEMPTION_TIERS: RedemptionTier[] = [
   { points: 180000, discount_pkr: 10000 },
 ];
 
-// Mirrors the column defaults of migrations 001-014. Used only when the row
+// Mirrors the column defaults of migrations 001-015. Used only when the row
 // cannot be read at all, and to fill a column a not-yet-migrated database lacks.
 const DEFAULTS: SettingsRow = {
   id: 1,
@@ -96,6 +96,7 @@ const DEFAULTS: SettingsRow = {
   social_url_youtube: null,
   reward_code_expiry_days: 30,
   panel_theme: "dark",
+  launcher_label: "Shop & Earn",
   updated_at: new Date(0).toISOString(),
 };
 

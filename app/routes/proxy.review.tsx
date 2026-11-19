@@ -1,4 +1,4 @@
-// app/routes/proxy.review.tsx — POST /apps/loyalty/review (business rule 14)
+// app/routes/proxy.review.tsx — POST /apps/loyalty/review (business rule 14: staff approve each claim)
 import type { ActionFunctionArgs } from "@remix-run/node";
 import { guardProxy, proxyJson } from "../lib/proxy-auth.server";
 import { getMemberByCustomerId } from "../lib/widget-data.server";
@@ -19,7 +19,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     const result = await claimReview(member.id);
     if (!result.ok) return proxyJson({ ok: false, error: result.reason });
-    return proxyJson({ ok: true, releaseAt: result.releaseAt });
+    // The claim waits for staff approval (rule 14): no release time exists.
+    return proxyJson({ ok: true });
   } catch (err) {
     console.error("[proxy.review] error:", err instanceof Error ? err.message : err);
     return proxyJson({ ok: false, error: "server_error" }, 500);

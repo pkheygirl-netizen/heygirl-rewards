@@ -16,20 +16,25 @@ import {
   getSettingsRow, listGdprRequests, notificationStatus, publishSettings, setGdprRequestStatus, updateSettings,
 } from "../lib/admin-settings.server";
 import { errorMessage } from "../lib/admin-validate.server";
-import { PROGRAM_OFF_EFFECTS } from "../components/admin-constants";
+import { NO_SCRIPT_SCOPE_TEXT, PROGRAM_OFF_EFFECTS } from "../components/admin-constants";
+import { findLegacyScriptTags, removeLegacyScriptTags } from "../lib/legacy-scripttags.server";
 
 const PAGE_SIZE = 25;
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
+  const { admin } = await authenticate.admin(request);
   const pageRaw = Number(new URL(request.url).searchParams.get("page") ?? "0");
   const page = Number.isInteger(pageRaw) && pageRaw > 0 ? pageRaw : 0;
-  const [settings, health, gdpr] = await Promise.all([getSettingsRow(), getSystemHealth(), listGdprRequests(page, PAGE_SIZE)]);
+  const [settings, health, gdpr, legacy] = await Promise.all([
+    getSettingsRow(), getSystemHealth(), listGdprRequests(page, PAGE_SIZE), findLegacyScriptTags(admin),
+  ]);
   return json({
     programEnabled: settings.program_enabled !== false,
     // Booleans and the "from" address only. No credential ever reaches the browser.
     notifications: notificationStatus(settings),
     health, gdpr, page,
+    // The v2 storefront script tag, if Shopify still has one (never throws).
+    legacyScript: "tags" in legacy ? { found: legacy.tags.length, noScope: false } : { found: 0, noScope: legacy.reason === "no_scope" },
   });
 };
 
@@ -49,6 +54,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       await updateSettings({ whatsapp_enabled: enabled });
       const { warning } = await publishSettings(admin);
       return json({ ok: true as const, message: enabled ? "WhatsApp messages switched on" : "WhatsApp messages switched off", warning });
+    }
+    if (intent === "remove_legacy_script") {
+      const res = await removeLegacyScriptTags(admin);
+      if (res.reason === "no_scope") return json({ ok: false as const, error: NO_SCRIPT_SCOPE_TEXT }, { status: 403 });
+      if (res.reason) return json({ ok: false as const, error: `${fmtInt(res.removed)} removed; ${fmtInt(res.found)} could not be removed. Try again.` }, { status: 502 });
+      return json({ ok: true as const, message: res.removed > 0 ? "Old storefront script removed" : "No old storefront script was found" });
     }
     if (intent === "gdpr_status") {
       const id = String(form.get("id") ?? "");
@@ -88,6 +99,24 @@ export default function Settings() {
         <Layout.Section>
           <BlockStack gap="400">
             <ResultBanner data={fetcher.data} />
+
+            {d.legacyScript.found > 0 || d.legacyScript.noScope ? (
+              <Card>
+                <BlockStack gap="300">
+                  <InlineStack align="space-between" blockAlign="center" gap="300">
+                    <Text as="h2" variant="headingMd">Old storefront script</Text>
+                    {d.legacyScript.found > 0 ? (
+                      <Button loading={busy} onClick={() => post({ intent: "remove_legacy_script" })}>Remove old storefront script</Button>
+                    ) : null}
+                  </InlineStack>
+                  <Text as="p" tone="subdued">
+                    {d.legacyScript.found > 0
+                      ? "An earlier version of this app added a script to every storefront page. It is no longer used and only slows pages down."
+                      : NO_SCRIPT_SCOPE_TEXT}
+                  </Text>
+                </BlockStack>
+              </Card>
+            ) : null}
 
             <Card>
               <BlockStack gap="300">

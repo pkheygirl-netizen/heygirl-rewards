@@ -18,7 +18,7 @@ describe("ways to earn", () => {
     expect(rows.map((r) => r.key)).toEqual(["purchase", "signup", "referral", "instagram", "facebook", "youtube", "review", "birthday"]);
     expect(rows[0]).toMatchObject({ value: "1 point per Rs.1", enabled: true });
     expect(rows[1].value).toBe("1,000 points");
-    expect(rows.find((r) => r.key === "review")).toMatchObject({ enabled: false, when: "Released 72 hours after the customer claims it" });
+    expect(rows.find((r) => r.key === "review")).toMatchObject({ enabled: false, title: "Post your order review" });
   });
 
   it("warns when a social rule is on but has no profile link", () => {
@@ -73,10 +73,15 @@ describe("edit a way to earn", () => {
     expect(good.ok && good.patch).toMatchObject({ social_points_facebook: 800, social_url_facebook: "https://facebook.com/heygirl.pk" });
   });
 
-  it("saves review points with release hours, and the referral reward with the friend's code switch", () => {
+  it("saves review points (no release hours any more), and the referral reward with the friend's code switch", () => {
+    // No hold time any more: staff approve every claim, so the old field is ignored and never written.
     const review = parseEarnRuleForm(SETTINGS, "review", formOf({ enabled: "true", review_points: "3000", review_release_hours: "48" }));
-    expect(review.ok && review.patch).toMatchObject({ review_points: 3000, review_release_hours: 48 });
-    expect(parseEarnRuleForm(SETTINGS, "review", formOf({ enabled: "true", review_points: "3000", review_release_hours: "0" })).ok).toBe(false);
+    expect(review.ok && review.patch).toEqual({ earn_rules: expect.any(Object), review_points: 3000 });
+    expect(parseEarnRuleForm(SETTINGS, "review", formOf({ enabled: "true", review_points: "" })).ok).toBe(false);
+    const view = earnRuleViews(SETTINGS).find((r) => r.key === "review")!;
+    expect(view.title).toBe("Post your order review");
+    expect(view.when).toContain("only when you approve");
+    expect(view.when).not.toMatch(/hours|Released/);
     const ref = parseEarnRuleForm(SETTINGS, "referral", formOf({ enabled: "true", referral_points: "100000", referral_friend_free_shipping: "true" }));
     expect(ref.ok && ref.patch).toMatchObject({ referral_points: 100000, referral_friend_free_shipping: true });
     expect(parseEarnRuleForm(SETTINGS, "referral", formOf({ enabled: "true", referral_points: "100001" })).ok).toBe(false);

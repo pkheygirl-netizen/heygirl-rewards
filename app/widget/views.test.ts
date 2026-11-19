@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { EARN_ICON, earnList, earnTab, errorText, guestHome, guestSub, historyRows, influencerBox, instagramHandle, REDEEM_PAUSED_TEXT, redeemList, referralReward, referTab, rewardsTab, stateMessage, tiersView, type Ctx } from "./views";
+import { EARN_ICON, REDEEM_ICON, REVIEW_PENDING_TEXT, reviewTitle, earnList, earnTab, errorText, guestHome, guestSub, historyRows, influencerBox, instagramHandle, REDEEM_PAUSED_TEXT, redeemList, referralReward, referTab, rewardsTab, stateMessage, tiersView, type Ctx } from "./views";
 import { makeConfig, makeMember } from "./test-fixtures";
 import { HUB_CSS, HUB_ICONS } from "./hub-css";
 
@@ -46,7 +46,7 @@ describe("guest preview (config only)", () => {
     cfg.social.facebook.enabled = false;
     const h = earnList(ctx({ cfg }));
     expect(h).toContain("1,500 points");
-    expect(h).not.toContain("Post a review");
+    expect(h).not.toContain("Post your order review");
     expect(h).not.toContain("Facebook");
     expect(h).toContain("Follow on Instagram");
     expect(h).not.toContain("<button"); // guests get no action buttons
@@ -54,7 +54,7 @@ describe("guest preview (config only)", () => {
 
   it("derives the review tag from the Instagram URL in settings", () => {
     expect(instagramHandle(makeConfig())).toBe("@heygirl.pk");
-    expect(earnList(ctx())).toContain("tag @heygirl.pk");
+    expect(earnList(ctx())).toContain(">Post your order review &amp; tag @heygirl.pk<");
   });
 });
 
@@ -196,7 +196,8 @@ describe("review fixes: views", () => {
 });
 
 describe("ways to earn: icons, tap targets and states (owner request)", () => {
-  const TITLES = ["Join HeyGirl Rewards", "Place an order", "Follow on Instagram", "Like on Facebook", "Subscribe on YouTube", "Post a review", "Celebrate your birthday", "Refer a friend"];
+  const TITLES = ["Join HeyGirl Rewards", "Place an order", "Follow on Instagram", "Like on Facebook", "Subscribe on YouTube", "Post your order review &amp; tag @heygirl.pk", "Celebrate your birthday", "Refer a friend"];
+  const REVIEW = "Post your order review &amp; tag @heygirl.pk";
 
   it("every way to earn has its own icon, all defined once in the sprite in one style", () => {
     const names = Object.values(EARN_ICON);
@@ -221,7 +222,7 @@ describe("ways to earn: icons, tap targets and states (owner request)", () => {
       const r = rows(earnList(c));
       expect(Object.keys(r).filter((t) => t !== "Add your birthday")).toEqual(TITLES);
       const icon = (t: string) => /<span class="hg-row__ic"><svg class="hg-ic" aria-hidden="true" focusable="false"><use href="#hg-i-([a-z]+)"\/><\/svg><\/span>/.exec(r[t])![1];
-      expect(TITLES.map(icon)).toEqual(["join", "bag", "cam", "like", "play", "star", "cake", "friends"]);
+      expect(TITLES.map(icon)).toEqual(["join", "bag", "heart", "like", "play", "cam", "cake", "friends"]);
     }
     expect(HUB_CSS).toMatch(/\.hg-row__ic\{width:40px;height:40px;flex:none;border-radius:50%;background:var\(--tint\);color:var\(--gd\)/);
     expect(contrast("#7a5c00", "#fbf1cf")).toBeGreaterThanOrEqual(4.5);
@@ -230,7 +231,7 @@ describe("ways to earn: icons, tap targets and states (owner request)", () => {
   it("an actionable row is one tap target (a single button or link) ending in a chevron", () => {
     const m = makeMember({}, { review: { eligible: true, pending: 0 } });
     const r = rows(earnList(ctx({ member: m, shopUrl: "/collections/all" })));
-    const tappable = ["Place an order", "Follow on Instagram", "Like on Facebook", "Subscribe on YouTube", "Post a review", "Refer a friend"];
+    const tappable = ["Place an order", "Follow on Instagram", "Like on Facebook", "Subscribe on YouTube", REVIEW, "Refer a friend"];
     for (const t of tappable) {
       // The control wraps the whole row: it opens right after <li> and closes right before </li>.
       expect(r[t], t).toMatch(/^<li><(button type="button"|a) class="hg-nav hg-earn-row" [^>]+>.*<use href="#hg-i-chev"\/><\/svg><\/(button|a)><\/li>/);
@@ -240,7 +241,7 @@ describe("ways to earn: icons, tap targets and states (owner request)", () => {
     }
     expect(r["Place an order"]).toContain('<a class="hg-nav hg-earn-row" href="/collections/all">');
     expect(r["Refer a friend"]).toContain('data-go="refer"');
-    expect(r["Post a review"]).toContain('data-act="review"');
+    expect(r[REVIEW]).toContain('data-act="review"');
     // Rows with nothing to do are plain text: no control and no chevron.
     for (const t of ["Join HeyGirl Rewards", "Celebrate your birthday"]) {
       expect(r[t]).toContain('<div class="hg-nav hg-earn-row hg-nav--off">');
@@ -259,7 +260,7 @@ describe("ways to earn: icons, tap targets and states (owner request)", () => {
     expect(rows(earnList(ctx({ shopUrl: "/collections/all" })))["Place an order"]).not.toContain("<a "); // guest preview
   });
 
-  it("state is written in words: Claimed, Available, Pending, Saved", () => {
+  it("state is written in words: Claimed, Available, Pending approval, Saved", () => {
     const m = makeMember({ canSetBirthday: false, birthday: { month: 3, day: 12 } }, { social: { instagram: "available", facebook: "claimed", youtube: "available" }, review: { eligible: false, pending: 1 } });
     const r = rows(earnList(ctx({ member: m })));
     const state = (t: string) => (/<span class="hg-st hg-st--[a-z]+">(?:<svg[^>]*><use[^>]*\/><\/svg>)?([A-Za-z ]+)<\/span>/.exec(r[t]) || [])[1];
@@ -267,14 +268,15 @@ describe("ways to earn: icons, tap targets and states (owner request)", () => {
     expect(state("Place an order")).toBe("Available");
     expect(state("Follow on Instagram")).toBe("Available");
     expect(state("Like on Facebook")).toBe("Claimed");
-    expect(state("Post a review")).toBe("Pending");
+    expect(state(REVIEW)).toBe("Pending approval");
+    expect(r[REVIEW]).toContain(REVIEW_PENDING_TEXT);
     expect(state("Celebrate your birthday")).toBe("Saved");
     expect(state("Refer a friend")).toBe("Available");
     // A claimed or pending row can no longer be tapped.
     expect(r["Like on Facebook"]).not.toMatch(/<button|data-act/);
-    expect(r["Post a review"]).not.toMatch(/<button|data-act/);
+    expect(r[REVIEW]).not.toMatch(/<button|data-act/);
     // Review not yet possible: explained in words, no state label and no control.
-    const none = rows(earnList(ctx({ member: makeMember() })))["Post a review"];
+    const none = rows(earnList(ctx({ member: makeMember() })))[REVIEW];
     expect(none).toContain("Available after your next delivered order.");
     expect(none).not.toMatch(/hg-st|<button/);
     // Guests see a preview with no states.
@@ -319,21 +321,18 @@ describe("owner notes (coding changes.txt) 1-3", () => {
     expect(tiersView(ctx({ member: makeMember() }))).toMatch(/^<section class="hg-card hg-prog"><h3 class="hg-h">Your progress<\/h3>/);
   });
 
-  it("3: one gold-and-red gift drawing for every screen size, used by the launcher and before Ways to redeem", () => {
-    expect(embed.match(/<symbol id="hg-i-gift"/g)).toHaveLength(1);
-    const symbol = /<symbol id="hg-i-gift"[^>]*>(.*?)<\/symbol>/.exec(embed)![1];
-    expect(symbol).toContain('fill="#d62839"'); // red ribbon
-    expect(symbol).toContain('fill="#f7c531"'); // gold box
-    expect(symbol).not.toContain("currentColor");
-    expect(embed).toContain('<span class="hg-launcher__ic"><svg class="hg-ico" aria-hidden="true" focusable="false"><use href="#hg-i-gift"/></svg></span>');
-    // No screen-size rule swaps or hides the launcher icon, and no emoji is used.
-    const css = /<style>([\s\S]*?)<\/style>/.exec(embed)![1];
-    for (const block of css.match(/@media[^{]*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}/g) || []) expect(block).not.toMatch(/hg-launcher__ic|hg-ico/);
-    expect(embed).not.toMatch(/[\u{1F300}-\u{1FAFF}]/u);
+  it("ways to redeem: every reward row and the Ways to redeem entry show currency notes, not the gift", () => {
+    expect(REDEEM_ICON).toBe("notes");
+    const notes = '<span class="hg-row__ic"><svg class="hg-ic" aria-hidden="true" focusable="false"><use href="#hg-i-notes"/></svg></span>';
     const home = guestHome(ctx());
-    expect(home).toMatch(/<span class="hg-row__ic"><svg class="hg-ico" aria-hidden="true" focusable="false"><use href="#hg-i-gift"\/><\/svg><\/span><span class="hg-nav__t">Ways to redeem<\/span>/);
-    // The same drawing in front of every reward row.
-    expect(redeemList(ctx())).toContain('<use href="#hg-i-gift"/>');
+    expect(home).toContain(notes + '<span class="hg-nav__t">Ways to redeem</span>');
+    for (const html of [redeemList(ctx()), redeemList(ctx({ member: makeMember({ pointsBalance: 9000 }) })), guestSub(ctx(), "redeem"), rewardsTab(ctx({ member: makeMember({ pointsBalance: 9000 }) }))]) {
+      expect(html).toContain(notes);
+      expect(html).not.toContain("hg-i-gift");
+    }
+    expect((redeemList(ctx()).match(/hg-i-notes/g) || []).length).toBe(2); // one per reward
+    expect(HUB_ICONS).toMatch(/<symbol id="hg-i-notes" viewBox="0 0 24 24"><path d="[^"]+"\/><\/symbol>/);
+    expect(embed).not.toMatch(/[\u{1F300}-\u{1FAFF}]/u);
   });
 
   it("3: the chevron after Ways to earn / Ways to redeem is larger and darker than a normal icon", () => {
@@ -397,5 +396,46 @@ describe("rule 20: redeeming paused (the program switch)", () => {
 
   it("a redeem refused by the server explains the pause", () => {
     expect(errorText("program_disabled")).toBe(REDEEM_PAUSED_TEXT);
+  });
+});
+
+describe("feedback 18 Nov: review row, icons and Diamond wording", () => {
+  const page = readFileSync("extensions/hg-loyalty/blocks/rewards-page.liquid", "utf8");
+
+  it("the review row reads 'Post your order review & tag @heygirl.pk' with its points, and uses the camera", () => {
+    const r = rows(earnList(ctx()));
+    const row = r["Post your order review &amp; tag @heygirl.pk"];
+    expect(row).toContain('<span class="hg-row__s">3,000 points</span>');
+    expect(row).toContain('<use href="#hg-i-cam"/>');
+    expect(reviewTitle(makeConfig({ social: { ...makeConfig().social, instagram: { points: 500, url: "", enabled: false } } }))).toBe("Post your order review");
+    expect(page).toContain("Post your order review{% if hg_ig != blank and cfg.social.instagram.url contains 'instagram.com/' %} &amp; tag @{{ hg_ig | escape }}{% endif %}");
+    expect(page).not.toContain("Post a review");
+  });
+
+  it("Instagram has its own generic heart, distinct from every other icon (no logo)", () => {
+    expect(EARN_ICON.instagram).toBe("heart");
+    expect(EARN_ICON.review).toBe("cam");
+    expect(HUB_ICONS).not.toContain('id="hg-i-star"'); // the old review icon is gone
+    expect(rows(earnList(ctx()))["Follow on Instagram"]).toContain('<use href="#hg-i-heart"/>');
+  });
+
+  it("a claim waits for approval: no time or date is promised anywhere", () => {
+    const m = makeMember({}, { review: { eligible: false, pending: 1 } });
+    const row = rows(earnList(ctx({ member: m })))["Post your order review &amp; tag @heygirl.pk"];
+    expect(row).toContain('<span class="hg-st hg-st--pending">Pending approval</span>');
+    expect(row).toContain("We'll add your points once we've seen your review.");
+    const hub = readFileSync("app/widget/hub.ts", "utf8");
+    const branch = hub.slice(hub.indexOf('a === "review" && m'), hub.indexOf('a === "redeem" && m'));
+    expect(branch).toContain("REVIEW_PENDING_TEXT");
+    expect(branch).not.toMatch(/releaseAt|fmtDate|added by/);
+    for (const src of [hub, readFileSync("app/widget/views.ts", "utf8")]) expect(src).not.toMatch(/on the way|hours/);
+  });
+
+  it("Diamond: bonus points on orders during your birthday month (panel and rewards page)", () => {
+    const h = tiersView(ctx());
+    expect(h).toContain("Bonus points on orders during your birthday month");
+    expect(h).not.toContain("orders in your birthday month");
+    expect(page).toContain("<li>Bonus points on orders during your birthday month</li>");
+    expect(page).not.toContain("orders in your birthday month");
   });
 });

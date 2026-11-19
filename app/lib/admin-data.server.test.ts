@@ -87,19 +87,23 @@ describe("tiers and attention", () => {
     });
   });
 
-  it("lists pending review claims soonest release first, a page at a time", async () => {
+  it("lists pending review claims oldest claim first, a page at a time, optionally for one customer", async () => {
     const { fake, mod } = await load({
       from: () => ({
         count: 40,
-        data: [{ id: "c1", member_id: "m1", shopify_order_id: "O1", points: 3000, claimed_at: "t1", release_at: "t2", members: { first_name: "Sara", last_name: null, email: "s@x.com" } }],
+        data: [{ id: "c1", member_id: "m1", shopify_order_id: "O1", points: 3000, claimed_at: "t1", members: { first_name: "Sara", last_name: null, email: "s@x.com" } }],
       }),
     });
     const res = await mod.listPendingReviewClaims(1, 25);
     expect(res.total).toBe(40);
-    expect(res.rows[0]).toMatchObject({ id: "c1", memberName: "Sara", points: 3000, releaseAt: "t2" });
+    expect(res.rows[0]).toEqual({ id: "c1", memberId: "m1", memberName: "Sara", points: 3000, claimedAt: "t1", orderId: "O1" });
     const chain = fake.tableCalls("review_claims")[0].chain;
     expect(chain).toContainEqual(["eq", ["status", "pending"]]);
+    expect(chain).toContainEqual(["order", ["claimed_at", { ascending: true }]]);
     expect(chain).toContainEqual(["range", [25, 49]]);
+    expect(chain.some((c: [string, unknown[]]) => c[0] === "eq" && c[1][0] === "member_id")).toBe(false);
+    await mod.listPendingReviewClaims(0, 10, "m9");
+    expect(fake.tableCalls("review_claims")[1].chain).toContainEqual(["eq", ["member_id", "m9"]]);
   });
 
   it("lists members with expiring points with the total from the first row", async () => {

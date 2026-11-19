@@ -33,6 +33,7 @@ export type Database = {
           nudge_tier_progress_enabled: boolean
           nudges_config: Json
           panel_theme: string
+          launcher_label: string
           program_enabled: boolean
           program_name: string
           purchase_points_rate: number
@@ -85,6 +86,7 @@ export type Database = {
           nudge_tier_progress_enabled?: boolean
           nudges_config?: Json
           panel_theme?: string
+          launcher_label?: string
           program_enabled?: boolean
           program_name?: string
           purchase_points_rate?: number
@@ -137,6 +139,7 @@ export type Database = {
           nudge_tier_progress_enabled?: boolean
           nudges_config?: Json
           panel_theme?: string
+          launcher_label?: string
           program_enabled?: boolean
           program_name?: string
           purchase_points_rate?: number
@@ -826,7 +829,8 @@ export type Database = {
           id: string
           member_id: string
           points: number
-          release_at: string
+          /** Unused since 015 (approval is manual); nullable. */
+          release_at: string | null
           resolved_at: string | null
           shopify_order_id: string | null
           status: string
@@ -836,7 +840,7 @@ export type Database = {
           id?: string
           member_id: string
           points: number
-          release_at: string
+          release_at?: string | null
           resolved_at?: string | null
           shopify_order_id?: string | null
           status?: string
@@ -846,7 +850,7 @@ export type Database = {
           id?: string
           member_id?: string
           points?: number
-          release_at?: string
+          release_at?: string | null
           resolved_at?: string | null
           shopify_order_id?: string | null
           status?: string

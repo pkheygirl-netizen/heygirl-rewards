@@ -129,7 +129,7 @@ describe("every route: HMAC first, shop from the verified query, no-store", () =
     expect(await json(last!)).toEqual({ ok: false, error: "rate_limited" });
     expect(last!.headers.get("Retry-After")).toBeTruthy();
     // another customer is unaffected
-    h.claimReview.mockResolvedValue({ ok: true, releaseAt: "2026-11-19T10:00:00Z" });
+    h.claimReview.mockResolvedValue({ ok: true });
     expect((await reviewAction(args(signedRequest("review", { customerId: "78", body: {} })))).status).toBe(200);
   });
 });
@@ -279,9 +279,9 @@ describe("POST /proxy/social", () => {
 });
 
 describe("POST /proxy/review", () => {
-  it("returns releaseAt, and the service reason as `error`", async () => {
-    h.claimReview.mockResolvedValueOnce({ ok: true, releaseAt: "2026-11-19T10:00:00Z" });
-    expect(await json(await reviewAction(args(signedRequest("review", { customerId: "42", body: {} }))))).toEqual({ ok: true, releaseAt: "2026-11-19T10:00:00Z" });
+  it("answers { ok: true } with no release time (staff approve each claim), and the service reason as `error`", async () => {
+    h.claimReview.mockResolvedValueOnce({ ok: true });
+    expect(await json(await reviewAction(args(signedRequest("review", { customerId: "42", body: {} }))))).toEqual({ ok: true });
     expect(h.claimReview).toHaveBeenCalledWith("m1");
     h.claimReview.mockResolvedValueOnce({ ok: false, reason: "no_eligible_order" });
     expect(await json(await reviewAction(args(signedRequest("review", { customerId: "42", body: {} }))))).toEqual({ ok: false, error: "no_eligible_order" });
@@ -345,8 +345,8 @@ describe("rule 20: with the program switched off only redeeming is refused", () 
   });
 
   it("review claims still go through", async () => {
-    h.claimReview.mockResolvedValueOnce({ ok: true, releaseAt: "2026-11-19T10:00:00Z" });
-    expect(await json(await reviewAction(args(signedRequest("review", { customerId: "42", body: {} }))))).toEqual({ ok: true, releaseAt: "2026-11-19T10:00:00Z" });
+    h.claimReview.mockResolvedValueOnce({ ok: true });
+    expect(await json(await reviewAction(args(signedRequest("review", { customerId: "42", body: {} }))))).toEqual({ ok: true });
     expect(h.claimReview).toHaveBeenCalledWith("m1");
   });
 

@@ -72,7 +72,7 @@ describe("extension static checks", () => {
     expect(HUB_CSS).toMatch(/\.hg-tcard--me\{border:2px solid var\(--gd\)\}/);
     expect(HUB_CSS).toMatch(/\.hg-btn\{[^}]*border:2px solid var\(--gd\)/);
     for (const css of [embed, page]) expect(css).not.toMatch(/border[a-z-]*:[^;}]*#e8ad00/i);
-    expect(embed).toMatch(/\.hg-launcher\{.*border:2px solid #7a5c00/);
+    expect(embed).toMatch(/\.hg-launcher\{.*border:1px solid #c99a12/); // Option A: thin gold edge on black (decorative)
   });
 
   it("item 13: the sign-in link is a 44px target", () => {
@@ -182,15 +182,99 @@ describe("panel style: Light and Dark token sets", () => {
     expect([...found].sort()).toEqual(["#1a1a1a", "#595959", "#d9ccff", "#e4e4e4", "#e6e6e6", "#f3bd1c", "#fff", "#ffd24a"].sort());
   });
 
-  it("Dark is applied only by a class on the hub root; the launcher, toast and cart/product lines are not themed", () => {
+  it("Dark is applied only by a class on the hub root; the toast follows the panel style; the launcher and cart/product lines are not themed", () => {
     expect(HUB_CSS).toContain(".hg-hub--dark{" + HUB_DARK + ";color-scheme:dark;");
     // The dark set only redefines tokens the light set already has.
     for (const k of Object.keys(tokens(HUB_DARK))) expect(light, k).toHaveProperty(k);
     const hub = readFileSync("app/widget/hub.ts", "utf8");
     expect(hub).toContain('if (cfg.panelTheme !== "light") hub.className += " hg-hub--dark";');
-    for (const src of [embed, product, cartBlock, read("snippets/hg-line-css.liquid"), readFileSync("app/widget/core.ts", "utf8"), readFileSync("app/widget/cart-line.ts", "utf8")]) {
-      expect(src).not.toMatch(/hg-hub--dark|panelTheme [!=]==|--ink|--card/);
+    const core = readFileSync("app/widget/core.ts", "utf8");
+    expect(core).toContain('el.className = cfg.panelTheme === "light" ? "hg-toast" : "hg-toast hg-toast--dark";');
+    for (const src of [embed, product, cartBlock, read("snippets/hg-line-css.liquid"), core, readFileSync("app/widget/cart-line.ts", "utf8")]) {
+      expect(src).not.toMatch(/hg-hub--dark|--ink|--card/);
     }
-    expect(embed).toMatch(/\.hg-launcher\{.*background:#e8ad00;color:#1a1a1a/); // the launcher keeps its gold look
+    expect(embed).toMatch(/\.hg-launcher\{.*background:#0e0e0e;color:#f3bd1c/); // one launcher for both styles
+  });
+});
+
+const tokens = (set: string): Record<string, string> =>
+  Object.fromEntries(set.split(";").map((d) => d.split(":")).map(([k, ...v]) => [k.trim().slice(2), v.join(":").trim()]));
+
+describe("guest nudge / toast follows the panel style (owner, 18 Nov 2026)", () => {
+  const css = /<style>([\s\S]*?)<\/style>/.exec(embed)![1].replaceAll("{{ block.settings.position }}", "right");
+  const rule = (sel: string) => {
+    const m = new RegExp(sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\{([^}]*)\\}").exec(css);
+    expect(m, sel).not.toBeNull();
+    return m![1];
+  };
+  const dark = { ...tokens(HUB_LIGHT), ...tokens(HUB_DARK) };
+  const val = (body: string, prop: string) => new RegExp(`(?:^|;)${prop}:(#[0-9a-f]{6})`).exec(body)![1];
+
+  it("Dark: black card in the Dark panel's own colours, text 4.5:1", () => {
+    const box = rule(".hg-toast--dark");
+    expect(val(box, "background")).toBe(dark.bg);
+    expect(val(box, "color")).toBe(dark.ink);
+    expect(val(box, "border-color")).toBe(dark.ln);
+    expect(box).toContain(`border-top:2px solid ${dark.gd}`);
+    expect(val(rule(".hg-toast--dark .hg-toast__b"), "color")).toBe(dark.mute);
+    expect(val(rule(".hg-toast--dark .hg-toast__x"), "color")).toBe(dark.ink);
+    for (const fg of [dark.ink, dark.mute]) expect(contrast(fg, dark.bg)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast("#1a1a1a", "#e8ad00")).toBeGreaterThanOrEqual(4.5); // the gold button keeps dark text
+    // a focus ring that shows on black (the theme's own ring is dark)
+    expect(rule(".hg-toast--dark :focus-visible")).toContain("outline:3px solid #f5f5f5");
+  });
+
+  it("Light keeps today's white card", () => {
+    const box = rule(".hg-toast");
+    expect(box).toContain("background:#fff;color:#1a1a1a");
+    expect(contrast("#1a1a1a", "#ffffff")).toBeGreaterThanOrEqual(4.5);
+    expect(contrast("#595959", "#ffffff")).toBeGreaterThanOrEqual(4.5);
+  });
+});
+
+describe("launcher: Option A, black and gold (owner, 18 Nov 2026)", () => {
+  const css = /<style>([\s\S]*?)<\/style>/.exec(embed)![1].replaceAll("{{ block.settings.position }}", "right");
+  const launcher = /\.hg-launcher\{([^}]*)\}/.exec(css)![1];
+
+  it("matches the approved mock: black pill, thin gold border, gold text, 48px tall, no white circle", () => {
+    for (const d of ["display:inline-flex", "gap:9px", "height:48px", "min-height:48px", "padding:0 20px 0 16px", "border:1px solid #c99a12", "border-radius:999px", "background:#0e0e0e", "color:#f3bd1c", "font-size:15px", "font-weight:600", "letter-spacing:.2px", "box-shadow:0 6px 18px rgba(0,0,0,.25)"]) {
+      expect(launcher, d).toContain(d);
+    }
+    expect(embed).not.toContain("hg-launcher__ic"); // the white circle is gone
+    expect(css).toMatch(/\.hg-launcher \.hg-ico\{width:22px;height:22px;flex:none;color:#f3bd1c\}/);
+    expect(contrast("#f3bd1c", "#0e0e0e")).toBeGreaterThanOrEqual(4.5); // label text
+    expect(Number(/min-height:(\d+)px/.exec(launcher)![1])).toBeGreaterThanOrEqual(44); // tap target
+  });
+
+  it("its focus ring shows on light and dark pages: a gold ring inside a black ring", () => {
+    const focus = /\.hg-launcher:focus-visible\{([^}]*)\}/.exec(css)![1];
+    expect(focus).toContain("outline:3px solid #f3bd1c");
+    expect(focus).toContain("box-shadow:0 0 0 7px #0e0e0e");
+    expect(contrast("#0e0e0e", "#ffffff")).toBeGreaterThanOrEqual(3); // black ring on a white page
+    expect(contrast("#f3bd1c", "#0e0e0e")).toBeGreaterThanOrEqual(3); // gold ring next to the black ring / on dark photos
+  });
+
+  it("one single-colour line gift (stroke = currentColor) for the launcher and the cart/product lines", () => {
+    const symbol = /<symbol id="hg-i-gift"([^>]*)>(.*?)<\/symbol>/.exec(embed)!;
+    expect(embed.match(/<symbol id="hg-i-gift"/g)).toHaveLength(1);
+    expect(symbol[1]).toContain('fill="none" stroke="currentColor"');
+    expect(symbol[2]).not.toMatch(/fill="#|#d62839|#f7c531/); // the old red-and-gold gift is gone
+    expect(embed).toContain('<svg class="hg-ico" aria-hidden="true" focusable="false"><use href="#hg-i-gift"/></svg>');
+    const snippet = read("snippets/hg-gift.liquid");
+    expect(snippet).toContain('stroke="currentColor"');
+    expect(snippet).not.toMatch(/#d62839|#f7c531/);
+    // On the store's white/cream background the lines draw it in dark gold (6:1), text unchanged.
+    const lineCss = read("snippets/hg-line-css.liquid");
+    expect(lineCss).toContain(".hg-line .hg-ico,.hg-earn .hg-ico{color:#7a5c00}");
+    expect(contrast("#7a5c00", "#fffaf0")).toBeGreaterThanOrEqual(4.5);
+    expect(contrast("#1a1a1a", "#fffaf0")).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it("visitor text comes from the On-site setting (escaped, default Shop & Earn); the accessible name starts with it", () => {
+    expect(embed).toContain(`<span class="hg-launcher__label">{{ cfg.launcherLabel | default: 'Shop & Earn' | escape }}</span>`);
+    expect(embed).toContain(`aria-label="{{ cfg.launcherLabel | default: 'Shop & Earn' | escape }}: open {{ cfg.programName | escape }}"`);
+    expect(embed).not.toMatch(/"launcherLabel":/); // not needed in the script config
+    const core = readFileSync("app/widget/core.ts", "utf8");
+    expect(core).toContain('label.textContent = fmt(member.member.pointsBalance) + " pts";');
   });
 });

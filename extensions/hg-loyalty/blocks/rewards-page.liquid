@@ -14,6 +14,8 @@
     .hg-lp{max-width:960px;margin:0 auto;padding:0 16px 32px;color:#1a1a1a;font-size:16px;line-height:1.5;letter-spacing:normal}
     .hg-lp *{box-sizing:border-box;letter-spacing:normal}
     .hg-lp h2,.hg-lp h3,.hg-lp p,.hg-lp ul,.hg-lp ol{margin:0;padding:0}
+    {%- comment -%} Dawn colours h1-h6 itself (rgb(var(--color-foreground))); the cards here are always light. {%- endcomment -%}
+    .hg-lp h2,.hg-lp h3{color:#1a1a1a;letter-spacing:normal}
     .hg-lp ul,.hg-lp ol{list-style:none}
     .hg-lp__hero{background:linear-gradient(135deg,#f3bd1c,#e0a400);border-radius:18px;padding:32px 20px;text-align:center}
     .hg-lp__title{font-size:30px;line-height:1.2;font-weight:800;color:#1a1a1a}
@@ -92,7 +94,7 @@
             <tr><th scope="row">Subscribe on YouTube</th><td>{% render 'hg-num', n: cfg.social.youtube.points %}</td></tr>
           {%- endif -%}
           {%- if r.review.enabled != false and cfg.reviewPoints > 0 -%}
-            <tr><th scope="row">Post a review{% if hg_ig != blank and cfg.social.instagram.url contains 'instagram.com/' %} and tag @{{ hg_ig | escape }}{% endif %}</th><td>{% render 'hg-num', n: cfg.reviewPoints %}</td></tr>
+            <tr><th scope="row">Post your order review{% if hg_ig != blank and cfg.social.instagram.url contains 'instagram.com/' %} &amp; tag @{{ hg_ig | escape }}{% endif %}</th><td>{% render 'hg-num', n: cfg.reviewPoints %}</td></tr>
           {%- endif -%}
           {%- if r.referral.enabled != false and cfg.referralPoints > 0 -%}
             <tr><th scope="row">Refer a friend{% if cfg.friendFreeShipping %} (they get free shipping on their first order){% endif %}</th><td>{% render 'hg-num', n: cfg.referralPoints %}</td></tr>
@@ -152,7 +154,7 @@
             <li>Points never expire</li>
             {%- if cfg.tierRewards.diamondPkr > 0 -%}<li>Rs. {% render 'hg-num', n: cfg.tierRewards.diamondPkr %} reward code when you reach Diamond</li>{%- endif -%}
             {%- if r.birthday.enabled != false and cfg.birthday.diamond > 0 -%}<li>Rs. {% render 'hg-num', n: cfg.birthday.diamond %} birthday gift code</li>{%- endif -%}
-            {%- if r.birthday.enabled != false -%}<li>Bonus points on orders in your birthday month</li>{%- endif -%}
+            {%- if r.birthday.enabled != false -%}<li>Bonus points on orders during your birthday month</li>{%- endif -%}
           </ul>
         </div>
       </div>

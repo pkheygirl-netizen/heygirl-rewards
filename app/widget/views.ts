@@ -2,7 +2,7 @@
 // Pure HTML builders for the hub panel. Every number and text that can be
 // configured comes from the storefront config or the member payload; nothing
 // here touches the DOM, so the output is unit-tested as strings.
-import { campaignNote, codeValue, discountUrl, esc, fmt, fmtDate, GIFT_ICON, pts, rateText, rs, tierProgress, TIER_NAME, type Config, type MemberData, type MemberState, type Tier } from "./shared";
+import { campaignNote, codeValue, discountUrl, esc, fmt, fmtDate, pts, rateText, rs, tierProgress, TIER_NAME, type Config, type MemberData, type MemberState, type Tier } from "./shared";
 
 export type Ctx = {
   cfg: Config;
@@ -30,10 +30,23 @@ function row(icon: string, title: string, sub: string, right = ""): string {
 
 /** Earn-row state, always spelled out in words (colour is only a second cue). */
 export type EarnState = "" | "available" | "claimed" | "pending" | "saved";
-const STATE_TEXT: Record<Exclude<EarnState, "">, string> = { available: "Available", claimed: "Claimed", pending: "Pending", saved: "Saved" };
+// "pending" is only used by a review claim, which waits for staff approval (rule 14).
+const STATE_TEXT: Record<Exclude<EarnState, "">, string> = { available: "Available", claimed: "Claimed", pending: "Pending approval", saved: "Saved" };
 
 /** One icon per way to earn: original line drawings, never a platform's logo. */
-export const EARN_ICON = { signup: "join", purchase: "bag", instagram: "cam", facebook: "like", youtube: "play", review: "star", birthday: "cake", referral: "friends" } as const;
+export const EARN_ICON = { signup: "join", purchase: "bag", instagram: "heart", facebook: "like", youtube: "play", review: "cam", birthday: "cake", referral: "friends" } as const;
+
+/** Icon in front of every reward ("ways to redeem"): currency notes. The gift is the launcher's. */
+export const REDEEM_ICON = "notes";
+
+/** Title of the review row: "Post your order review & tag @heygirl.pk" (escaped HTML). */
+export function reviewTitle(cfg: Config): string {
+  const handle = instagramHandle(cfg);
+  return "Post your order review" + (handle ? " &amp; tag " + esc(handle) : "");
+}
+
+/** Shown on the review row while a claim waits for staff approval (no time is promised). */
+export const REVIEW_PENDING_TEXT = "We'll add your points once we've seen your review.";
 
 /**
  * One "ways to earn" row: round icon badge, title, points and the state in
@@ -117,8 +130,7 @@ export function earnList(c: Ctx): string {
     );
   }
   if (on(cfg, "review") && cfg.reviewPoints > 0) {
-    const handle = instagramHandle(cfg);
-    let sub = pts(cfg.reviewPoints) + (handle ? ` · tag ${esc(handle)} in your review` : "");
+    let sub = pts(cfg.reviewPoints);
     let state: EarnState = "";
     let tap = "";
     if (m) {
@@ -128,10 +140,10 @@ export function earnList(c: Ctx): string {
         sub += `<br>Posted it? Tap here to claim.`;
       } else if (m.review.pending > 0) {
         state = "pending";
-        sub += `<br>Thanks! Your points are on the way.`;
+        sub += `<br>${REVIEW_PENDING_TEXT}`;
       } else sub += `<br>Available after your next delivered order.`;
     }
-    out.push(earnRow(EARN_ICON.review, "Post a review", sub, state, tap));
+    out.push(earnRow(EARN_ICON.review, reviewTitle(cfg), sub, state, tap));
   }
   if (on(cfg, "birthday")) {
     const amount = birthdayAmount(cfg, mm ? mm.tier : "silver");
@@ -208,7 +220,7 @@ export function redeemList(c: Ctx): string {
           ? `<button type="button" class="hg-btn hg-btn--sm" data-act="redeem" data-points="${t.points}" data-pkr="${t.discountPkr}">Redeem</button>`
           : `<span class="hg-need">${fmt(t.points - balance)} more</span>`;
     }
-    return row(GIFT_ICON, `${rs(t.discountPkr)} off`, pts(t.points), right);
+    return row(ico(REDEEM_ICON), `${rs(t.discountPkr)} off`, pts(t.points), right);
   });
   if (!items.length) return paused ? redeemPausedNote() : `<p class="hg-empty">No rewards are available right now.</p>`;
   return (paused ? redeemPausedNote() : "") + `<ul class="hg-list">${items.join("")}</ul>`;
@@ -240,7 +252,7 @@ export function guestHome(c: Ctx): string {
     `<section class="hg-card"><h3 class="hg-h">Become a member</h3><p class="hg-p">${esc(cfg.tagline || "Earn points every time you shop and turn them into rewards.")}</p>${joinCta(c)}</section>` +
     `<section class="hg-card"><h3 class="hg-h">Points</h3><p class="hg-p">Earn points in different ways, then swap them for money off.</p><ul class="hg-list hg-list--nav">` +
     navRow(ico("coin"), "Ways to earn", "earn") +
-    navRow(GIFT_ICON, "Ways to redeem", "redeem") +
+    navRow(ico(REDEEM_ICON), "Ways to redeem", "redeem") +
     navRow(ico("crown"), "VIP tiers", "tiers") +
     `</ul></section>` +
     refer
@@ -373,7 +385,7 @@ export function tiersView(c: Ctx): string {
       perk("Points never expire") +
         (cfg.tierRewards.diamondPkr > 0 ? perk(`${rs(cfg.tierRewards.diamondPkr)} reward code when you reach Diamond`) : "") +
         bday("diamond") +
-        (on(cfg, "birthday") ? perk("Bonus points on orders in your birthday month") : ""),
+        (on(cfg, "birthday") ? perk("Bonus points on orders during your birthday month") : ""),
     )
   );
 }

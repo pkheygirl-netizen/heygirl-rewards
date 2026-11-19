@@ -228,7 +228,7 @@ describe("core.ts wiring: signed-in member data", () => {
     await settle();
     expect(p.proxyCalls()).toEqual(["GET /customer"]);
     expect(p.label.textContent).toBe("4,500 pts");
-    expect(p.launcher.getAttribute("aria-label")).toBe("HeyGirl Rewards: 4,500 points. Open rewards");
+    expect(p.launcher.getAttribute("aria-label")).toBe("4,500 pts: open HeyGirl Rewards");
     // Later reads in the same page come from the cache.
     expect((await p.api()!.member())!.member.pointsBalance).toBe(4500);
     await settle(60000);
@@ -448,6 +448,24 @@ describe("rule 20: redeeming paused keeps the storefront on", () => {
     const p = await boot({ customerId: null, config: { redeemPaused: true } });
     p.fireLoad();
     await settle(60000);
+    expect(p.fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("guest join nudge follows the panel style (owner, 18 Nov 2026)", () => {
+  const nudgeOn = { accountCreation: true, pointsSpending: true, rewardUsage: true, tierProgress: false, goldWithin: 5000, diamondWithin: 10000 };
+
+  it.each([
+    ["dark", "hg-toast hg-toast--dark"],
+    ["light", "hg-toast"],
+  ] as const)("%s panel style: the toast gets class %s, and still no request to the app", async (panelTheme, cls) => {
+    const p = await boot({ customerId: null, config: { panelTheme, nudges: nudgeOn } });
+    p.fireLoad();
+    await settle(10000);
+    const toast = p.body.querySelector(".hg-toast");
+    expect(toast).not.toBeNull();
+    expect(toast!.className).toBe(cls);
+    expect(toast!.innerHTML).toContain("Join HeyGirl Rewards");
     expect(p.fetch).not.toHaveBeenCalled();
   });
 });

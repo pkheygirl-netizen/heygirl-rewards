@@ -20,7 +20,6 @@ export const PROGRAM_LIMITS = {
   points: { min: 0, max: 50000 },
   referralPoints: { min: 0, max: 100000 },
   purchaseRate: { min: 0.1, max: 10 },
-  reviewReleaseHours: { min: 1, max: 720 },
   tierPkr: { min: 1000, max: 10000000 },
   rewardPkr: { min: 0, max: 100000 },
   expiryDays: { min: 30, max: 3650 },
@@ -43,6 +42,8 @@ export const CAMPAIGN_STATUS_LABELS: Record<CampaignStatus, string> = {
 
 export const ONSITE_LIMITS = {
   programName: 60,
+  /** Launcher button text for visitors (app_settings.launcher_label). */
+  launcherLabel: 24,
   tagline: 120,
   terms: 20000,
   faqCount: 30,
@@ -94,3 +95,6 @@ export const SUGGESTED_FAQS: ReadonlyArray<{ q: string; a: string }> = [
     a: "Points are earned on the amount you pay after discounts, and are added once your order is delivered and paid. Shipping, tax and any part paid by gift card do not earn points.",
   },
 ];
+
+/** Settings page: Shopify refused the script-tag calls (the scopes are not granted by default). */
+export const NO_SCRIPT_SCOPE_TEXT = "To remove the old script, the app needs temporary script-tag permission (read_script_tags and write_script_tags).";

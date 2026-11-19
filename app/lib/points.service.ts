@@ -261,7 +261,7 @@ export async function enrolFromSignin(input: {
   shopifyCustomerId: string;
   shop: string;
   ip?: string | null;
-}): Promise<{ memberId: string | null; welcomeQueued: boolean; reason?: string }> {
+}): Promise<{ memberId: string | null; welcomeQueued: boolean; welcomeAwarded?: boolean; reason?: string }> {
   const customerId = String(input.shopifyCustomerId ?? "").trim();
   if (!customerId) return { memberId: null, welcomeQueued: false, reason: "no_customer" };
   const ip = clean(input.ip);
@@ -294,6 +294,23 @@ export async function enrolFromSignin(input: {
     return { memberId: member.id, welcomeQueued: false, reason: "signup_rule_off" };
   }
   if (!(await welcomeBonusOutstanding(member))) return { memberId: member.id, welcomeQueued: false };
+
+  // The bonus is added right here, so the very first answer to the storefront
+  // already shows it (a brand-new member never sees a bare 0 while a job is
+  // waiting). awardSignup re-checks everything and is idempotent on the
+  // ledger key (member, 'signup', customer id): two sign-ins at once pay once,
+  // and the welcome email is queued only by the call that wrote the row.
+  try {
+    const now = await awardSignup(member.id);
+    if (now.awarded) return { memberId: member.id, welcomeQueued: false, welcomeAwarded: true };
+    // Refused (already given, or blocked / opted out / rule off a moment ago): nothing to queue.
+    return now.reason && now.reason !== "already_awarded"
+      ? { memberId: member.id, welcomeQueued: false, reason: now.reason }
+      : { memberId: member.id, welcomeQueued: false };
+  } catch (err) {
+    // Fall back to the worker job below; the ledger key keeps it to one bonus.
+    console.error("[enrolFromSignin] welcome bonus not added now, queueing it:", err instanceof Error ? err.message : err);
+  }
 
   try {
     // No fixed job id: a failed job with the same id would block this one for

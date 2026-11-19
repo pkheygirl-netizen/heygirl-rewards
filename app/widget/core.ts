@@ -201,7 +201,8 @@ declare const __HG_LINE_CSS__: string;
     const label = launcher && launcher.querySelector(".hg-launcher__label");
     if (label && member && !noEarn) {
       label.textContent = fmt(member.member.pointsBalance) + " pts";
-      launcher!.setAttribute("aria-label", `${cfg.programName}: ${fmt(member.member.pointsBalance)} points. Open rewards`);
+      // The visible text comes first in the name (WCAG 2.5.3, label in name).
+      launcher!.setAttribute("aria-label", `${label.textContent}: open ${cfg.programName}`);
     }
     updateEarn();
     renderLines();
@@ -281,7 +282,8 @@ declare const __HG_LINE_CSS__: string;
   function toast(title: string, text: string, cta?: { label: string; href?: string; screen?: string }) {
     if (document.querySelector(".hg-toast") || document.querySelector(".hg-hub--open")) return;
     const el = document.createElement("div");
-    el.className = "hg-toast";
+    // Follows the panel style (Dark by default); Light keeps the white card.
+    el.className = cfg.panelTheme === "light" ? "hg-toast" : "hg-toast hg-toast--dark";
     el.setAttribute("role", "status");
     el.innerHTML =
       `<button type="button" class="hg-toast__x" aria-label="Dismiss">&times;</button><p class="hg-toast__t">${esc(title)}</p><p class="hg-toast__b">${esc(text)}</p>` +

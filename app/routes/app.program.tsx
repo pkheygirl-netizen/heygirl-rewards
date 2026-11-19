@@ -11,6 +11,7 @@ import { authenticate } from "../shopify.server";
 import { ConfirmModal, ResultBanner, fieldError, fieldValue, useActionToast } from "../components/admin-ui";
 import { PROGRAM_LIMITS, type EarnRuleKey } from "../components/admin-constants";
 import { fmtInt, fmtPkr } from "../components/karachi";
+import { redemptionDraftText, redemptionEditorKey } from "../components/redemption-draft";
 import {
   earnRuleViews, isEarnRuleKey, parseBirthdayRewardsForm, parseEarnRuleForm, parseExpiryForm,
   parseRedemptionTiersForm, parseTiersForm, readRedemptionTiers, toggleRulePatch, visibleRedemptionTiers,
@@ -44,7 +45,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       social_url_facebook: String(s.social_url_facebook ?? ""),
       social_url_youtube: String(s.social_url_youtube ?? ""),
       review_points: fieldValue(s.review_points),
-      review_release_hours: fieldValue(s.review_release_hours, "72"),
       tier_gold_threshold_pkr: fieldValue(s.tier_gold_threshold_pkr),
       tier_diamond_threshold_pkr: fieldValue(s.tier_diamond_threshold_pkr),
       tier_reward_gold_free_shipping: s.tier_reward_gold_free_shipping !== false,
@@ -186,7 +186,7 @@ export default function Program() {
                   </BlockStack>
                 </Card>
                 <RedemptionEditor
-                  key={`redeem-${d.version}`}
+                  key={redemptionEditorKey(d.redemptionTiers)}
                   initial={d.redemptionTiers}
                   codeExpiryDays={d.values.reward_code_expiry_days}
                   busy={busy}
@@ -334,6 +334,14 @@ function RedemptionEditor(props: {
   const [rows, setRows] = useState<TierRow[]>(props.initial.map(toRow));
   const [removing, setRemoving] = useState<number | null>(null);
   const dirty = JSON.stringify(rows) !== JSON.stringify(props.initial.map(toRow));
+  const unsaved = dirty ? redemptionDraftText(rows, props.initial) : "";
+  // Leaving or reloading the page with unsaved rewards asks first.
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
   // What customers have right now (saved), and what they will have after Save.
   const savedAllHidden = props.initial.length > 0 && props.initial.every((t) => t.hidden === true);
   const draftAllHidden = rows.length > 0 && rows.every((r) => r.hidden);
@@ -346,6 +354,14 @@ function RedemptionEditor(props: {
           <Text as="h2" variant="headingMd">Ways to redeem</Text>
           <Button disabled={rows.length >= L.maxRows} onClick={() => setRows((r) => [...r, { points: "", discount_pkr: "", hidden: false }])}>Add reward</Button>
         </InlineStack>
+        {dirty ? (
+          <Banner
+            tone="warning" title="Unsaved changes to ways to redeem"
+            action={{ content: "Save rewards", onAction: () => props.onSave(rows), loading: props.busy }}
+          >
+            <p>{unsaved || "Your changes are not saved yet. Customers will not see them until you press Save rewards."}</p>
+          </Banner>
+        ) : null}
         {savedAllHidden ? (
           <Banner tone="warning" title="Customers currently have nothing to redeem">
             <p>Every reward is hidden. Customers keep earning points but cannot turn them into a code until you show at least one reward again and save.</p>
@@ -441,7 +457,6 @@ function RuleModal(props: {
   const [points, setPoints] = useState(pointsField ? String(v[pointsField as keyof Values]) : "");
   const [rate, setRate] = useState(v.purchase_points_rate);
   const [url, setUrl] = useState(social ? String(v[`social_url_${props.rule}` as keyof Values]) : "");
-  const [hours, setHours] = useState(v.review_release_hours);
   const [friendShip, setFriendShip] = useState(v.referral_friend_free_shipping);
   const range = props.rule === "referral" ? L.referralPoints : L.points;
 
@@ -450,7 +465,6 @@ function RuleModal(props: {
     if (props.rule === "purchase") fields.purchase_points_rate = rate.trim();
     if (pointsField) fields[pointsField] = points.trim();
     if (social) fields[`social_url_${props.rule}`] = url.trim();
-    if (props.rule === "review") fields.review_release_hours = hours.trim();
     if (props.rule === "referral") fields.referral_friend_free_shipping = String(friendShip);
     props.onSave(fields);
   };
@@ -488,11 +502,10 @@ function RuleModal(props: {
               />
             ) : null}
             {props.rule === "review" ? (
-              <TextField
-                label="Hours before the points are released" type="number" inputMode="numeric" autoComplete="off"
-                value={hours} onChange={setHours} error={fieldError(props.result, "review_release_hours")}
-                helpText={`Between ${L.reviewReleaseHours.min} and ${L.reviewReleaseHours.max}. You can reject a claim from Home while it waits.`}
-              />
+              <Text as="p" tone="subdued">
+                A customer can claim once for each delivered and paid order, after tagging @heygirl.pk in a public review.
+                Nothing is added automatically: the points are added only when you approve the claim on Home or on her profile, and you can reject it instead.
+              </Text>
             ) : null}
             {props.rule === "referral" ? (
               <Checkbox

@@ -26,7 +26,6 @@ export const EDITABLE_KEYS = [
   "referral_points",
   "referral_friend_free_shipping",
   "review_points",
-  "review_release_hours",
   "silver_expiry_days",
   "reward_code_expiry_days",
   "redemption_tiers",
@@ -50,6 +49,7 @@ export const EDITABLE_KEYS = [
   "tier_progress_gold_threshold_pkr",
   "tier_progress_diamond_threshold_pkr",
   "panel_theme",
+  "launcher_label",
 ] as const;
 
 /** Never sent to the browser, whatever a loader does with the row. */
@@ -129,7 +129,12 @@ export function parseOnsiteForm(
     tier_progress_diamond_threshold_pkr: r.int(
       "tier_progress_diamond_threshold_pkr", "Diamond reminder distance", 0, ONSITE_LIMITS.withinMax),
     panel_theme: r.oneOf("panel_theme", "Panel style", PANEL_THEMES),
+    launcher_label: r.text("launcher_label", "Launcher button text", { max: ONSITE_LIMITS.launcherLabel, required: true }),
   };
+  // Plain text only: no markup characters, no line breaks or other control characters.
+  if (typeof patch.launcher_label === "string" && /[<>\u0000-\u001f\u007f]/.test(patch.launcher_label)) {
+    r.fail("launcher_label", "Launcher button text can only be plain text (no < or > and no line breaks).");
+  }
 
   let parsed: unknown;
   try {

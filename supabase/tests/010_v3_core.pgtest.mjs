@@ -620,6 +620,36 @@ console.log("\n[15] 014_faq_panel_theme: panel style column, default FAQ, no swi
   eq("program_enabled still switches", (await q(`select program_enabled p from app_settings where id=1`))[0].p, true);
 }
 
+console.log("\n[16] 015_review_manual_approval: review claims wait for staff, launcher text");
+{
+  const m015 = fs.readFileSync(path.join(MIG, "015_review_manual_approval.sql"), "utf8");
+  // 015 was applied once with the later migrations above (on the legacy data)
+  let again = null;
+  try { await db.query(m015); await db.query(m015); } catch (e) { again = e.message; }
+  ok("015 is re-runnable (applied twice more without error)", again === null, again);
+  const col = (await q(`select is_nullable n from information_schema.columns where table_name='review_claims' and column_name='release_at'`))[0];
+  eq("review_claims.release_at is kept and may be NULL", col.n, "YES");
+  const [{ id: rm }] = await q(`insert into members (shopify_customer_id,email,referral_slug) values ('RV1','rv1@x.com','rv-1') returning id`);
+  const old = (await q(`insert into review_claims (member_id, shopify_order_id, points, release_at) values ($1,'RVO1',3000, now()+interval '3 days') returning release_at`, [rm]))[0];
+  ok("a claim written the old way (with a release time) still works", old.release_at !== null);
+  const fresh = (await q(`insert into review_claims (member_id, shopify_order_id, points, release_at) values ($1,'RVO2',3000, null) returning status, release_at`, [rm]))[0];
+  eq("a new claim waits as pending with no release time", fresh, { status: "pending", release_at: null });
+  ok("review_release_hours is kept (unused)", (await q(`select review_release_hours h from app_settings where id=1`))[0].h === 72);
+  eq("existing settings row gets the launcher text 'Shop & Earn'", (await q(`select launcher_label l from app_settings where id=1`))[0].l, "Shop & Earn");
+  await q(`update app_settings set launcher_label='Earn rewards' where id=1`);
+  await db.query(m015);
+  eq("re-running 015 keeps a saved launcher text", (await q(`select launcher_label l from app_settings where id=1`))[0].l, "Earn rewards");
+  for (const [what, v] of [["blank", "   "], ["25 characters", "x".repeat(25)], ["markup", "<b>hi</b>"], ["a line break", "Shop\nEarn"]]) {
+    let code = null;
+    try { await q(`update app_settings set launcher_label=$1 where id=1`, [v]); } catch (e) { code = e.code; }
+    eq(`launcher text refuses ${what} (23514)`, code, "23514");
+  }
+  let nul = null;
+  try { await q(`update app_settings set launcher_label=null where id=1`); } catch (e) { nul = e.code; }
+  eq("launcher text refuses null (23502)", nul, "23502");
+  await q(`update app_settings set launcher_label='Shop & Earn' where id=1`);
+}
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 if (fail) console.log("FAILED:", failures.join(" | "));
 await db.end();

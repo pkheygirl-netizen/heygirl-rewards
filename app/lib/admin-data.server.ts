@@ -126,18 +126,26 @@ export async function getAttention(days = 30): Promise<Attention> {
 
 export type ReviewClaimRow = {
   id: string; memberId: string; memberName: string; points: number;
-  claimedAt: string; releaseAt: string; orderId: string | null;
+  claimedAt: string; orderId: string | null;
 };
 
-export async function listPendingReviewClaims(page = 0, pageSize = 25): Promise<{ rows: ReviewClaimRow[]; total: number }> {
-  const { data, count, error } = await adb()
+/**
+ * Review claims waiting for staff approval (rule 14), oldest first. With
+ * `memberId`, only that customer's claims (her profile page).
+ */
+export async function listPendingReviewClaims(
+  page = 0, pageSize = 25, memberId?: string,
+): Promise<{ rows: ReviewClaimRow[]; total: number }> {
+  let q = adb()
     .from("review_claims")
     .select(
-      "id, member_id, shopify_order_id, points, claimed_at, release_at, members(first_name,last_name,email,phone)",
+      "id, member_id, shopify_order_id, points, claimed_at, members(first_name,last_name,email,phone)",
       { count: "exact" },
     )
-    .eq("status", "pending")
-    .order("release_at", { ascending: true })
+    .eq("status", "pending");
+  if (memberId) q = q.eq("member_id", memberId);
+  const { data, count, error } = await q
+    .order("claimed_at", { ascending: true })
     .range(page * pageSize, page * pageSize + pageSize - 1);
   if (error) throw new Error(`could not read review claims: ${error.message}`);
   const rows = ((data ?? []) as Row[]).map((r) => ({
@@ -146,7 +154,6 @@ export async function listPendingReviewClaims(page = 0, pageSize = 25): Promise<
     memberName: memberName(r.members as Row | null),
     points: num(r.points),
     claimedAt: str(r.claimed_at),
-    releaseAt: str(r.release_at),
     orderId: strOrNull(r.shopify_order_id),
   }));
   return { rows, total: num(count) };

@@ -90,17 +90,21 @@ describe("pure rules", () => {
 });
 
 describe("enrolFromSignin (auto-consent + welcome bonus at first sign-in)", () => {
-  it("new customer: enrolled with consent 'signin', address stored, welcome bonus queued", async () => {
+  it("new customer: enrolled with consent 'signin', address stored, welcome bonus added at once (first answer shows it)", async () => {
     h.graphql = () => customerReply();
     const r = await enrolFromSignin({ shopifyCustomerId: "501", shop: "s.myshopify.com", ip: "1.2.3.4" });
-    expect(r.welcomeQueued).toBe(true);
+    expect(r).toMatchObject({ welcomeQueued: false, welcomeAwarded: true });
     const m = h.db.table("members")[0];
     expect(m).toMatchObject({
       shopify_customer_id: "501", email: "aisha@example.com", first_name: "Aisha",
       consent_given: true, consent_source: "signin", last_seen_ip: "1.2.3.4",
     });
     expect(r.memberId).toBe(m.id);
-    expect(h.points.named("award_signup_points")[0].data).toEqual({ memberId: m.id });
+    expect(m.points_balance).toBe(1000); // before the response goes out: never a bare 0
+    expect(h.db.table("points_ledger")).toHaveLength(1);
+    expect(h.db.table("points_ledger")[0]).toMatchObject({ action_type: "signup", reference_id: "501", points: 1000 });
+    expect(h.points.named("award_signup_points")).toHaveLength(0); // nothing left for the worker
+    expect(h.notifications.named("welcome")).toHaveLength(1); // the welcome email, once
     // current customer fields, not the removed Customer.email
     expect(h.graphqlCalls[0].query).toContain("defaultEmailAddress { emailAddress }");
   });
@@ -115,7 +119,8 @@ describe("enrolFromSignin (auto-consent + welcome bonus at first sign-in)", () =
   it("member row created earlier by a webhook (no consent, zero points) gets consent AND the bonus", async () => {
     const m = seedMember(h.db, { shopify_customer_id: "503", consent_given: false });
     const r = await enrolFromSignin({ shopifyCustomerId: "503", shop: "s", ip: "9.9.9.9" });
-    expect(r).toMatchObject({ memberId: m.id, welcomeQueued: true });
+    expect(r).toMatchObject({ memberId: m.id, welcomeAwarded: true });
+    expect(m.points_balance).toBe(1000);
     expect(m).toMatchObject({ consent_given: true, consent_source: "signin", last_seen_ip: "9.9.9.9" });
     expect(h.graphqlCalls).toHaveLength(0); // no Shopify call for an existing member
   });
@@ -123,7 +128,7 @@ describe("enrolFromSignin (auto-consent + welcome bonus at first sign-in)", () =
   it("member enrolled by an order (consent 'order') still gets the bonus at first sign-in, source unchanged", async () => {
     const m = seedMember(h.db, { shopify_customer_id: "504", consent_given: true, consent_source: "order" });
     const r = await enrolFromSignin({ shopifyCustomerId: "504", shop: "s" });
-    expect(r.welcomeQueued).toBe(true);
+    expect(r.welcomeAwarded).toBe(true);
     expect(m.consent_source).toBe("order");
   });
 
@@ -140,7 +145,7 @@ describe("enrolFromSignin (auto-consent + welcome bonus at first sign-in)", () =
     h.db.seed("points_ledger", { member_id: rich.id, action_type: "import", reference_id: "smile", points: 12500, balance_after: 12500 });
     expect((await enrolFromSignin({ shopifyCustomerId: "506", shop: "s" })).welcomeQueued).toBe(false);
     seedMember(h.db, { shopify_customer_id: "507", imported_from_smile: true });
-    expect((await enrolFromSignin({ shopifyCustomerId: "507", shop: "s" })).welcomeQueued).toBe(true);
+    expect((await enrolFromSignin({ shopifyCustomerId: "507", shop: "s" })).welcomeAwarded).toBe(true);
   });
 
   it("opted-out member: nothing changes, nothing queued", async () => {
@@ -381,14 +386,30 @@ describe("privacy webhooks", () => {
 });
 
 describe("fix round", () => {
-  it("M4: the welcome-bonus job has no fixed id, so an old failed job cannot block it", async () => {
-    seedMember(h.db, { shopify_customer_id: "800" });
-    expect((await enrolFromSignin({ shopifyCustomerId: "800", shop: "s" })).welcomeQueued).toBe(true);
+  it("M4: if the bonus cannot be added at once it is queued, with no fixed job id (an old failed job cannot block it)", async () => {
+    const m = seedMember(h.db, { shopify_customer_id: "800" });
+    h.db.failNext("rpc:award_points", "select", { code: "XX000", message: "db busy" });
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    expect(await enrolFromSignin({ shopifyCustomerId: "800", shop: "s" })).toMatchObject({ welcomeQueued: true });
     expect(h.points.named("award_signup_points")[0].opts).toBeUndefined();
+    expect(m.points_balance).toBe(0);
+    expect(await awardSignup(String(m.id))).toEqual({ awarded: true }); // the worker job pays it once
+    expect(h.notifications.named("welcome")).toHaveLength(1);
   });
 
-  it("M4: if the job cannot be queued, welcomeQueued is false (not a false promise)", async () => {
+  it("two sign-ins at the same moment add the bonus and send the email once", async () => {
+    const m = seedMember(h.db, { shopify_customer_id: "803" });
+    await Promise.all([enrolFromSignin({ shopifyCustomerId: "803", shop: "s" }), enrolFromSignin({ shopifyCustomerId: "803", shop: "s" })]);
+    expect(m.points_balance).toBe(1000);
+    expect(h.db.table("points_ledger")).toHaveLength(1);
+    expect(h.notifications.named("welcome")).toHaveLength(1);
+    expect((await enrolFromSignin({ shopifyCustomerId: "803", shop: "s" })).welcomeAwarded).toBeUndefined(); // later sign-ins: nothing
+  });
+
+  it("M4: if neither the bonus nor the job can be written, welcomeQueued is false (not a false promise)", async () => {
     seedMember(h.db, { shopify_customer_id: "801" });
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    h.db.failNext("rpc:award_points", "select", { code: "XX000", message: "db busy" });
     h.points.add = async () => { throw new Error("redis down"); };
     expect(await enrolFromSignin({ shopifyCustomerId: "801", shop: "s" })).toMatchObject({ welcomeQueued: false, reason: "enqueue_failed" });
   });
@@ -508,12 +529,12 @@ describe("rule 20: the program switch only pauses redeeming", () => {
     bustSettingsCache();
   };
 
-  it("welcome bonus: signing in while the program is off enrols and queues it, and the job awards it", async () => {
+  it("welcome bonus: signing in while the program is off enrols and adds it", async () => {
     const m = seedMember(h.db, { shopify_customer_id: "801", consent_given: false });
     switchOff();
-    expect(await enrolFromSignin({ shopifyCustomerId: "801", shop: "s" })).toMatchObject({ welcomeQueued: true });
+    expect(await enrolFromSignin({ shopifyCustomerId: "801", shop: "s" })).toMatchObject({ welcomeAwarded: true });
     expect(m).toMatchObject({ consent_given: true, consent_source: "signin" });
-    expect(await awardSignup(String(m.id))).toEqual({ awarded: true });
+    expect(await awardSignup(String(m.id))).toEqual({ awarded: false, reason: "already_awarded" });
     expect(m.points_balance).toBe(1000);
     expect(h.notifications.named("welcome")).toHaveLength(1);
   });

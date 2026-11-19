@@ -33,7 +33,7 @@ function mockAll(script: Parameters<typeof fakeDb>[0]) {
     effectiveReferralPoints: (m: { influencer_multiplier: number | null }, s: number) => (m.influencer_multiplier ? Math.round(s * m.influencer_multiplier) : s),
   }));
   vi.doMock("./referrals.service", () => ({ approveReferral: vi.fn(), rejectReferral: vi.fn() }));
-  vi.doMock("./review-claims.service", () => ({ rejectReviewClaim: vi.fn() }));
+  vi.doMock("./review-claims.service", () => ({ rejectReviewClaim: vi.fn(), approveReviewClaim: vi.fn() }));
   vi.doMock("./settings.server", () => ({ bustSettingsCache: vi.fn() }));
   vi.doMock("./storefront-config.server", () => ({ syncStorefrontConfig: vi.fn() }));
   vi.doMock("./heartbeat.server", () => ({
@@ -173,7 +173,7 @@ const full: Parameters<typeof fakeDb>[0] = {
           { id: "r2", referrer_member_id: ID, referred_email: null, referred_shopify_customer_id: "C2", status: "completed", block_reason: null, fraud_flags: [], reward_points: 12000, created_at: "2026-11-01T00:00:00Z", completed_at: "2026-11-05T00:00:00Z", reviewed_note: null, members: MEMBER },
         ] };
       case "review_claims":
-        return { count: 1, data: [{ id: "k1", member_id: ID, shopify_order_id: "5", points: 3000, claimed_at: "2026-11-15T00:00:00Z", release_at: "2099-01-01T00:00:00Z", members: MEMBER }] };
+        return { count: 1, data: [{ id: "k1", member_id: ID, shopify_order_id: "5", points: 3000, claimed_at: "2026-11-15T00:00:00Z", members: MEMBER }] };
       case "bonus_campaigns":
         return { data: [{ id: ID, name: "Eid Edit", multiplier: "2.0", starts_at: "2026-11-01T00:00:00Z", ends_at: "2099-01-01T00:00:00Z", is_active: true }] };
       case "gdpr_requests":
@@ -203,13 +203,15 @@ describe("pages render with data", () => {
 
   it("Home", async () => {
     const html = await renderRoute("app._index.tsx", "/app?view=claims");
-    for (const text of ["Needs your attention", "3 referrals held for review", "2 review claims waiting", "41 members have points expiring", "1,912", "842,300", "14%", "Rs.386,000", "Reward cost Rs.21,500", "Members by tier", "Order #1042 delivered and paid", "Program live", "Reject",
+    for (const text of ["Needs your attention", "3 referrals held for review", "2 review claims waiting", "41 members have points expiring", "1,912", "842,300", "14%", "Rs.386,000", "Reward cost Rs.21,500", "Members by tier", "Order #1042 delivered and paid", "Program live", "Reject", "Approve", "then approve or reject each claim",
       "Order value using a reward", "after discounts, without shipping and tax, before refunds"]) {
       expect(html, text).toContain(text);
     }
     // the figure is not called "sales" anywhere on Home, and rewards are available so there is no warning
     expect(html).not.toMatch(/Sales using a reward/);
     expect(html).not.toContain("Customers currently have nothing to redeem");
+    // review points are never promised for a time (manual approval)
+    expect(html).not.toMatch(/release automatically|Releases|due now/);
     expect(html).toContain(`href="/app/customers/${ID}"`);
     expect(html).toContain('href="/app/referrals?status=flagged"');
   });
@@ -229,7 +231,7 @@ describe("pages render with data", () => {
 
   it("Customer profile", async () => {
     const html = await renderRoute("app.customers.$id.tsx", `/app/customers/${ID}`, { id: ID });
-    for (const text of ["18,450", "Available", "Pending, released when", "Adjust balance", "Rs.28,800 more to reach Diamond", "12 August", "Cancel and return points", "REWARD-AAAA", "Staff notes", "Called about a late parcel", "?ref=sana", "Moved to Gold", "Pending 900", "held for review"]) {
+    for (const text of ["18,450", "Available", "Pending, released when", "Adjust balance", "Rs.28,800 more to reach Diamond", "12 August", "Cancel and return points", "REWARD-AAAA", "Staff notes", "Called about a late parcel", "?ref=sana", "Moved to Gold", "Pending 900", "held for review", "Review claims waiting", "Points are added only when you approve", "Approve"]) {
       expect(html, text).toContain(text);
     }
     // only the reward code that is still active can be cancelled
@@ -244,7 +246,7 @@ describe("pages render with data", () => {
     expect(html.match(/Shown to customers/g)!.length).toBeGreaterThanOrEqual(2);
     expect(html).not.toContain("Customers currently have nothing to redeem");
     expect(html).not.toContain(">Hidden<");
-    for (const text of ["Ways to earn", "Place an order", "1 point per Rs.1", "Post a review", "Ways to redeem", "Add reward", "No profile link yet"]) {
+    for (const text of ["Ways to earn", "Place an order", "1 point per Rs.1", "Post your order review", "Points are added only when you approve", "Ways to redeem", "Add reward", "No profile link yet"]) {
       expect(html, text).toContain(text);
     }
   });

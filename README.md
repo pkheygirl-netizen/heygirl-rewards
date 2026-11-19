@@ -88,7 +88,6 @@ This is deliberate: an uninstall and reinstall during maintenance must not wipe 
 |---|---|---|
 | heartbeat | every minute | `system_heartbeat` key `worker`, with failed-job counts |
 | pending codes | every 10 minutes | finishes automatic codes left half-made; for a reward code that was never created, returns the points |
-| review release | every 15 minutes | pays review claims after the hold period |
 | storefront config | hourly at :05 | republishes the storefront settings when a campaign started or ended, and once a day regardless |
 | expiry | 02:00 daily | expires overdue Silver points and overdue codes |
 | expiry warning | 02:30 daily | emails members whose points expire within 30 days |

@@ -15,7 +15,7 @@ const authenticateAdmin = vi.fn();
 const svc = {
   setOptOut: vi.fn(), setBirthday: vi.fn(), cancelRewardCode: vi.fn(), setInfluencer: vi.fn(),
   createInfluencerCode: vi.fn(), removeInfluencerCode: vi.fn(), approveReferral: vi.fn(), rejectReferral: vi.fn(),
-  rejectReviewClaim: vi.fn(), bustSettingsCache: vi.fn(), syncStorefrontConfig: vi.fn(), readHeartbeats: vi.fn(),
+  rejectReviewClaim: vi.fn(), approveReviewClaim: vi.fn(), bustSettingsCache: vi.fn(), syncStorefrontConfig: vi.fn(), readHeartbeats: vi.fn(),
 };
 
 function setup(script: Parameters<typeof fakeDb>[0] = {}) {
@@ -35,7 +35,7 @@ function setup(script: Parameters<typeof fakeDb>[0] = {}) {
     removeInfluencerCode: svc.removeInfluencerCode, effectiveReferralPoints: (_m: unknown, s: number) => s,
   }));
   vi.doMock("./referrals.service", () => ({ approveReferral: svc.approveReferral, rejectReferral: svc.rejectReferral }));
-  vi.doMock("./review-claims.service", () => ({ rejectReviewClaim: svc.rejectReviewClaim }));
+  vi.doMock("./review-claims.service", () => ({ rejectReviewClaim: svc.rejectReviewClaim, approveReviewClaim: svc.approveReviewClaim }));
   vi.doMock("./settings.server", () => ({ bustSettingsCache: svc.bustSettingsCache }));
   vi.doMock("./storefront-config.server", () => ({ syncStorefrontConfig: svc.syncStorefrontConfig }));
   vi.doMock("./heartbeat.server", () => ({ readHeartbeats: svc.readHeartbeats }));
@@ -404,9 +404,64 @@ describe("referrals, influencers and home actions", () => {
     expect(svc.rejectReviewClaim).toHaveBeenCalledTimes(1);
     expect(svc.rejectReviewClaim).toHaveBeenCalledWith(ID, "Ayesha");
   });
+
+  it("approving a review claim from Home adds the points through the engine, records who did it and says so", async () => {
+    setup();
+    const { action } = await import("../routes/app._index");
+    expect((await action(args(post("/app", { intent: "approve_claim", claim_id: "nope" })))).status).toBe(400);
+    expect(svc.approveReviewClaim).not.toHaveBeenCalled();
+    svc.approveReviewClaim.mockResolvedValueOnce({ ok: true, points: 3000, alreadyPaid: false });
+    const ok = await read(await action(args(post("/app", { intent: "approve_claim", claim_id: ID }))));
+    expect(svc.approveReviewClaim).toHaveBeenCalledWith(ID, "Ayesha");
+    expect(ok).toEqual({ ok: true, message: "Review approved. 3,000 points added" });
+    for (const [reason, text] of [["already_resolved", "already approved or rejected"], ["blocked", "blocked or opted out"], ["disabled", "switched off"], ["order_gone", "cancelled or refunded"]]) {
+      svc.approveReviewClaim.mockResolvedValueOnce({ ok: false, reason });
+      const res = await action(args(post("/app", { intent: "approve_claim", claim_id: ID })));
+      expect(res.status).toBe(409);
+      expect((await read(res)).error).toContain(text);
+    }
+  });
+
+  it("the customer profile approves or rejects only her own waiting claims", async () => {
+    const OTHER = "33333333-3333-4333-8333-333333333333";
+    setup({ from: (t) => (t === "review_claims" ? { data: [{ id: CODE, member_id: ID, points: 3000, claimed_at: "t", members: null }], count: 1 } : { data: [] }) });
+    const { action } = await import("../routes/app.customers.$id");
+    const foreign = await action(args(post(`/app/customers/${ID}`, { intent: "approve_claim", claim_id: OTHER }), { id: ID }));
+    expect(foreign.status).toBe(404);
+    expect(svc.approveReviewClaim).not.toHaveBeenCalled();
+    svc.approveReviewClaim.mockResolvedValueOnce({ ok: true, points: 3000, alreadyPaid: false });
+    const ok = await read(await action(args(post(`/app/customers/${ID}`, { intent: "approve_claim", claim_id: CODE }), { id: ID })));
+    expect(ok).toMatchObject({ ok: true, message: "Review approved. 3,000 points added" });
+    expect(svc.approveReviewClaim).toHaveBeenCalledWith(CODE, "Ayesha");
+    svc.rejectReviewClaim.mockResolvedValueOnce({ ok: true });
+    expect(await read(await action(args(post(`/app/customers/${ID}`, { intent: "reject_claim", claim_id: CODE }), { id: ID })))).toMatchObject({ ok: true, message: "Review claim rejected. No points were added" });
+    expect(svc.rejectReviewClaim).toHaveBeenCalledWith(CODE, "Ayesha");
+  });
 });
 
 describe("settings", () => {
+  it("old storefront script: shown with a button while Shopify has one; removed on request; a missing scope is explained", async () => {
+    setup();
+    const OLD = "https://app.heygirl.pk/loyalty-widget.js?v=f58b83ff&shop=heygirl-dev.myshopify.com";
+    const reply = (data: unknown) => ({ json: async () => ({ data }) });
+    admin.graphql.mockImplementation(async (q: string) =>
+      q.includes("scriptTagDelete") ? reply({ scriptTagDelete: { deletedScriptTagId: "gid://shopify/ScriptTag/1", userErrors: [] } })
+        : reply({ scriptTags: { edges: [{ node: { id: "gid://shopify/ScriptTag/1", src: OLD } }] } }));
+    const { loader, action } = await import("../routes/app.settings");
+    const page = (await (await loader(args(new Request("https://app.test/app/settings")))).json()) as { legacyScript: unknown };
+    expect(page.legacyScript).toEqual({ found: 1, noScope: false });
+    expect(await read(await action(args(post("/app/settings", { intent: "remove_legacy_script" }))))).toEqual({ ok: true, message: "Old storefront script removed" });
+
+    admin.graphql.mockImplementation(async () => { throw new Error("Access denied for scriptTags field. Required access: `read_script_tags` access scope."); });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const denied = await action(args(post("/app/settings", { intent: "remove_legacy_script" })));
+    expect(denied.status).toBe(403);
+    expect((await read(denied)).error).toContain("To remove the old script, the app needs temporary script-tag permission");
+    const later = (await (await loader(args(new Request("https://app.test/app/settings")))).json()) as { legacyScript: unknown };
+    expect(later.legacyScript).toEqual({ found: 0, noScope: true });
+    admin.graphql.mockReset();
+  });
+
   it("the WhatsApp switch writes only the switch", async () => {
     const fake = setup();
     const { action } = await import("../routes/app.settings");

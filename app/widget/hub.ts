@@ -4,7 +4,7 @@
 // to the app server); members get tabs backed by the proxy API.
 import { HUB_CSS, HUB_ICONS } from "./hub-css";
 import { fmtDate, PROXY, pts, rs, type LoyaltyApi, type MemberData } from "./shared";
-import { earnTab, errorText, guestHome, guestSub, historyFilters, historyRows, referTab, rewardsTab, stateMessage, tiersView, type Ctx, type HistoryRow, type ReferralSummary } from "./views";
+import { earnTab, errorText, REVIEW_PENDING_TEXT, guestHome, guestSub, historyFilters, historyRows, referTab, rewardsTab, stateMessage, tiersView, type Ctx, type HistoryRow, type ReferralSummary } from "./views";
 
 (function () {
   const api = (window as unknown as { HGLoyalty?: LoyaltyApi }).HGLoyalty;
@@ -378,10 +378,10 @@ import { earnTab, errorText, guestHome, guestSub, historyFilters, historyRows, r
         return r.status === "already_claimed" ? "You have already claimed this one." : `Thank you! ${pts(Number(r.points) || 0)} will be added to your balance soon.`;
       });
     } else if (a === "review" && m) {
-      act(b, "/review", {}, (r) => {
+      // Staff approve each claim by hand (rule 14): no date is promised.
+      act(b, "/review", {}, () => {
         m.review = { eligible: false, pending: m.review.pending + 1 };
-        const when = fmtDate(String(r.releaseAt || ""));
-        return `Thank you! ${pts(cfg.reviewPoints)} will be added${when ? " by " + when : " soon"}.`;
+        return `Thank you! ${REVIEW_PENDING_TEXT}`;
       });
     } else if (a === "redeem" && m) {
       const points = Number(b.getAttribute("data-points"));

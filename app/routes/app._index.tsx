@@ -12,7 +12,7 @@ import "@shopify/polaris-viz/build/esm/styles.css";
 import { authenticate } from "../shopify.server";
 import { ClientOnly } from "../components/ClientOnly";
 import {
-  ConfirmModal, EmptyBlock, Pager, PeriodSelect, ResultBanner, StatCard, useActionToast,
+  EmptyBlock, Pager, PeriodSelect, ResultBanner, StatCard, useActionToast,
 } from "../components/admin-ui";
 import {
   fmtAge, fmtChange, fmtDate, fmtDateTime, fmtInt, fmtPercent, fmtPkr, fmtSigned, parsePeriodKey, periodRange,
@@ -26,9 +26,9 @@ import { readRedemptionTiers, visibleRedemptionTiers } from "../lib/admin-progra
 import { actorFromSession } from "../lib/admin-members.server";
 import { getSettingsRow } from "../lib/admin-settings.server";
 import { errorMessage } from "../lib/admin-validate.server";
-import { UUID_RE } from "../lib/admin-db.server";
 import { ACTIVITY_FILTERS, PROGRAM_OFF_EFFECTS } from "../components/admin-constants";
-import { rejectReviewClaim } from "../lib/review-claims.service";
+import { handleReviewClaimIntent } from "../lib/admin-review-claims.server";
+import { ReviewClaimConfirm, type ClaimDecision } from "../components/review-claim-confirm";
 
 const LIST_PAGE = 25;
 const ACTIVITY_PAGE = 10;
@@ -67,7 +67,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // rewards customers can choose right now (hidden rewards are not available)
     rewardsShown: visibleRedemptionTiers(readRedemptionTiers(settings.redemption_tiers)).length,
     rewardsTotal: readRedemptionTiers(settings.redemption_tiers).length,
-    reviewReleaseHours: Number(settings.review_release_hours ?? 72),
     now: new Date().toISOString(),
   });
 };
@@ -77,14 +76,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "");
   try {
-    if (intent === "reject_claim") {
-      const claimId = String(form.get("claim_id") ?? "");
-      if (!UUID_RE.test(claimId)) return json({ ok: false as const, error: "That claim could not be found." }, { status: 400 });
-      const res = await rejectReviewClaim(claimId, actorFromSession(session));
-      if (!res.ok) {
-        return json({ ok: false as const, error: "The claim was not rejected. It may already have been released or rejected." }, { status: 409 });
-      }
-      return json({ ok: true as const, message: "Review claim rejected. No points will be released" });
+    // Review claims: points only when staff approve (rule 14).
+    const claim = await handleReviewClaimIntent(intent, form.get("claim_id"), actorFromSession(session));
+    if (claim) {
+      return claim.ok
+        ? json({ ok: true as const, message: claim.message })
+        : json({ ok: false as const, error: claim.error }, { status: claim.status });
     }
     return json({ ok: false as const, error: "Unknown action." }, { status: 400 });
   } catch (e) {
@@ -102,7 +99,7 @@ export default function Home() {
   const fetcher = useFetcher<typeof action>();
   useActionToast(fetcher.data);
   const [search, setSearch] = useState("");
-  const [rejecting, setRejecting] = useState<{ id: string; name: string } | null>(null);
+  const [deciding, setDeciding] = useState<ClaimDecision | null>(null);
 
   const withParams = (changes: Record<string, string | null>) => {
     const next = new URLSearchParams(sp);
@@ -183,7 +180,7 @@ export default function Home() {
               {d.attention.reviewClaimsPending > 0 ? (
                 <AttentionRow
                   title={`${fmtInt(d.attention.reviewClaimsPending)} review claim${d.attention.reviewClaimsPending === 1 ? "" : "s"} waiting`}
-                  detail={`Points release automatically ${d.reviewReleaseHours} hours after the claim unless you reject it.`}
+                  detail="Nothing is added automatically. Check that she posted a public review of her order and tagged @heygirl.pk, then approve or reject each claim."
                   action={<Button onClick={() => setSp(withParams({ view: "claims", page: null }), { preventScrollReset: true })}>View claims</Button>}
                 />
               ) : null}
@@ -225,25 +222,27 @@ export default function Home() {
                 </InlineStack>
               </Box>
               {d.claims.rows.length === 0 ? (
-                <Box padding="400"><Text as="p" tone="subdued">No claims are waiting. New claims appear here until their points are released.</Text></Box>
+                <Box padding="400"><Text as="p" tone="subdued">No claims are waiting. New claims appear here until you approve or reject them.</Text></Box>
               ) : (
                 <IndexTable
                   selectable={false}
                   itemCount={d.claims.rows.length}
                   resourceName={{ singular: "claim", plural: "claims" }}
-                  headings={[{ title: "Customer" }, { title: "Points" }, { title: "Claimed" }, { title: "Releases" }, { title: "Action" }]}
+                  headings={[{ title: "Customer" }, { title: "Points" }, { title: "Claimed" }, { title: "Action" }]}
                 >
                   {d.claims.rows.map((c, i) => (
                     <IndexTable.Row id={c.id} key={c.id} position={i}>
                       <IndexTable.Cell><Link url={`/app/customers/${c.memberId}`}>{c.memberName}</Link></IndexTable.Cell>
                       <IndexTable.Cell>{fmtInt(c.points)}</IndexTable.Cell>
-                      <IndexTable.Cell>{fmtDateTime(c.claimedAt)}</IndexTable.Cell>
                       <IndexTable.Cell>
-                        {fmtDateTime(c.releaseAt)}
-                        <Text as="span" tone="subdued"> ({new Date(c.releaseAt) > new Date(d.now) ? `in ${fmtAge(c.releaseAt, new Date(d.now))}` : "due now"})</Text>
+                        {fmtDateTime(c.claimedAt)}
+                        <Text as="span" tone="subdued"> ({fmtAge(c.claimedAt, new Date(d.now))} ago)</Text>
                       </IndexTable.Cell>
                       <IndexTable.Cell>
-                        <Button tone="critical" variant="plain" onClick={() => setRejecting({ id: c.id, name: c.memberName })}>Reject</Button>
+                        <ButtonGroup>
+                          <Button variant="primary" onClick={() => setDeciding({ kind: "approve", id: c.id, name: c.memberName, points: c.points })}>Approve</Button>
+                          <Button tone="critical" onClick={() => setDeciding({ kind: "reject", id: c.id, name: c.memberName, points: c.points })}>Reject</Button>
+                        </ButtonGroup>
                       </IndexTable.Cell>
                     </IndexTable.Row>
                   ))}
@@ -433,22 +432,15 @@ export default function Home() {
         </Layout.Section>
       </Layout>
 
-      <ConfirmModal
-        open={rejecting !== null}
-        title="Reject this review claim?"
-        confirmLabel="Reject claim"
+      <ReviewClaimConfirm
+        decision={deciding}
         loading={fetcher.state !== "idle"}
-        onClose={() => setRejecting(null)}
-        onConfirm={() => {
-          if (!rejecting) return;
-          fetcher.submit({ intent: "reject_claim", claim_id: rejecting.id }, { method: "post" });
-          setRejecting(null);
+        onClose={() => setDeciding(null)}
+        onConfirm={(c) => {
+          fetcher.submit({ intent: c.kind === "approve" ? "approve_claim" : "reject_claim", claim_id: c.id }, { method: "post" });
+          setDeciding(null);
         }}
-      >
-        <Text as="p">
-          {rejecting?.name} will not receive the review points for this claim. This cannot be undone from here.
-        </Text>
-      </ConfirmModal>
+      />
     </Page>
   );
 }

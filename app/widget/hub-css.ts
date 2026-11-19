@@ -9,6 +9,16 @@
 // launcher, toast and the cart/product lines live in the store's own page and
 // keep their look. extension.test.ts checks every text/background pair of both
 // token sets for 4.5:1.
+//
+// The panel sits inside the store's own page, so theme rules reach it. Dawn's
+// base.css sets colour, font, letter-spacing and line-height on h1-h6 directly
+// (`h2 { color: rgb(var(--color-foreground)) }`), which beats an inherited
+// colour: in the Dark style every heading came out black on black. So every
+// heading carries all of its own type styles under `.hg-hub .<class>` (higher
+// than any theme element rule), every other text element type used in the
+// markup gets an explicit colour under `.hg-hub`, and the theme's focus shadow
+// is switched off. hub-css.test.ts checks that every text element type in the
+// hub markup has such a rule.
 export const HUB_LIGHT = "--g:#e8ad00;--gd:#7a5c00;--ink:#1a1a1a;--mute:#595959;--ln:#e9e2cc;--bg:#faf7ee;--card:#fff;--tint:#fbf1cf;--ok:#14491b;--okb:#e7f4e8;--err:#8a1c12;--errb:#fde8e6;--pos:#14611f;--pend:#eee;--fld:#8a8a8a;--trk:#eee4c2;--wrn:#fff4e0;--wrnl:#f0cf8a;--hb:linear-gradient(135deg,#f3bd1c,#e0a400);--ht:#1a1a1a;--hov:rgba(0,0,0,.1);--balb:#1a1a1a;--balln:#1a1a1a;--ong:#1a1a1a";
 export const HUB_DARK = "--gd:#f3bd1c;--ink:#f5f5f5;--mute:#bdbdbd;--ln:#3a3a3a;--bg:#121212;--card:#1e1e1e;--tint:#3d3212;--ok:#93e2a5;--okb:#15341d;--err:#ffaba1;--errb:#401a15;--pos:#86dc99;--pend:#333;--fld:#8a8a8a;--trk:#3a3a3a;--wrn:#33270a;--wrnl:#8a6a1f;--hb:#0b0b0b;--ht:#ffd24a;--hov:rgba(255,255,255,.12);--balb:#2a2a2a;--balln:#7a5c00";
 export const HUB_CSS = `
@@ -21,9 +31,10 @@ export const HUB_CSS = `
 .hg-hub *,.hg-hub *:before,.hg-hub *:after{box-sizing:border-box;letter-spacing:normal}
 .hg-hub p,.hg-hub h2,.hg-hub h3,.hg-hub ul{margin:0;padding:0;font-family:inherit}
 .hg-hub ul{list-style:none}
+.hg-hub :where(h2,h3,p,span,li,label,strong,option){color:inherit}
 .hg-hub a{color:var(--gd)}
 .hg-hub button,.hg-hub select,.hg-hub input{font:inherit;color:inherit}
-.hg-hub :focus-visible{outline:3px solid var(--ink);outline-offset:2px}
+.hg-hub :focus-visible{outline:3px solid var(--ink);outline-offset:2px;box-shadow:none}
 .hg-hub__head :focus-visible{outline-color:var(--ht)}
 .hg-hub:focus{outline:none}
 .hg-bd{position:fixed;inset:0;z-index:2147483000;background:transparent}
@@ -33,7 +44,7 @@ export const HUB_CSS = `
 .hg-hub__head{display:flex;align-items:center;gap:4px;padding:10px 8px 10px 16px;background:var(--hb);color:var(--ht);flex:none}
 .hg-hub__tt{flex:1;min-width:0}
 .hg-hub__eb{font-size:13px}
-.hg-hub__title{font-size:19px;font-weight:700;line-height:1.2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hg-hub .hg-hub__title{margin:0;color:var(--ht);font-family:inherit;font-style:normal;font-size:19px;font-weight:700;letter-spacing:normal;line-height:1.2;text-transform:none;word-break:normal;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .hg-hub__ib{width:44px;height:44px;flex:none;display:flex;align-items:center;justify-content:center;background:none;border:0;border-radius:50%;cursor:pointer;color:var(--ht)}
 .hg-hub__ib:hover{background:var(--hov)}
 .hg-hub__ib .hg-ic{width:24px;height:24px;stroke-width:2.2}
@@ -46,7 +57,7 @@ export const HUB_CSS = `
 .hg-msg--err{background:var(--errb);color:var(--err)}
 .hg-hub__body{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px;overscroll-behavior:contain}
 .hg-card{background:var(--card);border:1px solid var(--ln);border-radius:14px;padding:14px;margin-bottom:12px}
-.hg-h{font-size:16px;font-weight:700;margin-bottom:4px!important;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.hg-hub .hg-h{margin:0 0 4px;color:var(--ink);font-family:inherit;font-style:normal;font-size:16px;font-weight:700;letter-spacing:normal;line-height:1.3;text-transform:none;word-break:normal;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .hg-p{color:var(--mute);font-size:14px;margin-bottom:10px!important}
 .hg-list>li+li{border-top:1px solid var(--ln)}
 .hg-row,.hg-code,.hg-hrow{display:flex;align-items:center;gap:12px;padding:10px 0;min-height:56px}
@@ -130,13 +141,15 @@ export const HUB_ICONS =
   P("x", "M6 6l12 12M18 6L6 18") +
   P("check", "M5 12.5l4.5 4.5L19 7.5") +
   P("coin", "M12 3a9 9 0 100 18 9 9 0 000-18zM12 7v10M14.5 9.5H11a1.75 1.75 0 000 3.5h2a1.75 1.75 0 010 3.5H9.5") +
-  // Ways to earn: generic shapes only (camera, thumbs-up, play), never a platform's logo.
+  // Ways to earn: generic shapes only (heart, thumbs-up, play, camera), never a platform's logo.
+  P("heart", "M12 20.5C6 16.6 3 13.4 3 9.6 3 7 5 5 7.5 5c1.8 0 3.4 1 4.5 2.6C13.1 6 14.7 5 16.5 5 19 5 21 7 21 9.6c0 3.8-3 7-9 10.9z") +
   P("join", "M10 12a4 4 0 100-8 4 4 0 000 8zM3 20a7 7 0 0114 0M19 7.5v6M16 10.5h6") +
   P("cam", "M4.5 8h3L9 5.5h6L16.5 8h3A1.5 1.5 0 0121 9.5v8a1.5 1.5 0 01-1.5 1.5h-15A1.5 1.5 0 013 17.5v-8A1.5 1.5 0 014.5 8zM12 10.25a3.25 3.25 0 100 6.5 3.25 3.25 0 000-6.5z") +
   P("like", "M3.5 10.5h4V20h-4zM7.5 10.5L11 4c1.5 0 2.5 1.2 2.2 2.7l-.6 3.3h5.3a2 2 0 012 2.4l-1.2 6a2 2 0 01-2 1.6H7.5") +
   P("play", "M12 3a9 9 0 100 18 9 9 0 000-18zM10 8.3l5.6 3.7-5.6 3.7V8.3z") +
   P("bag", "M5 8h14l-1 12H6L5 8zM9 8V7a3 3 0 016 0v1") +
-  P("star", "M12 3.5l2.6 5.3 5.9.9-4.2 4.1 1 5.8L12 16.9l-5.3 2.7 1-5.8-4.2-4.1 5.9-.9L12 3.5z") +
+  // Ways to redeem: two currency notes (the gift stays on the launcher).
+  P("notes", "M5 5.5h15a1.5 1.5 0 011.5 1.5v9M4 8h13a1.5 1.5 0 011.5 1.5v8A1.5 1.5 0 0117 19H4a1.5 1.5 0 01-1.5-1.5v-8A1.5 1.5 0 014 8zM10.5 11.25a2.25 2.25 0 100 4.5 2.25 2.25 0 000-4.5zM5.5 11v.01M15.5 16v.01") +
   P("cake", "M4 20h16M5 20v-7h14v7M5 16c1.2 1 2.3 1 3.5 0s2.3-1 3.5 0 2.3 1 3.5 0 2.3-1 3.5 0M12 13V9.5M12 6.5v.01") +
   P("friends", "M9 11a3.5 3.5 0 100-7 3.5 3.5 0 000 7zM2.5 20a6.5 6.5 0 0113 0M16 4.3a3.5 3.5 0 010 6.4M18 14.5a6.5 6.5 0 013.5 5.5") +
   P("truck", "M2.5 6.5h11v10h-11zM13.5 10h4l3 3v3.5h-7M7 19a2 2 0 100-4 2 2 0 000 4zM17 19a2 2 0 100-4 2 2 0 000 4z") +

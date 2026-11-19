@@ -32,7 +32,6 @@ function pts(n: unknown): string {
 /** Pure: settings row → the "ways to earn" rows. */
 export function earnRuleViews(s: Row): EarnRuleView[] {
   const rate = num(s.purchase_points_rate, 1);
-  const hours = num(s.review_release_hours, 72);
   const social = (key: "instagram" | "facebook" | "youtube", title: string): EarnRuleView => {
     const enabled = ruleEnabled(s.earn_rules, key);
     const url = str(s[`social_url_${key}`]).trim();
@@ -61,8 +60,8 @@ export function earnRuleViews(s: Row): EarnRuleView[] {
     social("facebook", "Like on Facebook"),
     social("youtube", "Subscribe on YouTube"),
     {
-      key: "review", title: "Post a review",
-      when: `Released ${hours} hours after the customer claims it`,
+      key: "review", title: "Post your order review",
+      when: "One claim per delivered and paid order. Points are added only when you approve the claim on Home or on her profile",
       value: pts(s.review_points), enabled: ruleEnabled(s.earn_rules, "review"), problem: null,
     },
     {
@@ -121,9 +120,8 @@ export function parseEarnRuleForm(current: Row, key: EarnRuleKey, form: Form): P
       break;
     }
     case "review":
+      // No release time: staff approve every claim (rule 14).
       patch.review_points = r.int("review_points", "Points given", L.points.min, L.points.max);
-      patch.review_release_hours = r.int(
-        "review_release_hours", "Hours before release", L.reviewReleaseHours.min, L.reviewReleaseHours.max);
       break;
     case "birthday":
       break;

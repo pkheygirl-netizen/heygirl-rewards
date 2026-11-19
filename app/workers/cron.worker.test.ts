@@ -33,7 +33,7 @@ describe("schedules", () => {
     await registerCronJobs();
     const jobs = h.cron.jobs;
     expect(jobs.map((j) => j.name).sort()).toEqual([
-      "cron_birthday", "cron_expiry", "cron_expiry_warning", "cron_heartbeat", "cron_pending_codes", "cron_review_release", "cron_social_sweep", "cron_storefront_config",
+      "cron_birthday", "cron_expiry", "cron_expiry_warning", "cron_heartbeat", "cron_pending_codes", "cron_social_sweep", "cron_storefront_config",
     ]);
     for (const j of jobs) expect((j.opts as { repeat: { tz: string } }).repeat.tz).toBe("Asia/Karachi");
     const pattern = (n: string) => (jobs.find((j) => j.name === n)!.opts as { repeat: { pattern: string } }).repeat.pattern;
@@ -41,6 +41,20 @@ describe("schedules", () => {
     expect(pattern("cron_birthday")).toBe("0 9 * * *"); // M2: every day, not only the 1st
     expect(pattern("cron_pending_codes")).toBe("*/10 * * * *"); // H3
     expect(pattern("cron_storefront_config")).toBe("5 * * * *");
+  });
+
+  it("review claims are never released automatically: the old 15-minute schedule is removed and a leftover run pays nothing", async () => {
+    await registerCronJobs();
+    expect(h.cron.jobs.map((j) => j.name)).not.toContain("cron_review_release");
+    // Removed with the exact options it was added with (BullMQ needs them to find it).
+    expect(h.cron.removedRepeatables).toEqual([{ name: "cron_review_release", repeat: { pattern: "*/15 * * * *", tz: "Asia/Karachi" }, jobId: "cron_review_release" }]);
+    const m = seedMember(h.db);
+    h.db.seed("order_webhook_state", { shopify_order_id: "O1", shopify_customer_id: m.shopify_customer_id, points_awarded: true });
+    const claim = h.db.seed("review_claims", { member_id: m.id, shopify_order_id: "O1", points: 3000, release_at: "2026-11-01T00:00:00Z" });
+    expect(await runCronJob("cron_review_release")).toEqual({ retired: true });
+    expect(claim.status).toBe("pending");
+    expect(m.points_balance).toBe(0);
+    expect(h.db.rpcCalls).toHaveLength(0);
   });
 
   it("the heartbeat job writes the worker heartbeat with failed-job counts", async () => {

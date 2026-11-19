@@ -11,7 +11,7 @@ vi.mock("../db.server", () => {
   return { db: { from: vi.fn(() => c) } };
 });
 
-import { APP_INSTALLATION_QUERY, buildStorefrontConfig, CONFIG_METAFIELD_MUTATION, isHiddenRedemptionTier, panelTheme, syncStorefrontConfig, visibleRedemptionTiers } from "./storefront-config.server";
+import { APP_INSTALLATION_QUERY, buildStorefrontConfig, CONFIG_METAFIELD_MUTATION, isHiddenRedemptionTier, launcherLabel, panelTheme, syncStorefrontConfig, visibleRedemptionTiers } from "./storefront-config.server";
 
 const SETTINGS = {
   program_enabled: true,
@@ -77,7 +77,7 @@ describe("buildStorefrontConfig", () => {
       faqs: [{ q: "When do points expire?", a: "After a year on Silver." }],
     });
     expect(Object.keys(c).sort()).toEqual(
-      ["campaign", "nextCampaign", "birthday", "codeExpiryDays", "earnRules", "enabled", "expiryDays", "faqs", "friendFreeShipping", "nudges", "panelTheme", "pointsRate", "programName", "redeemPaused", "redemptionTiers", "referralPoints", "reviewPoints", "reviewReleaseHours", "signupPoints", "social", "tagline", "terms", "tierRewards", "tiers"].sort(),
+      ["campaign", "nextCampaign", "birthday", "codeExpiryDays", "earnRules", "enabled", "expiryDays", "faqs", "friendFreeShipping", "nudges", "launcherLabel", "panelTheme", "pointsRate", "programName", "redeemPaused", "redemptionTiers", "referralPoints", "reviewPoints", "signupPoints", "social", "tagline", "terms", "tierRewards", "tiers"].sort(),
     );
   });
 
@@ -98,6 +98,16 @@ describe("buildStorefrontConfig", () => {
     expect(buildStorefrontConfig(SETTINGS, null).panelTheme).toBe("dark");
     expect(buildStorefrontConfig({ ...SETTINGS, panel_theme: "light" }, null).panelTheme).toBe("light");
     for (const v of ["LIGHT", "", null, 1, "dark", "<script>"]) expect(panelTheme(v)).toBe("dark");
+  });
+
+  it("launcher text: the saved text as plain text, else 'Shop & Earn'; no release hours are published any more", () => {
+    expect(buildStorefrontConfig(SETTINGS, null).launcherLabel).toBe("Shop & Earn");
+    expect(buildStorefrontConfig({ ...SETTINGS, launcher_label: " Earn rewards " }, null).launcherLabel).toBe("Earn rewards");
+    expect(launcherLabel("<b>Hi</b>")).toBe("bHi/b");
+    expect(launcherLabel("a\nb")).toBe("ab");
+    for (const v of ["", "   ", null, 5, "<>"]) expect(launcherLabel(v)).toBe("Shop & Earn");
+    expect(launcherLabel("x".repeat(40))).toHaveLength(24);
+    expect(buildStorefrontConfig(SETTINGS, null)).not.toHaveProperty("reviewReleaseHours");
   });
 
   it("sorts and cleans the redemption table", () => {

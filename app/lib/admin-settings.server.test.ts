@@ -54,7 +54,9 @@ describe("updateSettings", () => {
     for (const dead of ["brand_color_primary", "brand_color_secondary", "shopify_email_injection_enabled", "nudge_post_purchase_enabled", "whatsapp_api_key"]) {
       expect(keys).not.toContain(dead);
     }
-    for (const live of ["earn_rules", "redemption_tiers", "review_release_hours", "reward_code_expiry_days", "social_url_instagram"]) {
+    // review_release_hours is retired (review claims wait for staff approval): no longer editable.
+    expect(keys).not.toContain("review_release_hours");
+    for (const live of ["earn_rules", "redemption_tiers", "reward_code_expiry_days", "social_url_instagram"]) {
       expect(keys).toContain(live);
     }
   });
@@ -88,6 +90,7 @@ describe("On-site form", () => {
     program_name: "HeyGirl.pk Rewards", tagline: "Shop. Earn. Glow.", terms_and_conditions: "Terms",
     nudge_account_creation_enabled: "true", nudge_tier_progress_enabled: "true",
     tier_progress_gold_threshold_pkr: "5000", tier_progress_diamond_threshold_pkr: "10000", panel_theme: "light",
+    launcher_label: "  Shop & Earn ",
     faqs: JSON.stringify([{ q: "When do I get points?", a: "When your order is delivered and paid." }, { q: " ", a: "" }]),
   };
 
@@ -101,6 +104,7 @@ describe("On-site form", () => {
         nudge_account_creation_enabled: true, nudge_points_spending_enabled: false,
         nudge_reward_usage_enabled: false, nudge_tier_progress_enabled: true,
         tier_progress_gold_threshold_pkr: 5000, tier_progress_diamond_threshold_pkr: 10000, panel_theme: "light",
+        launcher_label: "Shop & Earn",
         faqs: [{ q: "When do I get points?", a: "When your order is delivered and paid." }],
       },
     });
@@ -116,6 +120,18 @@ describe("On-site form", () => {
       expect(!r.ok && r.errors.panel_theme, bad).toBe("Panel style is not a valid choice.");
     }
     expect(mod.EDITABLE_KEYS).toContain("panel_theme");
+  });
+
+  it("launcher text: trimmed, 1 to 24 characters, plain text only", async () => {
+    const { mod } = await load();
+    expect(mod.EDITABLE_KEYS).toContain("launcher_label");
+    const ok = mod.parseOnsiteForm(formOf({ ...base, launcher_label: "x".repeat(24) }));
+    expect(ok.ok && ok.patch.launcher_label).toBe("x".repeat(24));
+    for (const [bad, msg] of [["", "Launcher button text is required."], ["   ", "Launcher button text is required."], ["x".repeat(25), "Launcher button text must be 24 characters or fewer."], ["<b>Earn</b>", "plain text"], ["Shop\u0007Earn", "plain text"]]) {
+      const r = mod.parseOnsiteForm(formOf({ ...base, launcher_label: bad }));
+      expect(r.ok, bad).toBe(false);
+      expect(!r.ok && r.errors.launcher_label, bad).toContain(msg);
+    }
   });
 
   it("rejects a blank program name and blank or negative distances (R3)", async () => {
