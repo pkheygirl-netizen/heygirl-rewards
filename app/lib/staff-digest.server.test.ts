@@ -85,6 +85,16 @@ describe("staff morning email", () => {
       .toEqual(["3 review claims are waiting for approval.", "2 background jobs failed in the last 24 hours. See Settings, System health."]);
   });
 
+  it("review 12: a referral payment sweep alert from the last 24 hours counts as waiting (an older one does not)", async () => {
+    attention = { referral_order_alerts: 0, referrals_flagged: 0, review_claims_pending: 0 };
+    h.db.seed("system_heartbeat", { key: "alert:referral_payments", at: new Date(NINE.getTime() - 25 * 3_600_000).toISOString(), detail: { failed: 2 } });
+    expect(await runStaffDigest(NINE)).toMatchObject({ sent: false, reason: "nothing_waiting" });
+    h.db.table("system_heartbeat").find((r) => r.key === "alert:referral_payments")!.at = new Date(NINE.getTime() - 3_600_000).toISOString();
+    const r = await runStaffDigest(NINE);
+    expect(r).toMatchObject({ sent: true, counts: { referralPaymentsFailing: true } });
+    expect((mail.sendEmail.mock.calls[0][0] as { text: string }).text).toContain("Some referral rewards could not be finished");
+  });
+
   it("no address set or SMTP not configured: skipped quietly, one log line", async () => {
     h.db.table("app_settings")[0].staff_alert_email = null;
     expect(await runStaffDigest(NINE)).toEqual({ sent: false, reason: "no_address" });

@@ -1080,6 +1080,42 @@ export type Database = {
           new_lifetime_spend_pkr: number
         }[]
       }
+      pay_referral: {
+        Args: {
+          p_customer_note?: string | null
+          p_expires_at?: string | null
+          p_from_claim?: boolean
+          p_points: number
+          p_reason_note?: string | null
+          p_referral_id: string
+          p_shopify_order_id: string
+        }
+        Returns: {
+          outcome: string
+          newly_awarded: boolean
+          paid_points: number
+          member_balance: number | null
+        }[]
+      }
+      release_referral_claim: {
+        Args: {
+          p_referral_id: string
+        }
+        Returns: string
+      }
+      reverse_referral: {
+        Args: {
+          p_customer_note?: string | null
+          p_reason: string
+          p_referral_id: string
+          p_shopify_order_id?: string | null
+        }
+        Returns: {
+          outcome: string
+          reversed_points: number
+          member_balance: number | null
+        }[]
+      }
       reconcile_order_points: {
         Args: {
           p_note?: string

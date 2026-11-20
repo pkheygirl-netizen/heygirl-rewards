@@ -74,10 +74,28 @@ describe("schedules", () => {
     h.db.seed("points_ledger", { member_id: referrer.id, action_type: "referral_earned", reference_id: String(ref.id), points: 6000, balance_after: 6000 });
     expect(await runCronJob("cron_pending_codes")).toEqual({
       finished: 0, returned: 0, cancelled: 0, failed: 0,
-      referrals: { recorded: 1, paid: 0, reversed: 0, released: 0, failed: 0 },
+      referrals: { recorded: 1, paid: 0, reversed: 0, released: 0, skipped: 0, failed: 0 },
     });
     expect(ref.points_awarded).toBe(true);
     expect(h.notifications.named("referral_completed")).toHaveLength(1);
+  });
+
+  it("review 12, item 3: referrals the sweep could not finish raise alert:referral_payments (System health, staff email); a clean sweep clears it", async () => {
+    const referrer = seedMember(h.db, { shopify_customer_id: "REF" });
+    h.db.seed("order_webhook_state", { shopify_order_id: "O1", shopify_customer_id: "FR", points_awarded: true, earning_basis_pkr: 2000, placed_at: "2026-11-10T00:00:00Z" });
+    const ref = h.db.seed("referrals", {
+      referrer_member_id: referrer.id, referred_shopify_customer_id: "FR", status: "completed", points_awarded: false,
+      reward_points: 6000, shopify_order_id: "O1", completed_at: "2026-11-10T00:00:00Z",
+    });
+    h.db.failNext("rpc:pay_referral", "select", { code: "08006", message: "connection reset" });
+    const out = (await runCronJob("cron_pending_codes")) as { referrals: { failed: number } };
+    expect(out.referrals.failed).toBe(1);
+    const alert = h.db.table("system_heartbeat").find((r) => r.key === "alert:referral_payments");
+    expect(alert).toMatchObject({ detail: { failed: 1 } });
+    expect(JSON.stringify(alert)).not.toContain("FR"); // counts only
+    expect((await runCronJob("cron_pending_codes")) as unknown).toMatchObject({ referrals: { paid: 1, failed: 0 } });
+    expect(h.db.table("system_heartbeat").find((r) => r.key === "alert:referral_payments")).toBeUndefined();
+    expect(ref.points_awarded).toBe(true);
   });
 
   it("the heartbeat job writes the worker heartbeat with failed-job counts", async () => {

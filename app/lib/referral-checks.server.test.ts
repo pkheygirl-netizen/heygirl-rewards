@@ -500,6 +500,59 @@ describe("address (owner rules 19 Nov 2026, round 9: an address only ever holds)
     }
   });
 
+  it("review 12, item 1: many ambiguous H codes no longer multiply the readings (a customer controls her address)", () => {
+    // 12 codes used to take 45 s, 20 codes over 1 GB.
+    for (const n of [10, 12, 20, 40]) {
+      const a = C(Array.from({ length: n }, (_, i) => `H-${i + 1}`).join(" ") + " Gulshan", "Karachi");
+      const b = C(Array.from({ length: n }, (_, i) => `H-${i + 101}`).join(" ") + " Gulshan", "Karachi");
+      const t0 = Date.now();
+      expect(addressReadings(a).length).toBeLessThanOrEqual(4);
+      expect(sameAddress(a, b)).toBe(false);
+      expect(Date.now() - t0).toBeLessThan(200);
+    }
+    // two ambiguous codes still get both readings each
+    expect(addressReadings(C("H-12 H-13 Gulshan", "Karachi"))).toHaveLength(4);
+    const line = Array.from({ length: 21_000 }, (_, i) => `H-${(i % 99) + 1}`).join(" ");
+    expect(line.length).toBeGreaterThan(100_000);
+    const heap0 = process.memoryUsage().heapUsed;
+    const t0 = Date.now();
+    expect(addressReadings({ address1: line, address2: line, city: "Islamabad" }).length).toBeLessThanOrEqual(4);
+    sameAddress({ address1: line, address2: line, city: "Islamabad" }, { address1: line, city: "Islamabad" });
+    sameAddress({ address1: line, city: "Karachi" }, { address1: line.replace(/H-/g, "H "), city: "Karachi" });
+    expect(Date.now() - t0).toBeLessThan(200);
+    expect(process.memoryUsage().heapUsed - heap0).toBeLessThan(50 * 1024 * 1024);
+  });
+
+  it("review 12, item 4: filler 'al', block names, area prefixes, 13/D, ICT, Islamabad B/C sectors, Kotli vs Kotri", () => {
+    const K = "Karachi";
+    // the reviewer's pairs these rules fix
+    same(C("Flat A-301, Al-Habib Tower, Gulshan Block 13", K), C("Flat A-301, Al-Noor Tower, Gulshan Block 13", K), false); // k10
+    L("House 7, Allama Iqbal Town, Gulshan Block", "House 7, Allama Iqbal Town, Nishtar Block", false); // l4
+    L("House 7, Garden Town, Sher Shah Block", "House 7, Garden Town, Ahmad Block", false); // l12
+    same(C("Flat 4, New Karachi Sector 5-C", K), C("Flat 4, North Karachi Sector 5-C", K), false); // k14
+    same(C("House A-45", K, "Block 13/D Gulshan e Iqbal"), C("A-45 Block 13-D Gulshan-e-Iqbal", K), true); // K14
+    same(C("House 14, Street 3, Sector E-11/3", "Islamabad"), C("E-11/3 street 3 house 14", "ICT"), true); // I3
+    // earlier pairs next to them still hold
+    L("House 7, Gulshan Block, Allama Iqbal Town", "7 Gulshan Block Iqbal Town", true); // L5: the same block name
+    same(C("Flat 302, Saima Towers, Gulistan-e-Jauhar Block 15", K), C("Flat 302, Saima Towers, Gulistan-e-Jauhar Block 16", K), false);
+    same(C("Flat 3, Al-Rehman Plaza, Bosan Road", "Multan"), C("Al Rehman Plaza flat 3 Bosan Rd", "Multan"), true); // M2
+    same(C("Flat 3, Al-Rehman Plaza, Bosan Road", "Multan"), C("Flat 3, Al-Rehman Plaza, Abdali Road", "Multan"), false);
+    // a prefix on one side only does not block; the same prefix matches
+    same(C("Flat 4, North Karachi Sector 5-C", K), C("Flat 4 Sector 5C North Karachi", K), true);
+    // ICT alone and with the city name
+    expect(cityKey("ICT")).toBe("islamabad");
+    expect(cityKey("ICT Islamabad")).toBe("islamabad");
+    expect(cityKey("Islamabad Capital Territory")).toBe("islamabad");
+    // Islamabad sectors B-17 and C-13..C-16; "B-4" there is still a home
+    same(C("House 5, B-17"), C("House 5, Sector B-17"), true);
+    same(C("House 5, Street 2, C-14"), C("House 5, Street 2, Sector C-14"), true);
+    same(C("House 5, B-17"), C("House 5, Sector B-16"), false);
+    expect([...addressReadings(C("B-4, Street 2"))[0].numbers]).toEqual(["4b"]);
+    // Kotli (Azad Kashmir) is not Kotri (Sindh); a typo of one city still is that city
+    same(C("House 12, Street 5, Mohalla Islampura", "Kotli"), C("House 12, Street 5, Mohalla Islampura", "Kotri"), false);
+    same(C("House 12, Street 5, Mohalla Islampura", "Karachi"), C("House 12, Street 5, Mohalla Islampura", "Karchi"), true);
+  });
+
   it("earlier rules that still hold", () => {
     const a = C("House 12, Street 5, DHA Phase 6", "Karachi");
     same(a, C("house 12 street 5 dha phase 6", " karachi "), true);

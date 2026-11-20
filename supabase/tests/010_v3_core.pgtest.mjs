@@ -730,6 +730,198 @@ console.log("\n[17] 016_referral_checks: order-time referral check, Home alert c
   await q(`rollback`);
 }
 
+console.log("\n[18] 017_referral_payment: pay / release / reverse a referral under one row lock (review 12)");
+{
+  const m017 = fs.readFileSync(path.join(MIG, "017_referral_payment.sql"), "utf8");
+  let again = null;
+  try { await db.query(m017); await db.query(m017); } catch (e) { again = e.message; }
+  ok("017 is re-runnable (applied twice more without error)", again === null, again);
+  await q(`update app_settings set earn_rules = jsonb_set(earn_rules, '{referral,enabled}', 'true') where id=1`);
+
+  let n = 0;
+  const member = async () => (await q(`insert into members (shopify_customer_id,email,referral_slug)
+    values ($1,$2,$3) returning id`, [`R17-${++n}`, `r17-${n}@x.com`, `r17-${n}`]))[0].id;
+  const order = async (id, extra = {}) => {
+    await q(`insert into order_webhook_state (shopify_order_id, shopify_customer_id, points_awarded, earning_basis_pkr, points_awarded_amount, cancelled_at, refunded_basis_pkr)
+      values ($1,$2,true,$3,200,$4,$5)`, [id, `F-${id}`, extra.basis ?? 2000, extra.cancelled ? new Date().toISOString() : null, extra.refunded ?? 0]);
+    return id;
+  };
+  const referral = async (referrer, friend, over = {}) => (await q(`insert into referrals
+      (referrer_member_id, referred_shopify_customer_id, referred_email, status, points_awarded, reward_points, shopify_order_id, completed_at)
+      values ($1,$2,$3,$4,$5,$6,$7,$8) returning id`,
+    [referrer, friend, `${friend}@x.com`, over.status ?? "pending", over.points_awarded ?? false, over.reward_points ?? null, over.order ?? null,
+      over.status === "completed" ? new Date(Date.now() - 3600_000).toISOString() : null]))[0].id;
+  const pay = async (c, id, orderId, fromClaim = false) =>
+    (await c.query(`select * from pay_referral($1, 6000, $2, null, 'test', 'Your friend''s first order', $3)`, [id, orderId, fromClaim])).rows[0];
+  const release = async (c, id) => (await c.query(`select release_referral_claim($1) r`, [id])).rows[0].r;
+  const reverse = async (c, id, why = "cancelled") => (await c.query(`select * from reverse_referral($1, $2)`, [id, why])).rows[0];
+  const state = async (refId, memberId) => {
+    const r = (await q(`select status, points_awarded pa, reward_points rp, shopify_order_id o from referrals where id=$1`, [refId]))[0];
+    const l = await q(`select action_type a, points p from points_ledger where reference_id=$1 order by earned_at, id`, [String(refId)]);
+    const b = (await q(`select points_balance b from members where id=$1`, [memberId]))[0].b;
+    return { ...r, ledger: l.map((x) => `${x.a}:${x.p}`), balance: b };
+  };
+
+  // A. a fresh payment, then a replay, then the reversal (twice), then a payment after the reversal
+  {
+    const m = await member(); const o = await order("O17A"); const r = await referral(m, "F17A");
+    const p1 = await pay(db, r, o);
+    eq("A pay: paid, newly awarded, 6000", [p1.outcome, p1.newly_awarded, p1.paid_points, p1.member_balance], ["paid", true, 6000, 6000]);
+    eq("A pay: completed + points_awarded in the same call", await state(r, m), { status: "completed", pa: true, rp: 6000, o: "O17A", ledger: ["referral_earned:6000"], balance: 6000 });
+    eq("A pay again: already_paid, nothing added", (await pay(db, r, o)).outcome, "already_paid");
+    const v1 = await reverse(db, r);
+    eq("A reverse: reversed 6000", [v1.outcome, v1.reversed_points, v1.member_balance], ["reversed", 6000, 0]);
+    eq("A reverse again: already_reversed", (await reverse(db, r)).outcome, "already_reversed");
+    eq("A after reversal: rejected, one earned and one reversal row", await state(r, m),
+      { status: "rejected", pa: false, rp: 6000, o: "O17A", ledger: ["referral_earned:6000", "referral_reversal:-6000"], balance: 0 });
+    eq("A pay after reversal: already_reversed, never paid twice", (await pay(db, r, o)).outcome, "already_reversed");
+  }
+
+  // B. refusals leave a pending referral pending with no ledger row
+  {
+    const m = await member();
+    const rc = await referral(m, "F17B1"); const oc = await order("O17B1", { cancelled: true });
+    eq("B cancelled order: order_cancelled, stays pending", [(await pay(db, rc, oc)).outcome, (await state(rc, m)).status, (await state(rc, m)).ledger], ["order_cancelled", "pending", []]);
+    const rr = await referral(m, "F17B2"); const or = await order("O17B2", { refunded: 2000 });
+    eq("B refunded in full: order_refunded", (await pay(db, rr, or)).outcome, "order_refunded");
+    const r0 = await referral(m, "F17B3"); const o0 = await order("O17B3", { basis: 0 });
+    eq("B zero basis (refunded before award): order_refunded", (await pay(db, r0, o0)).outcome, "order_refunded");
+    const ro = await referral(m, "F17B4"); const oo = await order("O17B4");
+    await q(`update members set opted_out=true where id=$1`, [m]);
+    eq("B referrer opted out: referrer_not_eligible", (await pay(db, ro, oo)).outcome, "referrer_not_eligible");
+    await q(`update members set opted_out=false, referrals_blocked=true where id=$1`, [m]);
+    eq("B referrer blocked from referrals: referrer_not_eligible", (await pay(db, ro, oo)).outcome, "referrer_not_eligible");
+    await q(`update members set referrals_blocked=false where id=$1`, [m]);
+    await q(`update app_settings set earn_rules = jsonb_set(earn_rules, '{referral,enabled}', 'false') where id=1`);
+    eq("B referral rule off: disabled", (await pay(db, ro, oo)).outcome, "disabled");
+    await q(`update app_settings set earn_rules = jsonb_set(earn_rules, '{referral,enabled}', 'true') where id=1`);
+    eq("B nothing was added for any refusal", (await q(`select count(*)::int c from points_ledger where member_id=$1`, [m]))[0].c, 0);
+    const rf = await referral(m, "F17B5", { status: "flagged" });
+    eq("B a held referral is not paid: not_pending", (await pay(db, rf, oo)).outcome, "not_pending");
+    eq("B fresh pay of a claimed row: not_pending", (await pay(db, await referral(m, "F17B6", { status: "completed", reward_points: 6000, order: "O17B4" }), oo)).outcome, "not_pending");
+    eq("B pay from claim of a pending row: not_claimed", (await pay(db, ro, oo, true)).outcome, "not_claimed");
+    eq("B pay then succeeds once eligible", (await pay(db, ro, oo)).outcome, "paid");
+  }
+
+  // C. older half-done payments (claimed: completed, points_awarded=false, reward_points set)
+  {
+    const m = await member(); const o = await order("O17C");
+    const c1 = await referral(m, "F17C1", { status: "completed", reward_points: 6000, order: o });
+    eq("C claim finished: paid", (await pay(db, c1, o, true)).outcome, "paid");
+    eq("C claim finished: completed + points_awarded", (await state(c1, m)).pa, true);
+    const c2 = await referral(m, "F17C2", { status: "completed", reward_points: 6000, order: "O17C-other" });
+    eq("C claim for another order: other_order, untouched", [(await pay(db, c2, o, true)).outcome, (await state(c2, m)).status], ["other_order", "completed"]);
+    const oc = await order("O17C3", { cancelled: true });
+    const c3 = await referral(m, "F17C3", { status: "completed", reward_points: 6000, order: oc });
+    eq("C claim whose order was cancelled: order_cancelled and back to pending", [(await pay(db, c3, oc, true)).outcome, (await state(c3, m))],
+      ["order_cancelled", { status: "pending", pa: false, rp: null, o: null, ledger: [], balance: 6000 }]);
+    // release
+    const c4 = await referral(m, "F17C4", { status: "completed", reward_points: 6000, order: o });
+    eq("C release without a ledger row: released", [await release(db, c4), (await state(c4, m)).status], ["released", "pending"]);
+    eq("C release of a pending row: not_claimed", await release(db, c4), "not_claimed");
+    const c5 = await referral(m, "F17C5", { status: "completed", reward_points: 6000, order: o });
+    await q(`select * from award_points($1,'referral_earned',$2,6000)`, [m, String(c5)]);
+    eq("C release when the points were added: paid, stays claimed", [await release(db, c5), (await state(c5, m)).status], ["paid", "completed"]);
+    eq("C finishing that claim records it: recorded", [(await pay(db, c5, o, true)).outcome, (await state(c5, m)).pa], ["recorded", true]);
+    const legacy = await referral(m, "F17C6", { status: "completed" }); // pre-v3 admin button: no reward_points
+    eq("C pre-v3 completed row (no reward_points): not_claimed for release and pay", [await release(db, legacy), (await pay(db, legacy, o, true)).outcome], ["not_claimed", "not_claimed"]);
+    // a pending row that already has its points (left by the old race): recorded, and reversible by id whatever its status
+    const c7 = await referral(m, "F17C7");
+    await q(`select * from award_points($1,'referral_earned',$2,6000,null,'O17C')`, [m, String(c7)]);
+    const before = (await state(c7, m)).balance;
+    const c8 = await referral(m, "F17C8");
+    await q(`select * from award_points($1,'referral_earned',$2,6000,null,'O17C')`, [m, String(c8)]);
+    eq("C reverse asked about another order: other_order, nothing taken back",
+      [(await db.query(`select * from reverse_referral($1, 'cancelled', 'O17-NOT-THIS')`, [c8])).rows[0].outcome, (await state(c8, m)).ledger.length], ["other_order", 1]);
+    eq("C pending row with a ledger row: reverse_referral reverses it by id (status pending)", [(await reverse(db, c8)).outcome, (await state(c8, m)).status], ["reversed", "rejected"]);
+    eq("C pending row with a ledger row: pay records it (no second award)", [(await pay(db, c7, o)).outcome, (await state(c7, m)).o, (await state(c7, m)).ledger.length], ["recorded", "O17C", 1]);
+    ok("C balance: c8's 6000 taken back, c7's kept", (await state(c7, m)).balance === before);
+    eq("C reverse of an unpaid referral: not_paid, no change", [(await reverse(db, c4)).outcome, (await state(c4, m)).status], ["not_paid", "pending"]);
+  }
+
+  // D. concurrency on separate connections
+  {
+    const c1 = new pg.Client(conn), c2 = new pg.Client(conn), c3 = new pg.Client(conn);
+    await c1.connect(); await c2.connect(); await c3.connect();
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    // D1: pay (from claim) holds the lock; release and reverse wait, then see the ledger row
+    {
+      const m = await member(); const o = await order("O17D1");
+      const r = await referral(m, "F17D1", { status: "completed", reward_points: 6000, order: o });
+      await c1.query("begin");
+      const p = await pay(c1, r, o, true);
+      const rel = release(c2, r);
+      const rev = reverse(c3, r);
+      await sleep(300);
+      await c1.query("commit");
+      const [relOut, revOut] = await Promise.all([rel, rev]);
+      eq("D1 pay vs release vs reverse: paid, reverse reverses", [p.outcome, revOut.outcome], ["paid", "reversed"]);
+      ok("D1 the release does not put a paid referral back to pending", relOut !== "released", relOut);
+      eq("D1 final: rejected, balance 0, one earned + one reversal", await state(r, m),
+        { status: "rejected", pa: false, rp: 6000, o: "O17D1", ledger: ["referral_earned:6000", "referral_reversal:-6000"], balance: 0 });
+    }
+    // D2: release holds the lock; a payment from the claim waits, then finds the row pending and adds nothing
+    {
+      const m = await member(); const o = await order("O17D2");
+      const r = await referral(m, "F17D2", { status: "completed", reward_points: 6000, order: o });
+      await c1.query("begin");
+      const rel = await release(c1, r);
+      const p = pay(c2, r, o, true);
+      const rev = reverse(c3, r);
+      await sleep(300);
+      await c1.query("commit");
+      const [pOut, revOut] = await Promise.all([p, rev]);
+      eq("D2 release vs pay-from-claim vs reverse: released, not_claimed, not_paid", [rel, pOut.outcome, revOut.outcome], ["released", "not_claimed", "not_paid"]);
+      eq("D2 final: pending, nothing added", await state(r, m), { status: "pending", pa: false, rp: null, o: null, ledger: [], balance: 0 });
+    }
+    // D3: the cancellation holds the order row; the payment waits for it, then refuses
+    {
+      const m = await member(); const o = await order("O17D3");
+      const r = await referral(m, "F17D3");
+      await c1.query("begin");
+      await c1.query(`update order_webhook_state set cancelled_at=now() where shopify_order_id=$1`, [o]);
+      const p = pay(c2, r, o);
+      await sleep(300);
+      await c1.query("commit");
+      eq("D3 cancellation first: order_cancelled, still pending, nothing added", [(await p).outcome, (await state(r, m)).status, (await state(r, m)).ledger], ["order_cancelled", "pending", []]);
+    }
+    // D4: the payment holds the order row; the cancellation waits, then its reversal finds the points
+    {
+      const m = await member(); const o = await order("O17D4");
+      const r = await referral(m, "F17D4");
+      await c1.query("begin");
+      const p = await pay(c1, r, o);
+      const cancel = (async () => {
+        await c2.query(`update order_webhook_state set cancelled_at=now() where shopify_order_id=$1`, [o]);
+        return reverse(c2, r);
+      })();
+      await sleep(300);
+      await c1.query("commit");
+      eq("D4 payment first: paid, then the cancellation reverses it", [p.outcome, (await cancel).outcome], ["paid", "reversed"]);
+      eq("D4 final: rejected, balance 0", [(await state(r, m)).status, (await state(r, m)).balance], ["rejected", 0]);
+    }
+    // D5: two payments at once: exactly one pays
+    {
+      const m = await member(); const o = await order("O17D5");
+      const r = await referral(m, "F17D5");
+      const [a, b] = await Promise.all([pay(c1, r, o), pay(c2, r, o)]);
+      eq("D5 two concurrent payments: one paid, one already_paid", [a.outcome, b.outcome].sort(), ["already_paid", "paid"]);
+      eq("D5 one ledger row, 6000", [(await state(r, m)).ledger, (await state(r, m)).balance], [["referral_earned:6000"], 6000]);
+    }
+    // D6: two reversals at once: exactly one reverses
+    {
+      const m = await member(); const o = await order("O17D6");
+      const r = await referral(m, "F17D6");
+      await pay(db, r, o);
+      const [a, b] = await Promise.all([reverse(c1, r), reverse(c2, r, "refunded")]);
+      eq("D6 two concurrent reversals: one reversed, one already_reversed", [a.outcome, b.outcome].sort(), ["already_reversed", "reversed"]);
+      eq("D6 balance 0, one reversal row", [(await state(r, m)).balance, (await state(r, m)).ledger.length], [0, 2]);
+    }
+    await c1.end(); await c2.end(); await c3.end();
+  }
+}
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 if (fail) console.log("FAILED:", failures.join(" | "));
 await db.end();

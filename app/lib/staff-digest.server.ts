@@ -9,6 +9,8 @@
 //   - review claims waiting for approval
 //   - background jobs that failed in the last 24 hours (all queues, the Smile
 //     import included), or a stale worker heartbeat
+//   - half-done referral payments the 10-minute sweep could not finish
+//     (heartbeat alert:referral_payments in the last 24 hours; review 12)
 // Counts only: never a customer's name, address, phone or email. No instant
 // emails. Sent at most once per Pakistan day (app_settings.staff_digest_sent_on).
 import { db } from "../db.server";
@@ -33,6 +35,8 @@ export type DigestCounts = {
   reviewClaims: number;
   failedJobs: number;
   workerStale: boolean;
+  /** The referral payment sweep reported failures in the last 24 hours (alert:referral_payments). */
+  referralPaymentsFailing?: boolean;
 };
 
 export type DigestResult =
@@ -89,9 +93,13 @@ export async function digestCounts(now: Date = new Date()): Promise<DigestCounts
   }
 
   let workerStale = false;
+  let referralPaymentsFailing = false;
   try {
-    const worker = (await readHeartbeats()).find((h) => h.key === "worker");
+    const beats = await readHeartbeats();
+    const worker = beats.find((h) => h.key === "worker");
     workerStale = !worker || now.getTime() - Date.parse(worker.at) > WORKER_STALE_MINUTES * 60_000;
+    const sweep = beats.find((h) => h.key === "alert:referral_payments");
+    referralPaymentsFailing = !!sweep && now.getTime() - Date.parse(sweep.at) <= FAILED_JOB_WINDOW_HOURS * 3_600_000;
   } catch (err) {
     console.error("[staff-digest] heartbeats unreadable:", err instanceof Error ? err.message : err);
   }
@@ -103,11 +111,13 @@ export async function digestCounts(now: Date = new Date()): Promise<DigestCounts
     reviewClaims: n(a.review_claims_pending),
     failedJobs,
     workerStale,
+    referralPaymentsFailing,
   };
 }
 
 export function somethingWaiting(c: DigestCounts): boolean {
-  return c.referralOrderAlerts > 0 || c.referralsHeld > 0 || c.referralsNotChecked > 0 || c.reviewClaims > 0 || c.failedJobs > 0 || c.workerStale;
+  return c.referralOrderAlerts > 0 || c.referralsHeld > 0 || c.referralsNotChecked > 0 || c.reviewClaims > 0 || c.failedJobs > 0 || c.workerStale
+    || !!c.referralPaymentsFailing;
 }
 
 const plural = (count: number, one: string, many: string) => `${count.toLocaleString("en-US")} ${count === 1 ? one : many}`;
@@ -125,6 +135,7 @@ export function digestLines(c: DigestCounts): string[] {
   if (c.reviewClaims > 0) lines.push(`${plural(c.reviewClaims, "review claim is", "review claims are")} waiting for approval.`);
   if (c.failedJobs > 0) lines.push(`${plural(c.failedJobs, "background job", "background jobs")} failed in the last 24 hours. See Settings, System health.`);
   if (c.workerStale) lines.push("The background worker has not reported for over 15 minutes. Points and emails may be waiting.");
+  if (c.referralPaymentsFailing) lines.push("Some referral rewards could not be finished by the background check in the last 24 hours. See Settings, System health.");
   return lines;
 }
 

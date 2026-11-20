@@ -6,7 +6,7 @@ import { sweepPendingCodes } from "../lib/redemption.service";
 import { finishClaimedReferrals } from "../lib/referrals.service";
 import { getAdminForShop } from "../lib/worker-admin.server";
 import { syncStorefrontConfig } from "../lib/storefront-config.server";
-import { recordHeartbeat } from "../lib/heartbeat.server";
+import { clearHeartbeat, recordHeartbeat } from "../lib/heartbeat.server";
 import { getSettings, isEarnRuleEnabled } from "../lib/settings.server";
 import { db } from "../db.server";
 import { runStaffDigest } from "../lib/staff-digest.server";
@@ -187,11 +187,19 @@ export async function runStorefrontConfig(now: Date = new Date(), force = false)
   return { synced: true };
 }
 
+/** Heartbeat key raised when the referral sweep could not finish some payments (review 12, item 3). */
+export const REFERRAL_SWEEP_ALERT_KEY = "alert:referral_payments";
+
 /**
  * Every 10 minutes: codes left half-made (sweepPendingCodes) and, review 11
  * item 10, referral payments left half-done (finishClaimedReferrals: claimed,
  * points_awarded still false). One failing does not stop the other; a failure
  * still fails the run (heartbeat cron_failed:pending_codes) after both ran.
+ * Review 12, item 3: when the sweep ran but some referrals failed, the run
+ * itself succeeds (so cron_failed would count as recovered at once), so the
+ * dedicated alert heartbeat `alert:referral_payments` is written instead
+ * (System health and the staff morning email show it); a later sweep with
+ * no failure removes it.
  */
 export async function runPendingSweeps(now: Date = new Date()) {
   let referrals: Awaited<ReturnType<typeof finishClaimedReferrals>> | null = null;
@@ -200,6 +208,11 @@ export async function runPendingSweeps(now: Date = new Date()) {
     referrals = await finishClaimedReferrals(now);
   } catch (err) {
     referralError = err;
+  }
+  if (referrals && referrals.failed > 0) {
+    await recordHeartbeat(REFERRAL_SWEEP_ALERT_KEY, { failed: referrals.failed, note: "Some half-done referral payments could not be finished; see the worker log" });
+  } else if (referrals) {
+    await clearHeartbeat(REFERRAL_SWEEP_ALERT_KEY);
   }
   const codes = await sweepPendingCodes(now);
   if (referralError) throw referralError;

@@ -222,7 +222,14 @@ const EXT_MARK = "ext";
 /** City field forms read as the same city. */
 const CITY_ALIASES: Record<string, string> = {
   pindi: "rawalpindi", rwp: "rawalpindi", isb: "islamabad", isl: "islamabad", khi: "karachi", lhr: "lahore", fsd: "faisalabad",
+  ict: "islamabad", // review 12: a city field of just "ICT" (Islamabad Capital Territory) is Islamabad
 };
+/**
+ * Real, different places one letter apart: never read as a typo of each other
+ * (review 12: Kotli in Azad Kashmir is not Kotri in Sindh). Add pairs here.
+ */
+const DISTINCT_CITY_PAIRS = new Set(["kotli|kotri"]);
+const distinctCities = (a: string, b: string) => DISTINCT_CITY_PAIRS.has(a < b ? `${a}|${b}` : `${b}|${a}`);
 const PROVINCES = new Set(["pakistan", "pk", "sindh", "punjab", "kpk", "kp", "khyber", "pakhtunkhwa", "balochistan", "baluchistan", "ict", "ajk"]);
 /** Dropped from the city field: "Lahore Cantt" = "Lahore", "Islamabad Capital Territory" = "Islamabad". */
 const CITY_EXTRA = new Set(["cantt", "cant", "cantonment", "capital", "territory", "ict"]);
@@ -241,9 +248,18 @@ const GENERIC = new Set([
   "avenue", "boulevard", "lane", "mohalla", "mohallah", "muhalla", "muhallah", "gali", "area", "sector", "block", "phase", "plot",
   "house", "flat", "floor", "building", "tower", "apartment", "apartments", "apts", "portion", "upper", "lower", "ground", "first",
   "second", "third", "no", "number", "pakistan", "contact", "cell", "mobile", "phone", "tel", "whatsapp",
+  "al", // review 12: "Al-Habib Tower" vs "Al-Noor Tower" share only the article
 ]);
 /** Prefixes many different places share: weak (see readingsMatch). */
 const WEAK = new Set(["north", "south", "east", "west", "new", "old", "gulshan", "khayaban", "khayabane", "shahrah", "shahra", "shahrae"]);
+/**
+ * Area prefixes (review 12): when both addresses carry one and none is the
+ * same, they are different places even with the same sector code ("New
+ * Karachi Sector 5-C" is not "North Karachi Sector 5-C").
+ */
+const AREA_PREFIXES = new Set(["north", "south", "east", "west", "new", "old"]);
+/** Words naming a block: the word before one without a value names the block ("Gulshan Block", "Nishtar Block"). */
+const BLOCK_WORDS = new Set(["block", "blk"]);
 /**
  * Landmarks shared by many neighbourhoods ("near Jamia Masjid", "near Main
  * Bazar"): never a locality word on their own (see readingsMatch).
@@ -254,6 +270,23 @@ const LANDMARKS = new Set([
 ]);
 /** Islamabad's sector letters: "F-7", "I-8" there are sectors; "A-12", "B-4" are homes. */
 const ISLAMABAD_SECTOR_LETTERS = new Set(["d", "e", "f", "g", "h", "i"]);
+/** Review 12: Islamabad also has sectors B-17 and C-13..C-16; B and C codes count as sectors only from 13 to 18 ("B-4" stays a home). */
+const ISLAMABAD_HIGH_SECTOR_LETTERS = new Set(["b", "c"]);
+const islamabadSector = (l: string, n: string) =>
+  ISLAMABAD_SECTOR_LETTERS.has(l) || (ISLAMABAD_HIGH_SECTOR_LETTERS.has(l) && /^\d{2}$/.test(n) && Number(n) >= 13 && Number(n) <= 18);
+/**
+ * Hostile-input caps (review 12, item 1): a customer writes her own shipping
+ * address and the check runs in the single-concurrency points worker. The
+ * line is cut to MAX_RAW_CHARS before cleaning and MAX_LINE_CHARS after, at
+ * most MAX_TOKENS tokens are read, only the first MAX_AMBIGUOUS_H "H-12"
+ * codes get two readings (the rest are bare codes), and an address has at
+ * most MAX_READINGS readings. A real address is far shorter than this.
+ */
+const MAX_RAW_CHARS = 1000;
+const MAX_LINE_CHARS = 300;
+const MAX_TOKENS = 40;
+const MAX_AMBIGUOUS_H = 2;
+const MAX_READINGS = 4;
 const ROMAN: Record<string, number> = {
   ii: 2, iii: 3, iv: 4, vi: 6, vii: 7, viii: 8, ix: 9, xi: 11, xii: 12, xiii: 13, xiv: 14, xv: 15, xvi: 16, xvii: 17, xviii: 18, xix: 19, xx: 20,
 };
@@ -320,6 +353,8 @@ function cleanLine(v: string): string {
   s = s.replace(/(?<![\p{L}\p{N}])f[\s-]{1,3}b(?=[\s-]{1,3}area(?![\p{L}\p{N}]))/gu, "fb");
   // Izafat "-e-": "Gulshan-e-Iqbal" = "Gulshan e Iqbal" (a lone "e" is never a locality word).
   s = s.replace(/(?<=\p{L})-e-(?=\p{L})/gu, " ");
+  // Review 12: "Block 13/D" = "13-D" (a number, a slash, one letter).
+  s = s.replace(/(?<![\p{L}\p{N}/])(\d{1,5})[ \t]?\/[ \t]?([a-z])(?![\p{L}\p{N}/])/gu, "$1-$2");
   s = s.replace(/[,;|\n\r]+/g, " , ");
   return s.replace(/[^\p{L}\p{N}/\-\s,]+/gu, " ");
 }
@@ -419,6 +454,8 @@ export type AddressReading = {
   roads: Set<string>;
   /** Town names ("johar" of "Johar Town", "peoples" of "Peoples Colony"). */
   towns: Set<string>;
+  /** Block names ("gulshan" of "Gulshan Block", "shah" of "Sher Shah Block"; review 12). */
+  blocks: Set<string>;
   /** Letter-number sector codes ("g9/1", Islamabad "f7"): the same one counts as the same locality. */
   sectors: Set<string>;
   /** The cleaned line (phones, postcodes, city names and punctuation removed), for the identical-line rule. */
@@ -431,7 +468,7 @@ function fullLine(a: AddressLike): string {
 }
 
 function cityWords(city: string | null | undefined): string[] {
-  return lex(cleanLine(city ?? "")).flatMap((t) => (t.t === "word" ? [t.w] : []));
+  return lex(cleanLine((city ?? "").slice(0, 100))).slice(0, 10).flatMap((t) => (t.t === "word" ? [t.w] : []));
 }
 
 /**
@@ -442,10 +479,10 @@ function cityWords(city: string | null | undefined): string[] {
 export function cityKey(city: string | null | undefined): string {
   const key = cityWords(city)
     .map((w) => CITY_ALIASES[w] ?? w)
-    .filter((w) => !PROVINCES.has(w) && !CITY_EXTRA.has(w))
+    .filter((w, i, all) => !PROVINCES.has(w) && !CITY_EXTRA.has(w) && all.indexOf(w) === i) // "ICT Islamabad" = "islamabad"
     .join("");
   if (key.length < 5 || key.length > 40 || CITY_WORDS.has(key)) return key;
-  const near = [...CITY_WORDS].filter((c) => c.length >= 5 && c[0] === key[0] && withinOneEdit(key, c));
+  const near = [...CITY_WORDS].filter((c) => c.length >= 5 && c[0] === key[0] && !distinctCities(key, c) && withinOneEdit(key, c));
   return near.length === 1 ? CITY_ALIASES[near[0]] ?? near[0] : key;
 }
 
@@ -453,6 +490,7 @@ export function cityKey(city: string | null | undefined): string {
 function sameCity(a: string, b: string): boolean {
   if (a === b) return true;
   if (CITY_GROUP[a] && CITY_GROUP[a] === CITY_GROUP[b]) return true;
+  if (distinctCities(a, b)) return false;
   return a.length >= 5 && b.length >= 5 && a.length <= 40 && b.length <= 40 && a[0] === b[0] && withinOneEdit(a, b);
 }
 
@@ -495,7 +533,7 @@ export function addressReadings(a: AddressLike | null | undefined): AddressReadi
   if (!city) return [];
   const islamabad = city === "islamabad";
   const ownCity = new Set(cityWords(a.city));
-  const toks = arrange(lex(cleanLine(fullLine(a))));
+  const toks = arrange(lex(cleanLine(fullLine(a).slice(0, MAX_RAW_CHARS)).slice(0, MAX_LINE_CHARS)).slice(0, MAX_TOKENS));
   if (toks.length === 0) return [];
 
   const labelled = new Set<string>();
@@ -506,6 +544,7 @@ export function addressReadings(a: AddressLike | null | undefined): AddressReadi
   const joined = new Set<string>();
   const roads = new Set<string>();
   const towns = new Set<string>();
+  const blocks = new Set<string>();
   const sectors = new Set<string>();
   const lineParts: string[] = [];
   const hCodes: Array<{ n: string; streetNext: boolean }> = [];
@@ -535,6 +574,11 @@ export function addressReadings(a: AddressLike | null | undefined): AddressReadi
   const namesTown = (i: number) => {
     const next = toks[i + 1];
     return isWord(next) && TOWN_WORDS.has(next.w);
+  };
+  /** The word at i names a block: "block" without a value follows ("Gulshan Block", not "Gulshan Block 13"). */
+  const namesBlock = (i: number) => {
+    const next = toks[i + 1];
+    return isWord(next) && BLOCK_WORDS.has(next.w) && labelValue("block", toks[valueIndex(toks, i + 1)]) === null;
   };
 
   for (const tok of toks) {
@@ -575,6 +619,7 @@ export function addressReadings(a: AddressLike | null | undefined): AddressReadi
       if (!placeWord(tok.w)) continue;
       const road = namesRoad(i);
       const town = namesTown(i);
+      if (namesBlock(i)) blocks.add(tok.w);
       if (LANDMARKS.has(tok.w)) {
         // "University Road", "Mall Road", "University Town": the landmark word names the road or town
         if (road) { words.add(`${tok.w}~road`); roads.add(tok.w); }
@@ -598,7 +643,7 @@ export function addressReadings(a: AddressLike | null | undefined): AddressReadi
       // Islamabad: "F-7", "I-8" are sectors (letters D-I only). Elsewhere, and
       // for other letters there, a letter code is a home or block code
       // (Karachi "A-12", "R-45"; Lahore "R1"; Islamabad "B-4"), "12a".
-      if (islamabad && ISLAMABAD_SECTOR_LETTERS.has(tok.l)) addLabel("sector", `${tok.l}${tok.n}`);
+      if (islamabad && islamabadSector(tok.l, tok.n)) addLabel("sector", `${tok.l}${tok.n}`);
       else numbers.add(`${tok.n}${tok.l}`);
       home = true;
     } else if (tok.t === "nl") {
@@ -619,7 +664,8 @@ export function addressReadings(a: AddressLike | null | undefined): AddressReadi
   });
   const hasHouse = [...labelled].some((l) => l.startsWith("house:"));
   const line = lineParts.join(" ");
-  let readings: AddressReading[] = [copy({ city, labelled, numbers, words, weak, landmarks, joined, roads, towns, sectors, line })];
+  let readings: AddressReading[] = [copy({ city, labelled, numbers, words, weak, landmarks, joined, roads, towns, blocks, sectors, line })];
+  let ambiguous = 0;
   for (const h of hCodes) {
     // outside Islamabad there is no sector H-12: the other reading is a bare home code "12h"
     const asSector = (r: AddressReading) => {
@@ -628,7 +674,12 @@ export function addressReadings(a: AddressLike | null | undefined): AddressReadi
     const asHouse = (r: AddressReading) => { r.labelled.add(`house:${h.n}`); };
     if (hasHouse) readings.forEach(asSector);
     else if (sectors.size > 0 || h.streetNext) readings.forEach(asHouse);
-    else {
+    else if (ambiguous >= MAX_AMBIGUOUS_H || readings.length * 2 > MAX_READINGS) {
+      // Review 12, item 1: every ambiguous code used to double the readings
+      // (12 codes took 45 s). Past the first two, a code is kept as a bare "12h".
+      readings.forEach((r) => r.numbers.add(`${h.n}h`));
+    } else {
+      ambiguous++;
       readings = readings.flatMap((r) => {
         const s = copy(r);
         const hs = copy(r);
@@ -640,7 +691,7 @@ export function addressReadings(a: AddressLike | null | undefined): AddressReadi
     home = true;
   }
   if (!home) return [];
-  return readings;
+  return readings.slice(0, MAX_READINGS);
 }
 
 const sameSet = (a: Set<string>, b: Set<string>) => a.size === b.size && [...a].every((v) => b.has(v));
@@ -720,7 +771,8 @@ function sharesNear(a: Set<string>, b: Set<string>): boolean {
 function sharesPlace(x: AddressReading, y: AddressReading): boolean {
   return sharesNear(x.words, y.words) || shares(x.words, y.joined) || shares(y.words, x.joined);
 }
-/** Both sides name a road (or a town) and none is the same: different places. */
+const prefixes = (r: AddressReading) => new Set([...r.weak].filter((w) => AREA_PREFIXES.has(w)));
+/** Both sides name a road (or a town, or a block) and none is the same: different places. */
 function conflict(a: Set<string>, b: Set<string>): boolean {
   return a.size > 0 && b.size > 0 && !sharesNear(a, b);
 }
@@ -733,7 +785,10 @@ function readingsMatch(x: AddressReading, y: AddressReading): boolean {
   if (x.line === y.line && x.labelled.size >= 2) return true;
   const { xl, yl, xn, yn } = withStandIns(x, y);
   if (!sameSet(xl, yl) || !sameSet(xn, yn)) return false;
-  if (conflict(x.roads, y.roads) || conflict(x.towns, y.towns)) return false;
+  if (conflict(x.roads, y.roads) || conflict(x.towns, y.towns) || conflict(x.blocks, y.blocks)) return false;
+  // Review 12: "New Karachi" vs "North Karachi" (both carry an area prefix, none the same): different places,
+  // even with the same sector code.
+  if (conflict(prefixes(x), prefixes(y))) return false;
   if (sharesPlace(x, y)) return true;
   if (shares(x.sectors, y.sectors)) return true;
   // Only weak words ("Gulshan") and nothing else on either side: the weak word

@@ -144,10 +144,126 @@ export class FakeDb {
       if (fn === "reverse_order_points") return { data: [this.reverseOrderPoints(args)], error: null };
       if (fn === "sync_order_snapshot") return { data: [this.syncOrderSnapshot(args)], error: null };
       if (fn === "upgrade_member_tier") return { data: this.upgradeMemberTier(args) as never, error: null };
+      if (fn === "pay_referral") return { data: [this.payReferral(args)], error: null };
+      if (fn === "release_referral_claim") return { data: this.releaseReferralClaim(args) as never, error: null };
+      if (fn === "reverse_referral") return { data: [this.reverseReferral(args)], error: null };
       return { data: null, error: { code: "PGRST202", message: `function ${fn} not found` } };
     } catch (err) {
       return { data: null, error: { code: "P0001", message: err instanceof Error ? err.message : String(err) } };
     }
+  }
+
+  // ── JavaScript model of 017's referral functions (one synchronous call = one transaction) ──
+  private referralLedger(ref: Row, action: string): Row | undefined {
+    return this.table("points_ledger").find((l) => l.member_id === ref.referrer_member_id && l.action_type === action && l.reference_id === String(ref.id));
+  }
+
+  private payReferral(a: Row): Row {
+    const ref = this.table("referrals").find((r) => r.id === a.p_referral_id);
+    if (!ref) return { outcome: "not_found", newly_awarded: false, paid_points: 0, member_balance: null };
+    const member = this.table("members").find((m) => m.id === ref.referrer_member_id);
+    const balance = member ? Number(member.points_balance) : null;
+    const done = (outcome: string, points = 0) => ({ outcome, newly_awarded: false, paid_points: points, member_balance: balance });
+    if (this.referralLedger(ref, "referral_reversal")) {
+      if (ref.status !== "rejected") Object.assign(ref, { status: "rejected", points_awarded: false });
+      return done("already_reversed");
+    }
+    const earned = this.referralLedger(ref, "referral_earned");
+    if (earned) {
+      if (ref.status === "completed" && ref.points_awarded) return done("already_paid", Number(earned.points));
+      if (ref.status === "pending" || ref.status === "completed") {
+        Object.assign(ref, {
+          status: "completed", points_awarded: true, reward_points: Number(earned.points),
+          shopify_order_id: earned.shopify_order_id ?? ref.shopify_order_id ?? a.p_shopify_order_id ?? null,
+          completed_at: ref.completed_at ?? new Date().toISOString(),
+        });
+        return done("recorded", Number(earned.points));
+      }
+      return done("not_pending");
+    }
+    const claimed = ref.status === "completed" && !ref.points_awarded && ref.reward_points != null;
+    if (a.p_from_claim) {
+      if (!claimed) return done("not_claimed");
+      if ((ref.shopify_order_id ?? null) !== (a.p_shopify_order_id ?? null)) return done("other_order");
+    } else if (ref.status !== "pending") return done("not_pending");
+    const settings = this.table("app_settings").find((x) => x.id === 1) ?? {};
+    const rules = (settings.earn_rules ?? {}) as Record<string, { enabled?: unknown }>;
+    const order = a.p_shopify_order_id ? this.table("order_webhook_state").find((o) => o.shopify_order_id === a.p_shopify_order_id) : undefined;
+    let refuse: string | null = null;
+    if (rules.referral?.enabled === false) refuse = "disabled";
+    else if (!member) refuse = "referrer_not_found";
+    else if (member.is_blocked || member.opted_out || member.referrals_blocked) refuse = "referrer_not_eligible";
+    else if (!(Number(a.p_points) > 0)) refuse = "zero_points";
+    else if (order?.cancelled_at) refuse = "order_cancelled";
+    else if (order) {
+      const basis = Number(order.earning_basis_pkr ?? 0);
+      const since = Math.max(0, Number(order.refunded_basis_pkr ?? 0) - Number(order.refund_basis_at_award_pkr ?? 0));
+      const awardedAmt = Number(order.points_awarded_amount ?? 0);
+      if (basis <= 0 || (awardedAmt > 0 && Number(order.points_reversed_amount ?? 0) >= awardedAmt) || basis - since < 0.01) refuse = "order_refunded";
+    }
+    if (refuse) {
+      if (a.p_from_claim) {
+        const candidate = { ...ref, status: "pending" };
+        if (!this.uniqueViolation("referrals", candidate, ref)) {
+          Object.assign(ref, { status: "pending", completed_at: null, shopify_order_id: null, reward_points: null });
+        }
+      }
+      return done(refuse);
+    }
+    const res = this.awardPoints({
+      p_member_id: ref.referrer_member_id, p_action_type: "referral_earned", p_reference_id: String(ref.id), p_points: a.p_points,
+      p_expires_at: a.p_expires_at ?? null, p_shopify_order_id: a.p_shopify_order_id ?? null, p_reason_note: a.p_reason_note ?? null,
+      p_customer_note: a.p_customer_note ?? null,
+    });
+    Object.assign(ref, {
+      status: "completed", points_awarded: true, completed_at: new Date().toISOString(),
+      shopify_order_id: a.p_shopify_order_id ?? null, reward_points: Number(a.p_points),
+    });
+    return { outcome: "paid", newly_awarded: !!res.awarded, paid_points: Number(a.p_points), member_balance: res.new_balance };
+  }
+
+  private releaseReferralClaim(a: Row): string {
+    const ref = this.table("referrals").find((r) => r.id === a.p_referral_id);
+    if (!ref) return "not_found";
+    if (!(ref.status === "completed" && !ref.points_awarded && ref.reward_points != null)) return "not_claimed";
+    if (this.referralLedger(ref, "referral_earned")) return "paid";
+    if (this.uniqueViolation("referrals", { ...ref, status: "pending" }, ref)) return "conflict";
+    Object.assign(ref, { status: "pending", completed_at: null, shopify_order_id: null, reward_points: null });
+    return "released";
+  }
+
+  private reverseReferral(a: Row): Row {
+    const ref = this.table("referrals").find((r) => r.id === a.p_referral_id);
+    if (!ref) return { outcome: "not_found", reversed_points: 0, member_balance: null };
+    const member = this.table("members").find((m) => m.id === ref.referrer_member_id);
+    const before = member ? Number(member.points_balance) : 0;
+    const reason = String(a.p_reason ?? "").trim() || "cancelled";
+    const earned = this.referralLedger(ref, "referral_earned");
+    if (!earned) return { outcome: "not_paid", reversed_points: 0, member_balance: before };
+    if (a.p_shopify_order_id && earned.shopify_order_id && earned.shopify_order_id !== a.p_shopify_order_id) {
+      return { outcome: "other_order", reversed_points: 0, member_balance: before };
+    }
+    if (this.referralLedger(ref, "referral_reversal")) {
+      if (ref.status !== "rejected") {
+        Object.assign(ref, {
+          status: "rejected", points_awarded: false, reviewed_at: ref.reviewed_at ?? new Date().toISOString(),
+          reviewed_note: ref.reviewed_note ?? `reversed automatically: qualifying order ${reason}`,
+        });
+      }
+      return { outcome: "already_reversed", reversed_points: 0, member_balance: before };
+    }
+    const order = (a.p_shopify_order_id ?? earned.shopify_order_id ?? ref.shopify_order_id ?? null) as string | null;
+    const res = this.awardPoints({
+      p_member_id: ref.referrer_member_id, p_action_type: "referral_reversal", p_reference_id: String(ref.id),
+      p_points: -Math.max(0, Number(earned.points)), p_shopify_order_id: order,
+      p_reason_note: `qualifying order ${order ?? "?"} ${reason}`,
+      p_customer_note: a.p_customer_note ?? `Referral reversed: your friend's order was ${reason}`,
+    });
+    Object.assign(ref, {
+      status: "rejected", points_awarded: false, reviewed_at: new Date().toISOString(),
+      reviewed_note: `reversed automatically: qualifying order ${reason}`,
+    });
+    return { outcome: "reversed", reversed_points: Math.max(0, before - Number(res.new_balance)), member_balance: res.new_balance };
   }
 
   // ── JavaScript model of the SQL functions (kept deliberately small) ──

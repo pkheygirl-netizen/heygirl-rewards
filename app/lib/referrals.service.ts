@@ -786,13 +786,20 @@ const fullyRefunded = (o: OrderLite): boolean => {
 };
 
 /**
- * Pay the referrer. The referral is CLAIMED first (pending -> completed with
- * points_awarded=false, in one conditional update), then the points are added
- * through award_points (idempotent on member / referral_earned / referral id),
- * then points_awarded is set. So a Reject (or a block) that lands first wins
- * and nothing is paid; once the claim is made, Reject no longer applies
- * (it acts on pending/flagged only). If the award fails or the process stops
- * after the claim, the next call finishes it (resumeClaimedReferral).
+ * Pay the referrer (review 12, item 2: one database call). pay_referral
+ * (migration 017) locks the referral, then the qualifying order row, then the
+ * referrer, checks the referral is still pending, the referral rule is on,
+ * the referrer may be paid and the order is not cancelled or refunded in
+ * full, adds the points (award_points, idempotent on member / referral_earned
+ * / referral id) and marks the referral completed with points_awarded=true,
+ * all in one transaction. So a Reject (or a block) that lands first wins, a
+ * cancellation that lands first wins, and there is no half-done state for a
+ * cron run or another event to finish or release.
+ *
+ * Kept from review 11: the order is read again right before the payment (a
+ * cancelled or fully refunded order: nothing added, the referral stays
+ * pending, a later qualifying order of hers can still pay it) and right after
+ * it (cancelled or refunded in full meanwhile: reverse_referral, rejected).
  */
 async function payReferral(
   referral: ReferralRow,
@@ -809,78 +816,60 @@ async function payReferral(
   const points = effectiveReferralPoints(r, settings.referral_points);
   if (points <= 0) return { paid: false, reason: "zero_points" };
 
-  const { data: claimed, error: claimErr } = await db
-    .from("referrals")
-    .update({
-      status: "completed",
-      points_awarded: false,
-      completed_at: new Date().toISOString(),
-      shopify_order_id: shopifyOrderId,
-      reward_points: points,
-    })
-    .eq("id", referral.id)
-    .eq("status", "pending")
-    .select("id");
-  if (claimErr) throw new Error(`referral claim failed: ${claimErr.message}`);
-  // Rejected, blocked, held or claimed by another call in the meantime: not paid here.
-  if (!claimed || claimed.length === 0) return { paid: false, reason: "not_pending" };
+  const before = await orderStillQualifies(shopifyOrderId);
+  if (before !== "ok") return { paid: false, reason: `qualifying_order_${before}_before_award` };
 
-  return finishReferralPayment(referral, r, points, shopifyOrderId, settings);
+  const out = await callPayReferral(referral, r, points, shopifyOrderId, settings, false);
+  return { paid: out.paid, points: out.points, reason: out.reason };
 }
 
-/** Second half of payReferral: the award (idempotent) and points_awarded. */
-async function finishReferralPayment(
-  referral: Pick<ReferralRow, "id" | "referred_shopify_customer_id">,
+type PayOutcome = { paid: boolean; points?: number; reason?: string; outcome: string };
+
+/** pay_referral outcomes that changed nothing because a check refused (from a claim: the claim was put back to pending in the same transaction). */
+const PAY_REFUSALS = new Set(["disabled", "referrer_not_found", "referrer_not_eligible", "zero_points", "order_cancelled", "order_refunded"]);
+
+/**
+ * pay_referral, then the post-payment order re-read and the email. The
+ * "referral completed" email is queued only by the call whose pay_referral
+ * set points_awarded ("paid", or "recorded" for points found in the ledger),
+ * under the fixed job id, and not when the re-read reverses it.
+ */
+async function callPayReferral(
+  referral: Pick<ReferralRow, "id" | "referred_shopify_customer_id" | "referrer_member_id">,
   r: MemberRow,
   points: number,
-  shopifyOrderId: string,
+  shopifyOrderId: string | null,
   settings: Awaited<ReturnType<typeof getSettings>>,
-): Promise<{ paid: boolean; points?: number; reason?: string }> {
-  // Review 11, item 9: read the order again after the claim and BEFORE the
-  // award. If it was cancelled (or refunded in full) before the claim, e.g.
-  // the worker's cancellation landed between this call's order read and its
-  // claim (its reversal then found nothing claimed to reverse), nothing is
-  // added and the referral goes back to `pending`, so a later qualifying order
-  // of hers can still pay it. (Once a referral_earned row exists for this
-  // referral it can never be paid again: award_points is idempotent on member
-  // / action / referral id; so the post-award re-read below must reverse.)
-  const before = await orderStillQualifies(shopifyOrderId);
-  if (before !== "ok") {
-    await releaseClaim(referral.id);
-    return { paid: false, reason: `qualifying_order_${before}_before_award` };
-  }
-
-  const { data, error } = await db.rpc("award_points", {
-    p_member_id: r.id,
-    p_action_type: "referral_earned",
-    p_reference_id: String(referral.id),
+  fromClaim: boolean,
+): Promise<PayOutcome> {
+  const { data, error } = await db.rpc("pay_referral", {
+    p_referral_id: String(referral.id),
     p_points: points,
+    p_shopify_order_id: shopifyOrderId as string,
     p_expires_at: expiresAtForTier(r.tier, settings),
-    p_shopify_order_id: shopifyOrderId,
     p_reason_note: `referral ${referral.id} completed by customer ${referral.referred_shopify_customer_id}`,
     p_customer_note: "Your friend's first order",
+    p_from_claim: fromClaim,
   });
-  if (error) throw new Error(`award_points(referral) failed: ${error.message}`);
-  const awarded = data?.[0]?.awarded ?? false;
-
-  // Review 10, L3: the order may have been cancelled or refunded in full while
-  // this call was paying (Approve in the web process against the worker's
-  // cancellation: the worker's reversal can run before the claim and find
-  // nothing to reverse). Read the order again now that the points are in the
-  // ledger; if it is gone, take them back (the reversal is idempotent, so the
-  // worker doing it too changes nothing).
-  const gone = await reverseIfOrderGone(shopifyOrderId);
-  if (gone) return { paid: false, points, reason: `qualifying_order_${gone}` };
-
-  // Review 11, item 8: points_awarded first, then the "referral completed"
-  // email, and only when THIS call set the flag (a reversal racing us marks
-  // the row and rejects it: no email). Fixed job id, so a second add is
-  // dropped. points_awarded is written on a replay too, so a crash after the
-  // award cannot leave it open (and the cron sweep finishes it).
-  const finished = await markReferralAwarded(referral.id);
-  if (finished) await queueReferralCompletedEmail(String(referral.id), r.id, points);
-  const paid = awarded || finished;
-  return { paid, points, reason: paid ? undefined : "already_paid" };
+  if (error) throw new Error(`pay_referral failed: ${error.message}`);
+  const row = data?.[0];
+  const outcome = String(row?.outcome ?? "unknown");
+  if (outcome === "paid" || outcome === "recorded") {
+    const paidPoints = Number(row?.paid_points ?? points);
+    // Review 10, L3: the order may have been cancelled or refunded in full
+    // while this call was paying. Read it again now that the points are in;
+    // if it is gone, take them back (reverse_referral is idempotent, so the
+    // worker doing it too changes nothing).
+    const gone = shopifyOrderId ? await reverseIfOrderGone(String(referral.id), shopifyOrderId) : null;
+    if (gone) return { paid: false, points: paidPoints, reason: `qualifying_order_${gone}`, outcome };
+    await queueReferralCompletedEmail(String(referral.id), r.id, paidPoints);
+    return { paid: true, points: paidPoints, outcome };
+  }
+  if (outcome === "order_cancelled" || outcome === "order_refunded") {
+    return { paid: false, reason: `qualifying_order_${outcome.slice("order_".length)}_before_award`, outcome };
+  }
+  if (outcome === "already_paid") return { paid: false, points: Number(row?.paid_points ?? 0) || points, reason: "already_paid", outcome };
+  return { paid: false, reason: outcome, outcome };
 }
 
 /** "ok" while the order is there, not cancelled and not refunded in full; null row = "ok" (nothing says otherwise). */
@@ -895,49 +884,29 @@ async function orderStillQualifies(shopifyOrderId: string): Promise<"ok" | "canc
   return o?.cancelled_at ? "cancelled" : o && fullyRefunded(o) ? "refunded" : "ok";
 }
 
-/** A claimed, unpaid referral back to `pending` (conditional: never touches a paid or decided row). */
-async function releaseClaim(referralId: string): Promise<void> {
-  const { error } = await db
-    .from("referrals")
-    .update({ status: "pending", completed_at: null, shopify_order_id: null, reward_points: null })
-    .eq("id", referralId)
-    .eq("status", "completed")
-    .eq("points_awarded", false);
-  if (error) throw new Error(`referral release failed: ${error.message}`);
+/**
+ * An older half-done payment (claimed: completed, points_awarded=false,
+ * reward_points set) back to `pending`, through release_referral_claim (017):
+ * under the referral's row lock and only when no referral_earned ledger row
+ * exists for it. "released" | "paid" (the points were added: not released) |
+ * "not_claimed" | "conflict" | "not_found".
+ */
+async function releaseClaim(referralId: string): Promise<string> {
+  const { data, error } = await db.rpc("release_referral_claim", { p_referral_id: referralId });
+  if (error) throw new Error(`release_referral_claim failed: ${error.message}`);
+  return String(data ?? "unknown");
 }
 
 /**
- * The claimed order was cancelled or refunded in full: reverse the referral
- * (reverseReferralForOrder, idempotent) and say why; null while it still
+ * The claimed order was cancelled or refunded in full: reverse the referral by
+ * its id (reverse_referral, idempotent) and say why; null while it still
  * qualifies or when the order row is not found.
  */
-async function reverseIfOrderGone(shopifyOrderId: string): Promise<"cancelled" | "refunded" | null> {
-  const { data, error } = await db
-    .from("order_webhook_state")
-    .select(ORDER_LITE_COLUMNS)
-    .eq("shopify_order_id", shopifyOrderId)
-    .maybeSingle();
-  if (error) throw new Error(`order lookup failed: ${error.message}`);
-  const o = data as OrderLite | null;
-  const gone = o?.cancelled_at ? "cancelled" as const : o && fullyRefunded(o) ? "refunded" as const : null;
-  if (gone) await reverseReferralForOrder(shopifyOrderId, gone);
+async function reverseIfOrderGone(referralId: string, shopifyOrderId: string): Promise<"cancelled" | "refunded" | null> {
+  const gone = await orderStillQualifies(shopifyOrderId);
+  if (gone === "ok") return null;
+  await reverseReferralById(referralId, gone, shopifyOrderId);
   return gone;
-}
-
-/**
- * points_awarded false -> true on a claimed (completed) referral, optionally
- * with the amount found in the ledger. True when this call made the change.
- */
-async function markReferralAwarded(referralId: string, points?: number): Promise<boolean> {
-  const { data, error } = await db
-    .from("referrals")
-    .update({ points_awarded: true, ...(points && points > 0 ? { reward_points: points } : {}) })
-    .eq("id", referralId)
-    .eq("status", "completed")
-    .eq("points_awarded", false)
-    .select("id");
-  if (error) throw new Error(`referral update failed: ${error.message}`);
-  return !!data && data.length > 0;
 }
 
 /**
@@ -960,7 +929,7 @@ async function queueReferralCompletedEmail(referralId: string, memberId: string,
  * The referrer's `referral_earned` ledger row for this referral (the key
  * award_points is idempotent on: member / referral_earned / referral id), or
  * null when the points were never added. The ledger, not points_awarded, says
- * whether she was paid: the process can stop between the two (review 9, item 2).
+ * whether she was paid (review 9, item 2).
  */
 async function earnedReferralPoints(referral: Pick<ReferralRow, "id" | "referrer_member_id">): Promise<number | null> {
   const { data, error } = await db
@@ -974,14 +943,19 @@ async function earnedReferralPoints(referral: Pick<ReferralRow, "id" | "referrer
   return data ? Number(data.points ?? 0) : null;
 }
 
+/** Claims older than this are finished by the cron sweep or an order event (a payment in flight is left alone). */
+export const CLAIMED_REFERRAL_GRACE_MS = 10 * 60 * 1000;
 
 /**
- * A referral claimed for payment (completed, points_awarded=false,
- * reward_points set by payReferral) whose award did not finish. Older rows
- * marked completed without payment by the pre-v3 admin button have no
- * reward_points and are never picked up here.
+ * An older half-done payment (completed, points_awarded=false, reward_points
+ * set by the pre-017 payReferral) for this friend whose claim is older than
+ * CLAIMED_REFERRAL_GRACE_MS (review 12: a claim in flight is left alone, as
+ * the cron sweep does). Since 017 a payment is one transaction and makes no
+ * such row; they can only be left by the earlier code. Older rows marked
+ * completed without payment by the pre-v3 admin button have no reward_points
+ * and are never picked up here.
  */
-async function claimedUnpaidReferralFor(customerId: string): Promise<ReferralRow | undefined> {
+async function claimedUnpaidReferralFor(customerId: string, now: Date = new Date()): Promise<{ row?: ReferralRow; inFlight: boolean }> {
   const { data, error } = await db
     .from("referrals")
     .select("*")
@@ -989,77 +963,69 @@ async function claimedUnpaidReferralFor(customerId: string): Promise<ReferralRow
     .eq("status", "completed")
     .eq("points_awarded", false)
     .not("reward_points", "is", null)
-    .limit(1);
+    .limit(5);
   if (error) throw new Error(`referral lookup failed: ${error.message}`);
-  return data?.[0] as ReferralRow | undefined;
+  const rows = (data ?? []) as ReferralRow[];
+  const cutoff = now.getTime() - CLAIMED_REFERRAL_GRACE_MS;
+  const settled = rows.find((x) => !x.completed_at || Date.parse(String(x.completed_at)) < cutoff);
+  return { row: settled, inFlight: !settled && rows.length > 0 };
 }
 
 /**
- * Finish a claimed payment if the claimed order still qualifies and the
- * referrer may still be paid; otherwise (cancelled or refunded in the
- * meantime, referrer gone, blocked or opted out, rule switched off) put the
- * referral back to pending, so the normal rules decide again (a later order
- * may be her first now). If the ledger shows the points were in fact added,
- * the payment is recorded instead (and reversed if the order is gone).
+ * Finish an older half-done payment. Without a ledger row: if the claimed
+ * order still qualifies and the referrer may still be paid, pay_referral
+ * (from the claim) pays it; otherwise release_referral_claim puts it back to
+ * pending (only while no ledger row exists) and null is returned, so the
+ * normal rules decide again (a later order may be her first now). With a
+ * ledger row: pay_referral records it (points_awarded), and the post-payment
+ * re-read reverses it if the claimed order is gone.
  */
 async function resumeClaimedReferral(
   referral: ReferralRow,
   customerId: string,
 ): Promise<{ paid: boolean; points?: number; reason?: string; orderId?: string } | null> {
   const claimedOrderId = referral.shopify_order_id ? String(referral.shopify_order_id) : null;
-
-  // The points were already added (the process stopped before points_awarded
-  // was set): record that, then keep them, or take them back if the claimed
-  // order was cancelled or refunded in full since, as for any paid referral.
-  const earned = await earnedReferralPoints(referral);
-  if (earned !== null) {
-    if (claimedOrderId) {
-      const gone = await reverseIfOrderGone(claimedOrderId);
-      if (gone) return { paid: false, reason: `qualifying_order_${gone}`, orderId: claimedOrderId };
-    }
-    // The flag first, then the email (fixed job id), only if this call set it: see finishReferralPayment.
-    const finished = await markReferralAwarded(referral.id, earned);
-    if (finished) await queueReferralCompletedEmail(String(referral.id), referral.referrer_member_id, earned);
-    return { paid: finished, points: earned, reason: finished ? undefined : "already_paid", orderId: claimedOrderId ?? undefined };
-  }
-
-  const order = await firstQualifyingOrder(customerId);
-  const points = Number(referral.reward_points ?? 0);
   const settings = await getSettings();
   const { data: referrer } = await db.from("members").select("*").eq("id", referral.referrer_member_id).maybeSingle();
   const r = referrer as MemberRow | null;
-  // The same eligibility payReferral checked before the claim (review 9, item 5):
-  // a referrer blocked or opted out since, or the rule switched off, is not paid.
-  const eligible = !!r && !r.is_blocked && !r.opted_out && !r.referrals_blocked && isEarnRuleEnabled(settings, "referral");
-  if (
-    order && r && eligible && points > 0 &&
-    order.shopify_order_id === referral.shopify_order_id && order.points_awarded && !fullyRefunded(order)
-  ) {
-    const result = await finishReferralPayment(referral, r, points, order.shopify_order_id, settings);
-    return { ...result, orderId: order.shopify_order_id };
-  }
-  await releaseClaim(referral.id);
-  return null; // decide again from pending
-}
+  const points = Number(referral.reward_points ?? 0);
 
-/** Claims older than this are finished by the cron sweep (a payment in flight is left alone). */
-export const CLAIMED_REFERRAL_GRACE_MS = 10 * 60 * 1000;
+  if ((await earnedReferralPoints(referral)) === null) {
+    const order = customerId ? await firstQualifyingOrder(customerId) : null;
+    // The same eligibility payReferral checks (review 9, item 5): a referrer
+    // blocked or opted out since, or the rule switched off, is not paid.
+    const eligible = !!r && !r.is_blocked && !r.opted_out && !r.referrals_blocked && isEarnRuleEnabled(settings, "referral");
+    const qualifies = !!order && eligible && points > 0 && order.shopify_order_id === claimedOrderId && order.points_awarded && !fullyRefunded(order);
+    if (!qualifies) {
+      const released = await releaseClaim(String(referral.id));
+      if (released === "released") return null; // decide again from pending
+      if (released !== "paid") return { paid: false, reason: `claim_${released}`, orderId: claimedOrderId ?? undefined };
+      // "paid": the points went in meanwhile; record them below.
+    }
+  }
+  if (!r) return { paid: false, reason: "referrer_not_found", orderId: claimedOrderId ?? undefined };
+  const out = await callPayReferral(referral, r, points, claimedOrderId, settings, true);
+  // A check refused inside the transaction: pay_referral put the claim back to pending.
+  if (PAY_REFUSALS.has(out.outcome)) return null;
+  return { paid: out.paid, points: out.points, reason: out.reason, orderId: claimedOrderId ?? undefined };
+}
 
 /**
  * Review 11, item 10 (cron, every 10 minutes with the pending-code sweep):
- * finish referrals left `completed` with points_awarded=false (claimed for
- * payment, reward_points set) for more than 10 minutes, when no later order
- * event came to do it. Through resumeClaimedReferral: the ledger row present
- * -> points_awarded set and the email queued (fixed job id), or reversed if
- * the claimed order was cancelled or refunded in full since; absent -> the
- * payment is finished if the order still qualifies, otherwise the referral is
- * put back to `pending` and a complete_referral job decides again (a later
- * order of hers may qualify).
+ * finish older half-done payments (completed, points_awarded=false,
+ * reward_points set) claimed more than 10 minutes ago, through
+ * resumeClaimedReferral: ledger row present -> points_awarded set and the
+ * email queued (fixed job id), or reversed if the claimed order was cancelled
+ * or refunded in full since; absent -> paid if the order still qualifies,
+ * otherwise back to `pending` and a complete_referral job decides again. A
+ * claimed row with no friend id and no ledger row is put back to pending
+ * (review 12: it used to count as failed on every run). `failed` > 0 is
+ * reported by the cron run (alert heartbeat, review 12 item 3).
  */
 export async function finishClaimedReferrals(now: Date = new Date()): Promise<{
-  recorded: number; paid: number; reversed: number; released: number; failed: number;
+  recorded: number; paid: number; reversed: number; released: number; skipped: number; failed: number;
 }> {
-  const out = { recorded: 0, paid: 0, reversed: 0, released: 0, failed: 0 };
+  const out = { recorded: 0, paid: 0, reversed: 0, released: 0, skipped: 0, failed: 0 };
   const { data, error } = await db
     .from("referrals")
     .select("*")
@@ -1074,19 +1040,17 @@ export async function finishClaimedReferrals(now: Date = new Date()): Promise<{
     try {
       const customerId = row.referred_shopify_customer_id ? String(row.referred_shopify_customer_id) : "";
       const hadLedgerRow = (await earnedReferralPoints(row)) !== null;
-      if (!customerId && !hadLedgerRow) { out.failed++; continue; } // nothing to resume against
       const r = await resumeClaimedReferral(row, customerId);
       if (r === null) {
         out.released++;
-        await pointsQueue.add("complete_referral", { shopifyCustomerId: customerId, shop: null });
+        if (customerId) await pointsQueue.add("complete_referral", { shopifyCustomerId: customerId, shop: null });
       } else if (r.reason?.startsWith("qualifying_order_")) {
-        if (r.reason.endsWith("_before_award")) {
-          out.released++;
-          await pointsQueue.add("complete_referral", { shopifyCustomerId: customerId, shop: null });
-        } else out.reversed++;
+        out.reversed++;
       } else if (r.paid) {
         if (hadLedgerRow) out.recorded++;
         else out.paid++;
+      } else {
+        out.skipped++; // changed meanwhile (paid, released or decided by another call)
       }
     } catch (err) {
       out.failed++;
@@ -1127,10 +1091,11 @@ export async function completeReferralForCustomer(
   const customerId = String(shopifyCustomerId);
   let found = await openReferralFor(customerId);
   if (!found) {
-    // A payment claimed earlier whose award did not finish (payReferral).
+    // An older half-done payment (claimed before 017). One claimed less than
+    // 10 minutes ago may still be in flight: left alone, as the cron does.
     const claimed = await claimedUnpaidReferralFor(customerId);
-    if (!claimed) return { paid: false, reason: "no_open_referral" };
-    const resumed = await resumeClaimedReferral(claimed, customerId);
+    if (!claimed.row) return { paid: false, reason: claimed.inFlight ? "claim_in_flight" : "no_open_referral" };
+    const resumed = await resumeClaimedReferral(claimed.row, customerId);
     if (resumed) return resumed;
     found = await openReferralFor(customerId);
     if (!found) return { paid: false, reason: "no_open_referral" };
@@ -1256,56 +1221,53 @@ export async function rejectReferral(referralId: string, actor: string, note?: s
 
 /**
  * The qualifying order was refunded in full or cancelled after the referrer
- * was paid: take the points back (floored at zero by the database).
+ * was paid: take the points back (floored at zero by the database). Review
+ * 12: found by referral id, whatever the referral's status: every referral
+ * naming this order and every referral_earned ledger row written for this
+ * order, each reversed through reverse_referral (017: under the referral's
+ * row lock, only when a referral_earned row exists for it and no
+ * referral_reversal row does yet; idempotent). A referral left pending by an
+ * old race with its points in the ledger is reversed too.
  */
 export async function reverseReferralForOrder(
   shopifyOrderId: string,
   why: "refunded" | "cancelled",
 ): Promise<{ reversed: boolean; points?: number }> {
-  const { data, error } = await db
-    .from("referrals")
-    .select("*")
-    .eq("shopify_order_id", String(shopifyOrderId))
-    .eq("status", "completed")
-    .limit(1);
-  if (error) throw new Error(`referral lookup failed: ${error.message}`);
-  const referral = data?.[0] as ReferralRow | undefined;
-  if (!referral) return { reversed: false };
+  const orderId = String(shopifyOrderId);
+  const [byRow, byLedger] = await Promise.all([
+    db.from("referrals").select("id").eq("shopify_order_id", orderId).limit(20),
+    db.from("points_ledger").select("reference_id").eq("action_type", "referral_earned").eq("shopify_order_id", orderId).limit(20),
+  ]);
+  if (byRow.error) throw new Error(`referral lookup failed: ${byRow.error.message}`);
+  if (byLedger.error) throw new Error(`referral ledger lookup failed: ${byLedger.error.message}`);
+  const ids = new Set<string>();
+  for (const x of byRow.data ?? []) ids.add(String(x.id));
+  for (const x of byLedger.data ?? []) if (x.reference_id) ids.add(String(x.reference_id));
+  let reversed = false;
+  let points = 0;
+  for (const id of ids) {
+    const r = await reverseReferralById(id, why, orderId);
+    if (r.outcome === "reversed") {
+      reversed = true;
+      points += r.points;
+    }
+  }
+  return { reversed, points };
+}
 
-  let points = Number(referral.reward_points ?? 0);
-  if (!referral.points_awarded) {
-    // Claimed for payment, and the points may have been added before the
-    // process stopped (review 9, item 2): the ledger decides. Not added ->
-    // nothing to reverse (resumeClaimedReferral puts it back to pending).
-    const earned = await earnedReferralPoints(referral);
-    if (earned === null) return { reversed: false };
-    await markReferralAwarded(referral.id, earned);
-    points = earned;
-  } else if (points <= 0) {
-    // Completed before reward_points was stored: read it from the ledger.
-    points = (await earnedReferralPoints(referral)) ?? 0;
-  }
-  if (points > 0) {
-    const { error: rpcErr } = await db.rpc("award_points", {
-      p_member_id: referral.referrer_member_id,
-      p_action_type: "referral_reversal",
-      p_reference_id: String(referral.id),
-      p_points: -points,
-      p_shopify_order_id: String(shopifyOrderId),
-      p_reason_note: `qualifying order ${shopifyOrderId} ${why}`,
-      p_customer_note: `Referral reversed: your friend's order was ${why}`,
-    });
-    if (rpcErr) throw new Error(`award_points(referral_reversal) failed: ${rpcErr.message}`);
-  }
-  await db
-    .from("referrals")
-    .update({
-      status: "rejected",
-      points_awarded: false,
-      reviewed_at: new Date().toISOString(),
-      reviewed_note: `reversed automatically: qualifying order ${why}`,
-    })
-    .eq("id", referral.id)
-    .eq("status", "completed");
-  return { reversed: points > 0, points };
+/** reverse_referral (017) for one referral: "reversed" | "already_reversed" | "not_paid" | "other_order" | "not_found". */
+async function reverseReferralById(
+  referralId: string,
+  why: "refunded" | "cancelled",
+  shopifyOrderId: string,
+): Promise<{ outcome: string; points: number }> {
+  const { data, error } = await db.rpc("reverse_referral", {
+    p_referral_id: referralId,
+    p_reason: why,
+    p_shopify_order_id: shopifyOrderId,
+    p_customer_note: `Referral reversed: your friend's order was ${why}`,
+  });
+  if (error) throw new Error(`reverse_referral failed: ${error.message}`);
+  const row = data?.[0];
+  return { outcome: String(row?.outcome ?? "unknown"), points: Number(row?.reversed_points ?? 0) };
 }
