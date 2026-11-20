@@ -889,9 +889,14 @@ describe("order-time check: the friend's order that used her free-shipping code"
     referral().friend_code_id = "code-held";
     friendOrder({ discount_codes: ["HELDCODE"] });
     failCheckWith(() => Object.assign(new Error("Bad Request"), { response: { code: 400 } }));
+    // review 13: fixed job id per referral; an earlier finished job is replaced (approval changed something)
+    const earlier = { failed: false, removed: false, state: "completed" };
+    h.points.existing.set(`complete_referral-${String(referral().id)}`, earlier);
     const r = await approveReferral(String(referral().id), "staff", "s");
     expect(r).toMatchObject({ ok: true, paid: false, reason: "queued" });
     expect(h.points.named("complete_referral")[0].data).toEqual({ shopifyCustomerId: "FR", shop: "s" });
+    expect(h.points.named("complete_referral")[0].opts).toMatchObject({ jobId: `complete_referral-${String(referral().id)}` });
+    expect(earlier.removed).toBe(true);
     expect(referrer.points_balance).toBe(0);
     h.graphql = withCheck; // the job runs once Shopify is back
     expect((await completeReferralForCustomer("FR", "s")).paid).toBe(true);
@@ -1365,6 +1370,72 @@ describe("payment in one transaction (review 12: pay_referral; earlier: claim fi
     expect(await completeReferralForCustomer("FR")).toMatchObject({ paid: true, points: 6000, orderId: "O2" });
     expect(referrer.points_balance).toBe(6000);
     expect(h.notifications.named("referral_completed")).toHaveLength(1);
+  });
+
+  describe("review 13: order_not_found, conflict, the email record and the fixed complete_referral job id", () => {
+    it("the order row disappears right before pay_referral: refused (order_not_found), nothing added, still pending, the live event throws so it is retried", async () => {
+      const { referrer } = setup();
+      await visit();
+      awardedOrder();
+      const realRpc = h.db.rpc.bind(h.db);
+      vi.spyOn(h.db, "rpc").mockImplementation(async (fn: string, args: Record<string, unknown>) => {
+        if (fn === "pay_referral") h.db.tables.order_webhook_state = [];
+        return realRpc(fn, args);
+      });
+      await expect(completeReferralForCustomer("FR")).rejects.toThrow("found no row for the qualifying order");
+      expect(referral()).toMatchObject({ status: "pending", points_awarded: false });
+      expect(ledgerOf("referral_earned")).toHaveLength(0);
+      expect(referrer.points_balance).toBe(0);
+      expect(h.notifications.named("referral_completed")).toHaveLength(0);
+    });
+
+    it("a claim with no order id is never paid (no NULL = NULL match): order_not_found from pay_referral", async () => {
+      const { referrer } = setup();
+      await visit();
+      seedClaim(referrer.id, { shopify_order_id: null });
+      const out = await h.db.rpc("pay_referral", { p_referral_id: String(referral().id), p_points: 6000, p_shopify_order_id: null, p_from_claim: true });
+      expect((out.data as Array<{ outcome: string }>)[0].outcome).toBe("order_not_found");
+      expect(referral()).toMatchObject({ status: "completed", points_awarded: false });
+      expect(referrer.points_balance).toBe(0);
+    });
+
+    it("the cron sweep: pay_referral from a claim refused and blocked by another open referral ('conflict') is failed and queues nothing", async () => {
+      const { referrer } = setup();
+      await visit();
+      awardedOrder();
+      seedClaim(referrer.id, { completed_at: "2026-11-01T00:00:00Z" });
+      const other = seedMember(h.db, { shopify_customer_id: "REF3" });
+      const realRpc = h.db.rpc.bind(h.db);
+      vi.spyOn(h.db, "rpc").mockImplementation(async (fn: string, args: Record<string, unknown>) => {
+        // another referral for the same friend opens, and the referrer is blocked, while the sweep is deciding
+        if (fn === "pay_referral" && !h.db.table("referrals").some((r) => r.referrer_member_id === other.id)) {
+          h.db.seed("referrals", { referrer_member_id: other.id, referred_shopify_customer_id: "FR", status: "flagged" });
+          referrer.is_blocked = true;
+        }
+        return realRpc(fn, args);
+      });
+      expect(await finishClaimedReferrals(new Date("2026-11-20T00:00:00Z"))).toEqual({ recorded: 0, paid: 0, reversed: 0, released: 0, skipped: 0, failed: 1 });
+      expect(referral()).toMatchObject({ status: "completed", points_awarded: false });
+      expect(h.points.named("complete_referral")).toHaveLength(0);
+      expect(referrer.points_balance).toBe(0);
+    });
+
+    it("a payment records that its email was queued (completion_email_queued_at); Redis down leaves it empty for the sweep", async () => {
+      setup();
+      await visit();
+      awardedOrder();
+      const realAdd = h.notifications.add;
+      h.notifications.add = async () => { throw new Error("Redis down"); };
+      expect(await completeReferralForCustomer("FR")).toMatchObject({ paid: true });
+      expect(referral()).toMatchObject({ status: "completed", points_awarded: true, completion_email_queued_at: null });
+      h.notifications.add = realAdd;
+      resetHarness();
+      setup();
+      await visit();
+      awardedOrder();
+      expect(await completeReferralForCustomer("FR")).toMatchObject({ paid: true });
+      expect(referral().completion_email_queued_at).toEqual(expect.any(String));
+    });
   });
 
   describe("item 10: the cron sweep finishes older claims (completed, points_awarded=false)", () => {

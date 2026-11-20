@@ -19,7 +19,7 @@ vi.mock("../lib/storefront-config.server", () => ({ syncStorefrontConfig: sync }
 
 import { h, resetHarness, seedMember } from "../lib/testing/harness";
 import { bustSettingsCache } from "../lib/settings.server";
-import { registerCronJobs, runBirthday, runCronJob, runExpiry, runExpiryWarning, runStorefrontConfig } from "./cron.worker";
+import { registerCronJobs, runBirthday, runCronJob, runExpiry, runExpiryWarning, runPendingSweeps, runStorefrontConfig } from "./cron.worker";
 
 beforeEach(() => {
   resetHarness();
@@ -75,6 +75,8 @@ describe("schedules", () => {
     expect(await runCronJob("cron_pending_codes")).toEqual({
       finished: 0, returned: 0, cancelled: 0, failed: 0,
       referrals: { recorded: 1, paid: 0, reversed: 0, released: 0, skipped: 0, failed: 0 },
+      requeued: { queued: 0, open: 0, failed: 0 },
+      referralEmails: { queued: 0, failed: 0 },
     });
     expect(ref.points_awarded).toBe(true);
     expect(h.notifications.named("referral_completed")).toHaveLength(1);
@@ -309,5 +311,134 @@ describe("rule 20: the program switch only pauses redeeming", () => {
     h.db.table("app_settings")[0].earn_rules = {};
     bustSettingsCache();
     expect(await runBirthday(new Date("2026-11-01T04:00:00Z"))).toEqual({ queued: 1 });
+  });
+});
+
+describe("review 13: migration 017 self-check and the referral recovery sweeps (cron_pending_codes)", () => {
+  const NOW = new Date("2026-11-20T12:00:00Z");
+  const ago = (minutes: number) => new Date(NOW.getTime() - minutes * 60_000).toISOString();
+  const jobId = (id: unknown) => `complete_referral-${String(id)}`;
+  const alertOf = (key: string) => h.db.table("system_heartbeat").find((r) => r.key === key);
+  const qualifyingOrder = (customer: string, id = `O-${customer}`, over: Record<string, unknown> = {}) =>
+    h.db.seed("order_webhook_state", {
+      shopify_order_id: id, shopify_customer_id: customer, points_awarded: true, earning_basis_pkr: 2000,
+      points_awarded_amount: 200, placed_at: "2026-11-10T00:00:00Z", updated_at: ago(60), ...over,
+    });
+  const pendingReferral = (referrerId: unknown, customer: string) =>
+    h.db.seed("referrals", { referrer_member_id: referrerId, referred_shopify_customer_id: customer, status: "pending", created_at: ago(5000) });
+
+  it("017 missing: the referral sweeps are skipped, alert:schema_017 names the file; once applied the alert is removed and the sweeps run", async () => {
+    const referrer = seedMember(h.db, { shopify_customer_id: "REF" });
+    pendingReferral(referrer.id, "FR");
+    qualifyingOrder("FR");
+    h.db.schemaVersion = null;
+    const out = await runPendingSweeps(NOW);
+    expect(out).toMatchObject({ referrals: null, requeued: null, referralEmails: null, referralSweeps: "paused: migration 017_referral_payment.sql missing" });
+    expect(alertOf("alert:schema_017")).toMatchObject({ detail: { migration: "017_referral_payment.sql" } });
+    expect(h.points.named("complete_referral")).toHaveLength(0);
+    expect(alertOf("alert:referral_payments")).toBeUndefined();
+    h.db.schemaVersion = 17;
+    expect(await runPendingSweeps(NOW)).toMatchObject({ requeued: { queued: 1 } });
+    expect(alertOf("alert:schema_017")).toBeUndefined();
+  });
+
+  it("a pending referral whose friend's first order qualifies gets ONE complete_referral job (fixed id); open -> skipped, dead -> replaced, finished -> waits 24 h", async () => {
+    const referrer = seedMember(h.db, { shopify_customer_id: "REF" });
+    const ref = pendingReferral(referrer.id, "FR");
+    qualifyingOrder("FR");
+    expect((await runPendingSweeps(NOW)).requeued).toEqual({ queued: 1, open: 0, failed: 0 });
+    const job = h.points.named("complete_referral")[0];
+    expect(job.data).toEqual({ shopifyCustomerId: "FR", shop: null });
+    expect(job.opts).toEqual({ jobId: jobId(ref.id), removeOnComplete: { age: 86_400, count: 5000 } });
+    // the job is still waiting: nothing new
+    h.points.existing.set(jobId(ref.id), { failed: false, removed: false, state: "waiting" });
+    expect((await runPendingSweeps(NOW)).requeued).toEqual({ queued: 0, open: 1, failed: 0 });
+    // it finished recently (e.g. refused): not queued again for 24 hours
+    h.points.existing.set(jobId(ref.id), { failed: false, removed: false, state: "completed" });
+    expect((await runPendingSweeps(NOW)).requeued).toEqual({ queued: 0, open: 1, failed: 0 });
+    // it died (failed on every try): replaced
+    const dead = { failed: true, removed: false };
+    h.points.existing.set(jobId(ref.id), dead);
+    expect((await runPendingSweeps(NOW)).requeued).toEqual({ queued: 1, open: 0, failed: 0 });
+    expect(dead.removed).toBe(true);
+    expect(h.points.named("complete_referral")).toHaveLength(2);
+  });
+
+  it("not queued: first order not yet fulfilled+paid, refunded in full, changed in the last 10 minutes, an earlier unpaid order, referrer blocked, rule off", async () => {
+    const referrer = seedMember(h.db, { shopify_customer_id: "REF" });
+    const blocked = seedMember(h.db, { shopify_customer_id: "REF2", referrals_blocked: true });
+    pendingReferral(referrer.id, "F1"); qualifyingOrder("F1", "O1", { points_awarded: false });
+    pendingReferral(referrer.id, "F2"); qualifyingOrder("F2", "O2", { refunded_basis_pkr: 2000 });
+    pendingReferral(referrer.id, "F3"); qualifyingOrder("F3", "O3", { updated_at: ago(2) });
+    pendingReferral(referrer.id, "F4"); qualifyingOrder("F4", "O4"); qualifyingOrder("F4", "O4-earlier", { points_awarded: false, placed_at: "2026-11-01T00:00:00Z" });
+    pendingReferral(blocked.id, "F5"); qualifyingOrder("F5", "O5");
+    pendingReferral(referrer.id, "F6"); qualifyingOrder("F6", "O6", { cancelled_at: "2026-11-11T00:00:00Z" });
+    h.db.seed("referrals", { referrer_member_id: referrer.id, referred_shopify_customer_id: "F7", status: "flagged" }); qualifyingOrder("F7", "O7");
+    expect((await runPendingSweeps(NOW)).requeued).toEqual({ queued: 0, open: 0, failed: 0 });
+    pendingReferral(referrer.id, "F8"); qualifyingOrder("F8", "O8");
+    h.db.table("app_settings")[0].earn_rules = { referral: { enabled: false } };
+    bustSettingsCache();
+    expect((await runPendingSweeps(NOW)).requeued).toEqual({ queued: 0, open: 0, failed: 0, reason: "disabled" });
+    expect(h.points.named("complete_referral")).toHaveLength(0);
+  });
+
+  it("at most 100 jobs a run", async () => {
+    const referrer = seedMember(h.db, { shopify_customer_id: "REF" });
+    for (let i = 0; i < 130; i++) { pendingReferral(referrer.id, `F${i}`); qualifyingOrder(`F${i}`); }
+    expect((await runPendingSweeps(NOW)).requeued).toEqual({ queued: 100, open: 0, failed: 0 });
+  });
+
+  it("lost 'referral completed' email: queued under referral_completed-<id> and recorded once; older than 7 days, younger than 10 minutes, or already recorded: left alone", async () => {
+    const referrer = seedMember(h.db, { shopify_customer_id: "REF" });
+    const done = (at: string, over: Record<string, unknown> = {}) => h.db.seed("referrals", {
+      referrer_member_id: referrer.id, referred_shopify_customer_id: `F${h.db.table("referrals").length}`, status: "completed",
+      points_awarded: true, reward_points: 6000, shopify_order_id: "O1", completed_at: at, ...over,
+    });
+    const lost = done(ago(24 * 60));
+    done(ago(8 * 24 * 60));
+    done(ago(3));
+    done(ago(60), { completion_email_queued_at: ago(59) });
+    done(ago(60), { points_awarded: false });
+    expect((await runPendingSweeps(NOW)).referralEmails).toEqual({ queued: 1, failed: 0 });
+    const mails = h.notifications.named("referral_completed");
+    expect(mails).toHaveLength(1);
+    expect(mails[0]).toMatchObject({ data: { memberId: referrer.id, points: 6000 }, opts: { jobId: `referral_completed-${lost.id}` } });
+    expect(lost.completion_email_queued_at).toEqual(expect.any(String));
+    expect((await runPendingSweeps(NOW)).referralEmails).toEqual({ queued: 0, failed: 0 });
+  });
+
+  it("lost email and Redis down: counted as failed (alert:referral_payments), not recorded, queued by the next run", async () => {
+    const referrer = seedMember(h.db, { shopify_customer_id: "REF" });
+    const lost = h.db.seed("referrals", {
+      referrer_member_id: referrer.id, referred_shopify_customer_id: "FR", status: "completed", points_awarded: true,
+      reward_points: 6000, shopify_order_id: "O1", completed_at: ago(120),
+    });
+    const realAdd = h.notifications.add;
+    h.notifications.add = async () => { throw new Error("Redis down"); };
+    expect((await runPendingSweeps(NOW)).referralEmails).toEqual({ queued: 0, failed: 1 });
+    expect(lost.completion_email_queued_at).toBeNull();
+    expect(alertOf("alert:referral_payments")).toMatchObject({ detail: { failed: 1 } });
+    h.notifications.add = realAdd;
+    expect((await runPendingSweeps(NOW)).referralEmails).toEqual({ queued: 1, failed: 0 });
+    expect(alertOf("alert:referral_payments")).toBeUndefined();
+  });
+
+  it("a claim that cannot go back to pending (another open referral for the same friend) is failed on every run, never re-queued", async () => {
+    const referrer = seedMember(h.db, { shopify_customer_id: "REF" });
+    const other = seedMember(h.db, { shopify_customer_id: "REF2" });
+    qualifyingOrder("FR", "O1", { cancelled_at: "2026-11-12T00:00:00Z" });
+    const claim = h.db.seed("referrals", {
+      referrer_member_id: referrer.id, referred_shopify_customer_id: "FR", status: "completed", points_awarded: false,
+      reward_points: 6000, shopify_order_id: "O1", completed_at: ago(60),
+    });
+    h.db.seed("referrals", { referrer_member_id: other.id, referred_shopify_customer_id: "FR", status: "flagged" });
+    for (let run = 0; run < 2; run++) {
+      const out = await runPendingSweeps(NOW);
+      expect(out.referrals).toMatchObject({ failed: 1, released: 0 });
+      expect(alertOf("alert:referral_payments")).toMatchObject({ detail: { failed: 1 } });
+    }
+    expect(claim).toMatchObject({ status: "completed", points_awarded: false });
+    expect(h.points.named("complete_referral")).toHaveLength(0);
+    expect(referrer.points_balance).toBe(0);
   });
 });

@@ -854,6 +854,13 @@ async function callPayReferral(
   if (error) throw new Error(`pay_referral failed: ${error.message}`);
   const row = data?.[0];
   const outcome = String(row?.outcome ?? "unknown");
+  if (outcome === "order_not_found") {
+    // Review 13: the database has no row for the qualifying order (or the
+    // claim names none), so it refused to pay and changed nothing. Not paid;
+    // thrown so a live event or complete_referral job is retried later and
+    // the cron sweep counts it as failed (alert:referral_payments).
+    throw new Error(`referral ${referral.id} not paid yet: pay_referral found no row for the qualifying order; will retry`);
+  }
   if (outcome === "paid" || outcome === "recorded") {
     const paidPoints = Number(row?.paid_points ?? points);
     // Review 10, L3: the order may have been cancelled or refunded in full
@@ -917,12 +924,58 @@ async function reverseIfOrderGone(referralId: string, shopifyOrderId: string): P
  * referral id only) and does not fail the payment.
  */
 export const referralCompletedJobId = (referralId: string) => `referral_completed-${referralId}`;
-async function queueReferralCompletedEmail(referralId: string, memberId: string, points: number): Promise<void> {
+async function queueReferralCompletedEmail(referralId: string, memberId: string, points: number): Promise<boolean> {
   try {
     await notificationQueue.add("referral_completed", { memberId, points }, { jobId: referralCompletedJobId(referralId) });
   } catch (err) {
     console.error(`[referrals] completed email not queued for referral ${referralId}:`, err instanceof Error ? err.message : err);
+    return false;
   }
+  // Review 13: remember that it was queued (017's completion_email_queued_at),
+  // so the cron sweep only queues the ones lost to a crash or a Redis error.
+  // A failed write is logged: the sweep then queues it again under the same
+  // job id, which BullMQ drops while the first job is still kept.
+  const { error } = await db
+    .from("referrals")
+    .update({ completion_email_queued_at: new Date().toISOString() })
+    .eq("id", referralId)
+    .is("completion_email_queued_at", null);
+  if (error) console.error(`[referrals] completed email for referral ${referralId} queued but not recorded:`, error.message);
+  return true;
+}
+
+/**
+ * complete_referral jobs carry a fixed id per referral (review 13), so the
+ * cron sweeps never queue a second one for the same referral while one is
+ * waiting, delayed or running. A job that failed for good is replaced (a
+ * dead job must not block recovery). A finished one is kept for 24 hours
+ * (removeOnComplete below) and, unless `replaceFinished`, blocks a new one
+ * for that long, so a referral that keeps being refused for the same reason
+ * is retried at most once a day by the sweep. Approve and a released claim
+ * pass `replaceFinished`, since something has changed.
+ */
+export const completeReferralJobId = (referralId: string) => `complete_referral-${referralId}`;
+export const COMPLETE_REFERRAL_KEEP_SECONDS = 24 * 60 * 60;
+export async function queueCompleteReferral(
+  referralId: string,
+  shopifyCustomerId: string,
+  shop: string | null,
+  opts: { replaceFinished: boolean },
+): Promise<"queued" | "open" | "recent"> {
+  const jobId = completeReferralJobId(referralId);
+  const existing = await pointsQueue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (state === "failed" || (state === "completed" && opts.replaceFinished)) await existing.remove();
+    else if (state === "completed") return "recent";
+    else if (state !== "unknown") return "open";
+  }
+  await pointsQueue.add(
+    "complete_referral",
+    { shopifyCustomerId, shop },
+    { jobId, removeOnComplete: { age: COMPLETE_REFERRAL_KEEP_SECONDS, count: 5000 } },
+  );
+  return "queued";
 }
 
 /**
@@ -1043,7 +1096,13 @@ export async function finishClaimedReferrals(now: Date = new Date()): Promise<{
       const r = await resumeClaimedReferral(row, customerId);
       if (r === null) {
         out.released++;
-        if (customerId) await pointsQueue.add("complete_referral", { shopifyCustomerId: customerId, shop: null });
+        if (customerId) await queueCompleteReferral(String(row.id), customerId, null, { replaceFinished: true });
+      } else if (r.reason === "claim_conflict" || r.reason === "conflict") {
+        // Review 13: another open referral for this friend stops the claim
+        // going back to pending. Nothing is queued (it would be refused the
+        // same way on every run); counted as failed so the alert shows it.
+        out.failed++;
+        console.error(`[finishClaimedReferrals] referral ${row.id}: claim cannot go back to pending (another open referral for the same friend); staff must decide`);
       } else if (r.reason?.startsWith("qualifying_order_")) {
         out.reversed++;
       } else if (r.paid) {
@@ -1056,6 +1115,128 @@ export async function finishClaimedReferrals(now: Date = new Date()): Promise<{
       out.failed++;
       console.error(`[finishClaimedReferrals] referral ${row.id} failed:`, err instanceof Error ? err.message : err);
     }
+  }
+  return out;
+}
+
+/** At most this many complete_referral jobs are queued by one sweep run (review 13). */
+export const REQUEUE_REFERRALS_PER_RUN = 100;
+const REQUEUE_PAGE = 500;
+const REQUEUE_MAX_PAGES = 10;
+
+/**
+ * Review 13 (cron, every 10 minutes): a pending referral whose friend's first
+ * order already qualifies (fulfilled and paid, not cancelled, not refunded in
+ * full) but was never paid, because migration 017 landed after the event,
+ * or the event's jobs died. Queues complete_referral for it (fixed job id per
+ * referral: nothing is queued while one is open, a dead one is replaced, a
+ * finished one blocks for 24 hours), at most REQUEUE_REFERRALS_PER_RUN a run.
+ * Skipped: the referral rule switched off, a referrer who may not be paid
+ * (blocked, opted out, referrals_blocked), and an order that changed in the
+ * last 10 minutes (its own event is still handling it). The "first order" is
+ * the same as completeReferralForCustomer's: her earliest order not cancelled.
+ */
+export async function requeueStalledReferrals(now: Date = new Date()): Promise<{
+  queued: number; open: number; failed: number; reason?: string;
+}> {
+  const out = { queued: 0, open: 0, failed: 0 };
+  const settings = await getSettings();
+  if (!isEarnRuleEnabled(settings, "referral")) return { ...out, reason: "disabled" };
+  const settledBefore = now.getTime() - CLAIMED_REFERRAL_GRACE_MS;
+
+  for (let page = 0; page < REQUEUE_MAX_PAGES && out.queued < REQUEUE_REFERRALS_PER_RUN; page++) {
+    const { data, error } = await db
+      .from("referrals")
+      .select("id, referrer_member_id, referred_shopify_customer_id")
+      .eq("status", "pending")
+      .not("referred_shopify_customer_id", "is", null)
+      .order("created_at", { ascending: true })
+      .range(page * REQUEUE_PAGE, page * REQUEUE_PAGE + REQUEUE_PAGE - 1);
+    if (error) throw new Error(`pending referral query failed: ${error.message}`);
+    const rows = (data ?? []) as Array<Pick<ReferralRow, "id" | "referrer_member_id" | "referred_shopify_customer_id">>;
+    if (rows.length === 0) break;
+
+    const customers = [...new Set(rows.map((r) => String(r.referred_shopify_customer_id)))];
+    const { data: orderRows, error: orderErr } = await db
+      .from("order_webhook_state")
+      .select(`${ORDER_LITE_COLUMNS}, shopify_customer_id, updated_at`)
+      .in("shopify_customer_id", customers)
+      .is("cancelled_at", null)
+      .limit(5000);
+    if (orderErr) throw new Error(`order lookup failed: ${orderErr.message}`);
+    const when = (o: OrderLite) => Date.parse(o.placed_at ?? o.created_at);
+    const first = new Map<string, OrderLite & { updated_at?: string | null }>();
+    for (const o of (orderRows ?? []) as unknown as Array<OrderLite & { shopify_customer_id: string; updated_at?: string | null }>) {
+      const cur = first.get(String(o.shopify_customer_id));
+      if (!cur || when(o) < when(cur)) first.set(String(o.shopify_customer_id), o);
+    }
+    const due = rows.filter((r) => {
+      const o = first.get(String(r.referred_shopify_customer_id));
+      if (!o || !o.points_awarded || fullyRefunded(o)) return false;
+      return !o.updated_at || Date.parse(String(o.updated_at)) < settledBefore;
+    });
+    if (due.length === 0) {
+      if (rows.length < REQUEUE_PAGE) break;
+      continue;
+    }
+
+    const { data: referrers, error: refErr } = await db
+      .from("members")
+      .select("id, is_blocked, opted_out, referrals_blocked")
+      .in("id", [...new Set(due.map((r) => String(r.referrer_member_id)))]);
+    if (refErr) throw new Error(`referrer lookup failed: ${refErr.message}`);
+    const payable = new Set(
+      ((referrers ?? []) as Array<Pick<MemberRow, "id" | "is_blocked" | "opted_out" | "referrals_blocked">>)
+        .filter((m) => !m.is_blocked && !m.opted_out && !m.referrals_blocked)
+        .map((m) => String(m.id)),
+    );
+
+    for (const r of due) {
+      if (out.queued >= REQUEUE_REFERRALS_PER_RUN) break;
+      if (!payable.has(String(r.referrer_member_id))) continue;
+      try {
+        const res = await queueCompleteReferral(String(r.id), String(r.referred_shopify_customer_id), null, { replaceFinished: false });
+        if (res === "queued") out.queued++;
+        else out.open++;
+      } catch (err) {
+        out.failed++;
+        console.error(`[requeueStalledReferrals] referral ${r.id} not queued:`, err instanceof Error ? err.message : err);
+      }
+    }
+    if (rows.length < REQUEUE_PAGE) break;
+  }
+  return out;
+}
+
+/** Lost "referral completed" emails are looked for this far back (review 13). */
+export const LOST_EMAIL_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Review 13 (cron, every 10 minutes): referrals completed and paid in the
+ * last 7 days whose "referral completed" email was never recorded as queued
+ * (completion_email_queued_at, migration 017, still null: the process
+ * stopped or Redis failed between the payment and the queue). Queued under
+ * the fixed job id referral_completed-<id>, at most 100 a run. A payment
+ * younger than 10 minutes is left to the call that made it (it may still be
+ * re-reading the order and reversing it).
+ */
+export async function queueLostReferralEmails(now: Date = new Date()): Promise<{ queued: number; failed: number }> {
+  const out = { queued: 0, failed: 0 };
+  const { data, error } = await db
+    .from("referrals")
+    .select("id, referrer_member_id, reward_points")
+    .eq("status", "completed")
+    .eq("points_awarded", true)
+    .is("completion_email_queued_at", null)
+    .gte("completed_at", new Date(now.getTime() - LOST_EMAIL_WINDOW_MS).toISOString())
+    .lt("completed_at", new Date(now.getTime() - CLAIMED_REFERRAL_GRACE_MS).toISOString())
+    .order("completed_at", { ascending: true })
+    .limit(100);
+  if (error) throw new Error(`lost referral email query failed: ${error.message}`);
+  for (const r of (data ?? []) as Array<Pick<ReferralRow, "id" | "referrer_member_id" | "reward_points">>) {
+    const ok = await queueReferralCompletedEmail(String(r.id), String(r.referrer_member_id), Number(r.reward_points ?? 0));
+    if (ok) out.queued++;
+    else out.failed++;
   }
   return out;
 }
@@ -1195,7 +1376,7 @@ export async function approveReferral(
     // approval stands and a background job finishes it, with retries, so the
     // referral cannot be left waiting with no event to drive it.
     console.error("[approveReferral] payment not finished yet, queued:", err instanceof Error ? err.message : err);
-    await pointsQueue.add("complete_referral", { shopifyCustomerId: referral.referred_shopify_customer_id, shop: shop || null });
+    await queueCompleteReferral(String(referral.id), referral.referred_shopify_customer_id, shop || null, { replaceFinished: true });
     return { ok: true, paid: false, reason: "queued" };
   }
   return { ok: true, paid: result.paid, reason: result.paid ? undefined : result.reason };

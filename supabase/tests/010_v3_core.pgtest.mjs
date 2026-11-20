@@ -80,7 +80,16 @@ let rerunErr = null;
 try { await db.query(m010); } catch (e) { rerunErr = e.message; }
 console.log("\n[migration]");
 ok("010 is re-runnable (second run without error)", rerunErr === null, rerunErr);
+let pre017 = null; // rows written before 017's first run (review 13: one-time backfill of completion_email_queued_at)
 for (const f of files.filter((f) => f > "010_v3_core.sql")) {
+  if (f.startsWith("017_") && !pre017) {
+    const [{ id: pm }] = await q(`insert into members (shopify_customer_id,email,referral_slug) values ('P17','p17@x.com','p17') returning id`);
+    const mk = async (friend, status, paid, rp) => (await q(`insert into referrals
+        (referrer_member_id, referred_shopify_customer_id, referred_email, status, points_awarded, reward_points, completed_at)
+        values ($1,$2,$3,$4,$5,$6,$7) returning id`,
+      [pm, friend, `${friend}@x.com`, status, paid, rp, status === "completed" ? "2026-11-15T10:00:00Z" : null]))[0].id;
+    pre017 = { paid: await mk("P17F1", "completed", true, 6000), claimed: await mk("P17F2", "completed", false, 6000), pending: await mk("P17F3", "pending", false, null) };
+  }
   let err = null;
   try { await db.query(fs.readFileSync(path.join(MIG, f), "utf8")); } catch (e) { err = e.message; }
   ok(`later migration ${f} applies on top of 010`, err === null, err);
@@ -761,6 +770,60 @@ console.log("\n[18] 017_referral_payment: pay / release / reverse a referral und
     const b = (await q(`select points_balance b from members where id=$1`, [memberId]))[0].b;
     return { ...r, ledger: l.map((x) => `${x.a}:${x.p}`), balance: b };
   };
+
+  // R13. review 13: the email column and its one-time backfill, hg_schema_version, search_path, order_not_found, conflict
+  {
+    const col = await q(`select data_type, is_nullable from information_schema.columns where table_name='referrals' and column_name='completion_email_queued_at'`);
+    eq("R13 referrals.completion_email_queued_at exists, nullable timestamptz", col, [{ data_type: "timestamp with time zone", is_nullable: "YES" }]);
+    const pre = async (id) => (await q(`select completion_email_queued_at::text t from referrals where id=$1`, [id]))[0].t;
+    eq("R13 backfill: a referral completed and paid before 017 is marked as emailed (its completed_at)",
+      (await q(`select completion_email_queued_at = completed_at same from referrals where id=$1`, [pre017.paid]))[0].same, true);
+    eq("R13 backfill: an unpaid claim and a pending referral are not marked", [await pre(pre017.claimed), await pre(pre017.pending)], [null, null]);
+    // a referral paid after the column exists, email not queued yet: re-applying 017 must not mark it
+    await q(`update referrals set points_awarded=true, completion_email_queued_at=null where id=$1`, [pre017.claimed]);
+    let again2 = null;
+    try { await db.query(m017); } catch (e) { again2 = e.message; }
+    eq("R13 re-applying 017 does not re-run the backfill", [again2, await pre(pre017.claimed)], [null, null]);
+    await q(`update referrals set points_awarded=false where id=$1`, [pre017.claimed]);
+
+    eq("R13 hg_schema_version() = 17 with everything in place", (await q(`select hg_schema_version() v`))[0].v, 17);
+    await q("begin");
+    await q(`alter table referrals drop column completion_email_queued_at`);
+    eq("R13 hg_schema_version() = 16 without the column", (await q(`select hg_schema_version() v`))[0].v, 16);
+    await q("rollback");
+    await q("begin");
+    await q(`drop function release_referral_claim(uuid)`);
+    eq("R13 hg_schema_version() = 16 without release_referral_claim", (await q(`select hg_schema_version() v`))[0].v, 16);
+    await q("rollback");
+    const fns = await q(`select proname, prosecdef, array_to_string(proconfig, ';') cfg from pg_proc
+      where pronamespace='public'::regnamespace and proname in ('pay_referral','release_referral_claim','reverse_referral','hg_schema_version') order by proname`);
+    eq("R13 all four functions: SET search_path = public, pg_catalog and NOT security definer",
+      fns.map((f) => [f.proname, f.prosecdef, f.cfg]),
+      ["hg_schema_version", "pay_referral", "release_referral_claim", "reverse_referral"].map((n) => [n, false, "search_path=public, pg_catalog"]));
+
+    const m = await member();
+    const r1 = await referral(m, "F17N1");
+    const p1 = await pay(db, r1, "O17-NO-ROW");
+    eq("R13 pending, order row missing: order_not_found, still pending, nothing added", [p1.outcome, await state(r1, m)],
+      ["order_not_found", { status: "pending", pa: false, rp: null, o: null, ledger: [], balance: 0 }]);
+    eq("R13 pending, no order id: order_not_found", (await pay(db, r1, null)).outcome, "order_not_found");
+    const c1 = await referral(m, "F17N2", { status: "completed", reward_points: 6000, order: null });
+    eq("R13 claim with no order id, call with none: order_not_found (no NULL = NULL pass), claim untouched",
+      [(await pay(db, c1, null, true)).outcome, (await state(c1, m)).status], ["order_not_found", "completed"]);
+    await order("O17N3");
+    eq("R13 claim with no order id, call naming an order: order_not_found", (await pay(db, c1, "O17N3", true)).outcome, "order_not_found");
+    const c2 = await referral(m, "F17N4", { status: "completed", reward_points: 6000, order: "O17-NO-ROW" });
+    eq("R13 claim whose order row is missing: order_not_found, claim untouched, nothing added",
+      [(await pay(db, c2, "O17-NO-ROW", true)).outcome, await state(c2, m)],
+      ["order_not_found", { status: "completed", pa: false, rp: 6000, o: "O17-NO-ROW", ledger: [], balance: 0 }]);
+    // a claim whose order was cancelled, while another referral for the same friend is open: 'conflict'
+    const oc = await order("O17N5", { cancelled: true });
+    const c3 = await referral(m, "F17N5", { status: "completed", reward_points: 6000, order: oc });
+    const m2 = await member();
+    await referral(m2, "F17N5", { status: "flagged" });
+    eq("R13 claim refused and another open referral for the friend: conflict, claim untouched",
+      [(await pay(db, c3, oc, true)).outcome, (await state(c3, m)).status, (await state(c3, m)).o], ["conflict", "completed", oc]);
+  }
 
   // A. a fresh payment, then a replay, then the reversal (twice), then a payment after the reversal
   {

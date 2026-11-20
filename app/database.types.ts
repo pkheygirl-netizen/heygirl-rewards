@@ -760,6 +760,7 @@ export type Database = {
           alert_resolved_at: string | null
           block_reason: string | null
           completed_at: string | null
+          completion_email_queued_at: string | null
           created_at: string
           device_fingerprint_hash: string | null
           fraud_flags: string[]
@@ -786,6 +787,7 @@ export type Database = {
           alert_resolved_at?: string | null
           block_reason?: string | null
           completed_at?: string | null
+          completion_email_queued_at?: string | null
           created_at?: string
           device_fingerprint_hash?: string | null
           fraud_flags?: string[]
@@ -812,6 +814,7 @@ export type Database = {
           alert_resolved_at?: string | null
           block_reason?: string | null
           completed_at?: string | null
+          completion_email_queued_at?: string | null
           created_at?: string
           device_fingerprint_hash?: string | null
           fraud_flags?: string[]
@@ -1079,6 +1082,10 @@ export type Database = {
           new_balance: number
           new_lifetime_spend_pkr: number
         }[]
+      }
+      hg_schema_version: {
+        Args: Record<PropertyKey, never>
+        Returns: number
       }
       pay_referral: {
         Args: {

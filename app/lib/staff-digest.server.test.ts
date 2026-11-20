@@ -95,6 +95,14 @@ describe("staff morning email", () => {
     expect((mail.sendEmail.mock.calls[0][0] as { text: string }).text).toContain("Some referral rewards could not be finished");
   });
 
+  it("review 13: migration 017 missing (alert:schema_017 raised by the worker) counts as waiting and names the file", async () => {
+    attention = { referral_order_alerts: 0, referrals_flagged: 0, review_claims_pending: 0 };
+    h.db.seed("system_heartbeat", { key: "alert:schema_017", at: new Date(NINE.getTime() - 3 * 24 * 3_600_000).toISOString(), detail: { migration: "017_referral_payment.sql" } });
+    const r = await runStaffDigest(NINE);
+    expect(r).toMatchObject({ sent: true, counts: { schemaMissing: true } });
+    expect((mail.sendEmail.mock.calls[0][0] as { text: string }).text).toContain("017_referral_payment.sql has not been applied");
+  });
+
   it("no address set or SMTP not configured: skipped quietly, one log line", async () => {
     h.db.table("app_settings")[0].staff_alert_email = null;
     expect(await runStaffDigest(NINE)).toEqual({ sent: false, reason: "no_address" });

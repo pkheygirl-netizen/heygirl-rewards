@@ -9,10 +9,11 @@
 -- while the worker processed the cancellation; a payment stalled for more than
 -- 10 minutes, released by the cron run and then awarded). Now:
 --
---   pay_referral            locks the referral, then the qualifying order (if
---                           its row exists), then the referrer; checks the
---                           referral is pending (or, for an older half-done
---                           payment, still claimed for this order), the rule
+--   pay_referral            locks the referral, then the qualifying order,
+--                           then the referrer; checks the referral is
+--                           pending (or, for an older half-done payment,
+--                           still claimed for this order), the order row
+--                           exists (else 'order_not_found'), the rule
 --                           is on, the referrer may be paid and the order is
 --                           not cancelled or refunded in full; then adds the
 --                           points (award_points, idempotent on member /
@@ -30,9 +31,47 @@
 -- Lock order (no cycles): referral -> order row -> member. 010's functions
 -- lock order row -> member and never a referral.
 --
+-- Review 13:
+--   * pay_referral refuses with outcome 'order_not_found' when the order row
+--     is missing or the order id (asked for, or on the claim) is null: a
+--     referral is never paid on an order the database does not know.
+--   * pay_referral from a claim whose release back to pending hits another
+--     open referral for the same friend returns 'conflict' (it used to return
+--     the refusal reason, which the app read as "released").
+--   * every function here runs with SET search_path = public, pg_catalog
+--     (still SECURITY INVOKER: they run with the caller's rights).
+--   * referrals.completion_email_queued_at (nullable): set by the app when the
+--     "referral completed" email is queued, so the 10-minute sweep can queue
+--     one lost to a crash or a Redis error. When this file adds the column it
+--     marks referrals already completed and paid as queued (their email went
+--     out through the old code), so nobody gets a second email.
+--   * hg_schema_version() returns 17 when everything in this file is in
+--     place (the three functions and the column), else 16; the worker checks
+--     it at start and every 10 minutes and raises the alert
+--     alert:schema_017 while it is missing.
+--
 -- Must be applied BEFORE the app version that calls these functions is
 -- deployed (together with 016). Safe to apply twice: functions are replaced,
--- no table or row is changed by applying it.
+-- the column is added only if missing, and the one-time backfill runs only in
+-- the call that adds the column.
+
+-- Set by the app when the "referral completed" email is queued (review 13).
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_attribute
+     WHERE attrelid = 'public.referrals'::regclass
+       AND attname = 'completion_email_queued_at'
+       AND NOT attisdropped
+  ) THEN
+    ALTER TABLE public.referrals ADD COLUMN IF NOT EXISTS completion_email_queued_at timestamptz;
+    -- Referrals paid before this column existed had their email queued by the
+    -- code of the day: mark them, so the sweep does not send a second one.
+    UPDATE public.referrals
+       SET completion_email_queued_at = COALESCE(completed_at, now())
+     WHERE status = 'completed' AND points_awarded;
+  END IF;
+END $$;
 
 CREATE OR REPLACE FUNCTION public.pay_referral(
   p_referral_id      uuid,
@@ -43,7 +82,9 @@ CREATE OR REPLACE FUNCTION public.pay_referral(
   p_customer_note    text DEFAULT NULL,
   p_from_claim       boolean DEFAULT false
 ) RETURNS TABLE(outcome text, newly_awarded boolean, paid_points integer, member_balance integer)
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql
+SET search_path = public, pg_catalog
+AS $$
 DECLARE
   v_ref       public.referrals%ROWTYPE;
   v_order     public.order_webhook_state%ROWTYPE;
@@ -123,13 +164,27 @@ BEGIN
       RETURN QUERY SELECT 'not_claimed'::text, false, 0, v_member.points_balance;
       RETURN;
     END IF;
-    IF v_ref.shopify_order_id IS DISTINCT FROM p_shopify_order_id THEN
+    -- Review 13: a claim with no order id, or a call naming none, is never
+    -- paid (NULL = NULL is not "the same order").
+    IF v_ref.shopify_order_id IS NULL OR p_shopify_order_id IS NULL THEN
+      RETURN QUERY SELECT 'order_not_found'::text, false, 0, v_member.points_balance;
+      RETURN;
+    END IF;
+    IF v_ref.shopify_order_id <> p_shopify_order_id THEN
       RETURN QUERY SELECT 'other_order'::text, false, 0, v_member.points_balance;
       RETURN;
     END IF;
   ELSIF v_ref.status <> 'pending' THEN
     -- Rejected, blocked, held, or paid by another call in the meantime.
     RETURN QUERY SELECT 'not_pending'::text, false, 0, v_member.points_balance;
+    RETURN;
+  END IF;
+
+  -- Review 13: the qualifying order must be a row this database knows; with
+  -- no row there is nothing to test for a cancellation or a full refund, so
+  -- nothing is paid (and nothing is changed: the caller tries again later).
+  IF p_shopify_order_id IS NULL OR NOT v_order_hit THEN
+    RETURN QUERY SELECT 'order_not_found'::text, false, 0, v_member.points_balance;
     RETURN;
   END IF;
 
@@ -142,9 +197,9 @@ BEGIN
     v_refuse := 'referrer_not_eligible';
   ELSIF p_points IS NULL OR p_points <= 0 THEN
     v_refuse := 'zero_points';
-  ELSIF v_order_hit AND v_order.cancelled_at IS NOT NULL THEN
+  ELSIF v_order.cancelled_at IS NOT NULL THEN
     v_refuse := 'order_cancelled';
-  ELSIF v_order_hit THEN
+  ELSE
     -- Refunded in full: the same test as the app's fullyRefunded().
     v_basis := COALESCE(v_order.earning_basis_pkr, 0);
     v_since := GREATEST(0, COALESCE(v_order.refunded_basis_pkr, 0) - COALESCE(v_order.refund_basis_at_award_pkr, 0));
@@ -164,7 +219,9 @@ BEGIN
            SET status = 'pending', completed_at = NULL, shopify_order_id = NULL, reward_points = NULL
          WHERE id = p_referral_id;
       EXCEPTION WHEN unique_violation THEN
-        NULL; -- another open referral for this friend: leave the claim for staff
+        -- Another open referral for this friend: the claim stays as it is,
+        -- for staff. Said as 'conflict' so the app counts it as a failure.
+        v_refuse := 'conflict';
       END;
     END IF;
     RETURN QUERY SELECT v_refuse, false, 0, v_member.points_balance;
@@ -188,7 +245,9 @@ $$;
 
 CREATE OR REPLACE FUNCTION public.release_referral_claim(p_referral_id uuid)
 RETURNS text
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql
+SET search_path = public, pg_catalog
+AS $$
 DECLARE
   v_ref public.referrals%ROWTYPE;
 BEGIN
@@ -224,7 +283,9 @@ CREATE OR REPLACE FUNCTION public.reverse_referral(
   p_shopify_order_id text DEFAULT NULL,
   p_customer_note    text DEFAULT NULL
 ) RETURNS TABLE(outcome text, reversed_points integer, member_balance integer)
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql
+SET search_path = public, pg_catalog
+AS $$
 DECLARE
   v_ref     public.referrals%ROWTYPE;
   v_before  integer;
@@ -288,6 +349,28 @@ BEGIN
 END;
 $$;
 
+-- 17 when everything this file makes is in place, else 16 (review 13). The
+-- worker reads it at start and every 10 minutes (app/lib/schema-check.server.ts).
+CREATE OR REPLACE FUNCTION public.hg_schema_version()
+RETURNS integer
+LANGUAGE sql
+STABLE
+SET search_path = public, pg_catalog
+AS $$
+  SELECT CASE
+    WHEN to_regprocedure('public.pay_referral(uuid, integer, text, timestamptz, text, text, boolean)') IS NOT NULL
+     AND to_regprocedure('public.release_referral_claim(uuid)') IS NOT NULL
+     AND to_regprocedure('public.reverse_referral(uuid, text, text, text)') IS NOT NULL
+     AND EXISTS (
+       SELECT 1 FROM pg_attribute
+        WHERE attrelid = to_regclass('public.referrals')
+          AND attname = 'completion_email_queued_at'
+          AND NOT attisdropped
+     )
+    THEN 17 ELSE 16
+  END
+$$;
+
 -- Only the service key may run them (Supabase roles; skipped on a plain
 -- Postgres where those roles do not exist).
 DO $$
@@ -297,7 +380,8 @@ BEGIN
   FOREACH fn IN ARRAY ARRAY[
     'public.pay_referral(uuid, integer, text, timestamptz, text, text, boolean)',
     'public.release_referral_claim(uuid)',
-    'public.reverse_referral(uuid, text, text, text)'
+    'public.reverse_referral(uuid, text, text, text)',
+    'public.hg_schema_version()'
   ] LOOP
     EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC', fn);
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN

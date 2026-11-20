@@ -3,7 +3,8 @@ import { makeRedis, cronQueue, pointsQueue, notificationQueue, failedJobCounts }
 import { awardOverdueSocialActions, expireSilverPoints } from "../lib/points.service";
 import { listBirthdayMemberIds } from "../lib/birthday.service";
 import { sweepPendingCodes } from "../lib/redemption.service";
-import { finishClaimedReferrals } from "../lib/referrals.service";
+import { finishClaimedReferrals, queueLostReferralEmails, requeueStalledReferrals } from "../lib/referrals.service";
+import { verifyReferralSchema } from "../lib/schema-check.server";
 import { getAdminForShop } from "../lib/worker-admin.server";
 import { syncStorefrontConfig } from "../lib/storefront-config.server";
 import { clearHeartbeat, recordHeartbeat } from "../lib/heartbeat.server";
@@ -191,32 +192,65 @@ export async function runStorefrontConfig(now: Date = new Date(), force = false)
 export const REFERRAL_SWEEP_ALERT_KEY = "alert:referral_payments";
 
 /**
- * Every 10 minutes: codes left half-made (sweepPendingCodes) and, review 11
- * item 10, referral payments left half-done (finishClaimedReferrals: claimed,
- * points_awarded still false). One failing does not stop the other; a failure
- * still fails the run (heartbeat cron_failed:pending_codes) after both ran.
- * Review 12, item 3: when the sweep ran but some referrals failed, the run
- * itself succeeds (so cron_failed would count as recovered at once), so the
- * dedicated alert heartbeat `alert:referral_payments` is written instead
- * (System health and the staff morning email show it); a later sweep with
- * no failure removes it.
+ * Every 10 minutes: codes left half-made (sweepPendingCodes) and the referral
+ * sweeps. One failing does not stop the others; a sweep that throws still
+ * fails the run (heartbeat cron_failed:pending_codes) after all ran.
+ *   - finishClaimedReferrals (review 11 item 10): referral payments left
+ *     half-done by the pre-017 code (claimed, points_awarded still false).
+ *   - requeueStalledReferrals (review 13): pending referrals whose friend's
+ *     first order already qualifies get a complete_referral job (fixed id per
+ *     referral, at most 100 a run), so they recover after 017 lands late or
+ *     after dead jobs.
+ *   - queueLostReferralEmails (review 13): "referral completed" emails lost
+ *     after a payment (last 7 days, completion_email_queued_at still null).
+ * Review 13: first, migration 017 must be in the database (hg_schema_version
+ * = 17); while it is not, the referral sweeps are skipped and
+ * alert:schema_017 is raised (verifyReferralSchema), and it is removed once
+ * 017 is there.
+ * Review 12, item 3: when the sweeps ran but some referrals failed (a claim
+ * that cannot go back to pending counts as failed), the run itself succeeds
+ * (so cron_failed would count as recovered at once), so the dedicated alert
+ * heartbeat `alert:referral_payments` is written instead (System health and
+ * the staff morning email show it); a later run with no failure removes it.
  */
 export async function runPendingSweeps(now: Date = new Date()) {
+  const schema = await verifyReferralSchema("sweep");
   let referrals: Awaited<ReturnType<typeof finishClaimedReferrals>> | null = null;
+  let requeued: Awaited<ReturnType<typeof requeueStalledReferrals>> | null = null;
+  let referralEmails: Awaited<ReturnType<typeof queueLostReferralEmails>> | null = null;
   let referralError: unknown = null;
-  try {
-    referrals = await finishClaimedReferrals(now);
-  } catch (err) {
-    referralError = err;
-  }
-  if (referrals && referrals.failed > 0) {
-    await recordHeartbeat(REFERRAL_SWEEP_ALERT_KEY, { failed: referrals.failed, note: "Some half-done referral payments could not be finished; see the worker log" });
-  } else if (referrals) {
-    await clearHeartbeat(REFERRAL_SWEEP_ALERT_KEY);
+  if (schema.status !== "missing") {
+    try {
+      referrals = await finishClaimedReferrals(now);
+    } catch (err) {
+      referralError ??= err;
+    }
+    try {
+      requeued = await requeueStalledReferrals(now);
+    } catch (err) {
+      referralError ??= err;
+    }
+    try {
+      referralEmails = await queueLostReferralEmails(now);
+    } catch (err) {
+      referralError ??= err;
+    }
+    const failed = (referrals?.failed ?? 0) + (requeued?.failed ?? 0) + (referralEmails?.failed ?? 0);
+    if (failed > 0) {
+      await recordHeartbeat(REFERRAL_SWEEP_ALERT_KEY, { failed, note: "Some referral payments, jobs or emails could not be finished; see the worker log" });
+    } else if (referrals && requeued && referralEmails) {
+      await clearHeartbeat(REFERRAL_SWEEP_ALERT_KEY);
+    }
   }
   const codes = await sweepPendingCodes(now);
   if (referralError) throw referralError;
-  return { ...codes, referrals };
+  return {
+    ...codes,
+    referrals,
+    requeued,
+    referralEmails,
+    ...(schema.status === "missing" ? { referralSweeps: "paused: migration 017_referral_payment.sql missing" } : {}),
+  };
 }
 
 export async function runCronJob(name: string): Promise<unknown> {
@@ -271,3 +305,8 @@ cronWorker.on("failed", (job, err) => {
 void registerCronJobs()
   .then(() => recordHeartbeat("worker", { started: true }))
   .catch((err) => console.error("[cronWorker] could not register schedules:", err));
+
+// Review 13: at start, check that migration 017 is in the database; if not,
+// a loud error names the file and alert:schema_017 shows in System health
+// and the staff morning email (checked again before every 10-minute sweep).
+void verifyReferralSchema("startup");

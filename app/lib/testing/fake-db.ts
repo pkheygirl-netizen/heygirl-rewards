@@ -44,6 +44,7 @@ const TABLE_DEFAULTS: Record<string, () => Row> = {
     status: "pending", block_reason: null, shopify_order_id: null, points_awarded: false,
     completed_at: null, reward_points: null, friend_code_id: null, reviewed_at: null, reviewed_note: null,
     fraud_flags: [], order_check: null, order_checked_order_id: null, order_checked_at: null, alert_resolved_at: null, order_tag: null,
+    completion_email_queued_at: null,
   }),
   review_claims: () => ({ shopify_order_id: null, status: "pending", claimed_at: new Date().toISOString(), resolved_at: null }),
   social_actions: () => ({ status: "pending", points_awarded: null }),
@@ -84,6 +85,8 @@ const PARENTS: Record<string, { table: string; fk: string }> = {
 export class FakeDb {
   tables: Record<string, Row[]> = {};
   rpcCalls: Array<{ fn: string; args: Row }> = [];
+  /** What hg_schema_version() answers (017 in place = 17); null = the function does not exist (PGRST202). */
+  schemaVersion: number | null = 17;
   /** Make the next call(s) on a table fail: failNext("members", "update", { code, message }). */
   private failures: Array<{ table: string; op: string; error: DbError }> = [];
 
@@ -147,6 +150,7 @@ export class FakeDb {
       if (fn === "pay_referral") return { data: [this.payReferral(args)], error: null };
       if (fn === "release_referral_claim") return { data: this.releaseReferralClaim(args) as never, error: null };
       if (fn === "reverse_referral") return { data: [this.reverseReferral(args)], error: null };
+      if (fn === "hg_schema_version" && this.schemaVersion !== null) return { data: this.schemaVersion as never, error: null };
       return { data: null, error: { code: "PGRST202", message: `function ${fn} not found` } };
     } catch (err) {
       return { data: null, error: { code: "P0001", message: err instanceof Error ? err.message : String(err) } };
@@ -184,11 +188,13 @@ export class FakeDb {
     const claimed = ref.status === "completed" && !ref.points_awarded && ref.reward_points != null;
     if (a.p_from_claim) {
       if (!claimed) return done("not_claimed");
-      if ((ref.shopify_order_id ?? null) !== (a.p_shopify_order_id ?? null)) return done("other_order");
+      if (ref.shopify_order_id == null || a.p_shopify_order_id == null) return done("order_not_found");
+      if (ref.shopify_order_id !== a.p_shopify_order_id) return done("other_order");
     } else if (ref.status !== "pending") return done("not_pending");
     const settings = this.table("app_settings").find((x) => x.id === 1) ?? {};
     const rules = (settings.earn_rules ?? {}) as Record<string, { enabled?: unknown }>;
     const order = a.p_shopify_order_id ? this.table("order_webhook_state").find((o) => o.shopify_order_id === a.p_shopify_order_id) : undefined;
+    if (!order) return done("order_not_found");
     let refuse: string | null = null;
     if (rules.referral?.enabled === false) refuse = "disabled";
     else if (!member) refuse = "referrer_not_found";
@@ -206,7 +212,7 @@ export class FakeDb {
         const candidate = { ...ref, status: "pending" };
         if (!this.uniqueViolation("referrals", candidate, ref)) {
           Object.assign(ref, { status: "pending", completed_at: null, shopify_order_id: null, reward_points: null });
-        }
+        } else refuse = "conflict";
       }
       return done(refuse);
     }
@@ -625,12 +631,17 @@ export function fakeQueue() {
       return true;
     },
     getFailedCount: async () => 0,
-    /** Jobs a test wants to exist already (e.g. a failed job with a fixed id). */
-    existing: new Map<string, { failed: boolean; removed: boolean }>(),
+    /** Jobs a test wants to exist already (e.g. a failed job with a fixed id); `state` defaults to failed/waiting from `failed`. */
+    existing: new Map<string, { failed: boolean; removed: boolean; state?: string }>(),
     async getJob(id: string) {
       const j = this.existing.get(id);
       if (!j || j.removed) return undefined;
-      return { isFailed: async () => j.failed, isCompleted: async () => false, remove: async () => { j.removed = true; } };
+      return {
+        isFailed: async () => j.failed,
+        isCompleted: async () => j.state === "completed",
+        getState: async () => j.state ?? (j.failed ? "failed" : "waiting"),
+        remove: async () => { j.removed = true; },
+      };
     },
     named: (name: string) => jobs.filter((j) => j.name === name),
     clear: () => {
